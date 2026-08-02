@@ -1,0 +1,94 @@
+// Copyright (c) 2021 Sultim Tsyrendashiev
+// Copyright (c) 2026 Doom64-RT contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#version 460
+
+// Noisy lighting compose for DLSS Ray Reconstruction (skips A-SVGF).
+// Writes PreFinal + RR staging (normals/roughness, specular albedo) into unused SVGF ping/pong buffers.
+
+#define DESC_SET_FRAMEBUFFERS 0
+#define DESC_SET_GLOBAL_UNIFORM 1
+#include "ShaderCommonGLSLFunc.h"
+#include "BRDF.h"
+
+layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPOSE_GROUP_SIZE_Y, local_size_z = 1) in;
+
+void main()
+{
+    const ivec2 pix             = ivec2( gl_GlobalInvocationID.x, gl_GlobalInvocationID.y );
+    const ivec2 checkerboardPix = getCheckerboardPix( pix );
+
+    if( pix.x >= uint( globalUniform.renderWidth ) || pix.y >= uint( globalUniform.renderHeight ) )
+    {
+        return;
+    }
+
+    const vec3 albedo     = texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb;
+    const vec3 throughput = texelFetch( framebufThroughput_Sampler, checkerboardPix, 0 ).rgb;
+
+    vec3 illuminated;
+    vec3 normal    = vec3( 0.0, 0.0, 1.0 );
+    float roughness = 1.0;
+    vec3  specAlb  = vec3( 0.0 );
+
+    if( !isSkyPix( checkerboardPix ) )
+    {
+        const vec2 mrFb   = texelFetch( framebufMetallicRoughness_Sampler, checkerboardPix, 0 ).xy;
+        const float metallic = mrFb.x;
+        roughness            = mrFb.y;
+        normal               = texelFetchNormal( checkerboardPix );
+
+        const vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
+        const vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
+        const vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
+
+        // Match CmSVGFAtrous final combine: rough specular fades to indirect
+        const vec3 specular = mix(
+            specRaw,
+            indirect,
+            smoothstep( FAKE_ROUGH_SPECULAR_THRESHOLD,
+                        FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH,
+                        roughness ) );
+
+        const vec3 ro_s = getSpecularColor( albedo, metallic );
+        const vec3 ro_d = albedo * ( 1.0 - metallic );
+        specAlb         = ro_s;
+
+        illuminated = ( diffuse + indirect ) * ro_d + specular * ro_s;
+        illuminated *= throughput;
+        illuminated *= getMaterialAmbient( albedo );
+    }
+    else
+    {
+        illuminated = albedo * throughput;
+        normal      = vec3( 0.0, 0.0, 1.0 );
+        roughness   = 1.0;
+        specAlb     = vec3( 0.0 );
+    }
+
+    imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );
+
+    // RR staging (reused SVGF buffers; safe while A-SVGF is skipped):
+    // DiffPing: world/view normals.xyz + roughness in .w
+    // DiffPong: specular albedo.rgb
+    imageStore( framebufDiffPingColorAndVariance, pix, vec4( normal, roughness ) );
+    imageStore( framebufDiffPongColorAndVariance, pix, vec4( specAlb, 0.0 ) );
+}

@@ -142,7 +142,8 @@ VkCommandBuffer RTGL1::VulkanDevice::BeginFrame( const RgStartFrameInfo& info )
                                 swapchain->WithFSR3FrameGeneration() ? amdFsr3dx12.get() : nullptr,
                                 nvDlss2.get(),
                                 swapchain->WithDLSS3FrameGeneration() ? nvDlss3dx12.get()
-                                                                      : nullptr );
+                                                                      : nullptr,
+                                nvDlssRr.get() );
 
         framebuffers->PrepareForSize( renderResolution.GetResolutionState(),
                                       ( swapchain->WithDXGI() ) );
@@ -720,7 +721,14 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                                           *rasterizer->GetRenderCubemap(),
                                                           *portalList,
                                                           *volumetric );
-        denoiser->Denoise( cmd, frameIndex, uniform );
+        if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
+        {
+            denoiser->ComposeNoisy( cmd, frameIndex, uniform );
+        }
+        else
+        {
+            denoiser->Denoise( cmd, frameIndex, uniform );
+        }
         volumetric->ProcessScattering(
             cmd, frameIndex, *uniform, *blueNoise, *framebuffers, volumetricMaxHistoryLen );
         tonemapping->CalculateExposure( cmd, frameIndex, uniform );
@@ -828,7 +836,19 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
         // upscale finalized image
         if( renderResolution.IsNvDlssEnabled() )
         {
-            if( nvDlss3dx12 && swapchain->WithDLSS3FrameGeneration() )
+            if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
+            {
+                accum = nvDlssRr->Apply( cmd,
+                                         frameIndex,
+                                         *framebuffers,
+                                         renderResolution,
+                                         jitter,
+                                         timeDelta,
+                                         resetHistory,
+                                         uniform->GetData()->view,
+                                         uniform->GetData()->projection );
+            }
+            else if( nvDlss3dx12 && swapchain->WithDLSS3FrameGeneration() )
             {
                 ID3D12GraphicsCommandList* dx12cmd = l_todx12( cmd, *nvDlss3dx12 );
 

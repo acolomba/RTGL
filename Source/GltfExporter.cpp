@@ -38,6 +38,7 @@
 
 #include <array>
 #include <cassert>
+#include <ranges>
 #include <fstream>
 #include <queue>
 #include <span>

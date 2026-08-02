@@ -46,6 +46,11 @@ public:
                        uint32_t                                      frameIndex,
                        const std::shared_ptr< const GlobalUniform >& uniform );
 
+    // Skip A-SVGF: compose noisy lighting into PreFinal + RR G-buffer staging.
+    void      ComposeNoisy( VkCommandBuffer                               cmd,
+                            uint32_t                                      frameIndex,
+                            const std::shared_ptr< const GlobalUniform >& uniform );
+
     void      OnShaderReload( const ShaderManager* shaderManager ) override;
 
 private:
@@ -66,6 +71,7 @@ private:
     VkPipeline                      temporalAccumulation;
     VkPipeline                      varianceEstimation;
     VkPipeline                      atrous[ 4 ];
+    VkPipeline                      noisyCompose;
 };
 
 }

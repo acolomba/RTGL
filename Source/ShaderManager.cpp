@@ -64,6 +64,7 @@ static ShaderModuleDefinition G_SHADERS[] =
     { "CLightGridBuild",            "CmLightGridBuild.comp.spv"             },
 #endif
     { "CPrepareFinal",              "CmPrepareFinal.comp.spv"               },
+    { "CNoisyCompose",              "CmNoisyCompose.comp.spv"               },
     { "CLuminanceHistogram",        "CmLuminanceHistogram.comp.spv"         },
     { "CLuminanceAvg",              "CmLuminanceAvg.comp.spv"               },
     { "CVolumetricProcess",         "CmVolumetricProcess.comp.spv"          },

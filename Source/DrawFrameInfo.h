@@ -251,6 +251,7 @@ namespace detail
             .customRenderSize          = {},
             .pixelizedRenderSizeEnable = false,
             .pixelizedRenderSize       = {},
+            .rayReconstruction         = false,
         };
     };
 

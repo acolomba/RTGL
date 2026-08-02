@@ -70,6 +70,7 @@ set(Sources
     "Source/Bloom.cpp"
     "Source/Sharpening.cpp"
     "Source/DLSS2.cpp"
+    "Source/DLSSRR.cpp"
     "Source/DLSS3_DX12.cpp"
     "Source/HaltonSequence.cpp"
     "Source/LensFlares.cpp"
@@ -259,10 +260,15 @@ if (RG_WITH_NATIVE_DLSS AND DEFINED ENV{DLSS_SDK_PATH})
     target_include_directories(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/include")
     add_definitions(-DRG_USE_NATIVE_DLSS2)
     if (WIN32)
+        # NVIDIA/DLSS layout uses lib/Windows_x86_64/x64 (older trees used x86_64)
+        set(_NGX_LIB_DIR "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x64")
+        if (NOT EXISTS "${_NGX_LIB_DIR}/nvsdk_ngx_d.lib")
+            set(_NGX_LIB_DIR "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64")
+        endif()
         if (BUILD_TYPE STREQUAL "DEBUG")
-            target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64/nvsdk_ngx_d_dbg.lib")
+            target_link_libraries(RayTracedGL1 PRIVATE "${_NGX_LIB_DIR}/nvsdk_ngx_d_dbg.lib")
         else()
-            target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64/nvsdk_ngx_d.lib")
+            target_link_libraries(RayTracedGL1 PRIVATE "${_NGX_LIB_DIR}/nvsdk_ngx_d.lib")
         endif()
     else()
         target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Linux_x86_64/libnvsdk_ngx.a")
@@ -306,6 +312,8 @@ if (MSVC AND WIN32 AND NOT MSVC_VERSION VERSION_LESS 142)
     target_link_options(RayTracedGL1 PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
     target_compile_options(RayTracedGL1 PRIVATE $<$<CONFIG:Debug>:/ZI>)
 
-    target_link_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
-    target_compile_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/ZI>)
+    if (TARGET RtglExample)
+        target_link_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
+        target_compile_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/ZI>)
+    endif()
 endif()

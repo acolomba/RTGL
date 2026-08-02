@@ -9,3 +9,7 @@
 .vscode/
 
 Build/
+
+# Local CMake build (do not commit)
+BuildCMake/
+

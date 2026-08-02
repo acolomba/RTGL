@@ -47,6 +47,7 @@
 #include "Bloom.h"
 #include "Sharpening.h"
 #include "DLSS2.h"
+#include "DLSSRR.h"
 #include "DLSS3_DX12.h"
 #include "RenderResolutionHelper.h"
 #include "EffectWipe.h"
@@ -200,6 +201,7 @@ private:
     std::shared_ptr< FSR2 >                      amdFsr2;
     std::shared_ptr< FSR3_DX12 >                 amdFsr3dx12;
     std::shared_ptr< DLSS2 >                     nvDlss2;
+    std::shared_ptr< DLSSRR >                    nvDlssRr;
     std::shared_ptr< DLSS3_DX12 >                nvDlss3dx12;
     std::shared_ptr< Sharpening >                sharpening;
     std::shared_ptr< EffectWipe >                effectWipe;

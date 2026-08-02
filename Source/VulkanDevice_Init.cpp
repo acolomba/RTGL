@@ -460,6 +460,8 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         device,
         physDevice->Get(),
         appGuid.c_str() );
+    // Ray Reconstruction shares NGX init owned by DLSS2
+    nvDlssRr = DLSSRR::MakeInstance( device, nvDlss2.get() );
 #endif
 
     sharpening = std::make_shared< Sharpening >( 
@@ -572,6 +574,7 @@ RTGL1::VulkanDevice::~VulkanDevice()
     bloom.reset();
     amdFsr2.reset();
     amdFsr3dx12.reset();
+    nvDlssRr.reset();
     nvDlss2.reset();
     nvDlss3dx12.reset();
     sharpening.reset();

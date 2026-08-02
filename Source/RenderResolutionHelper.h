@@ -24,6 +24,7 @@
 #include <cmath>
 
 #include "DLSS2.h"
+#include "DLSSRR.h"
 #include "DLSS3_DX12.h"
 #include "FSR2.h"
 #include "FSR3_DX12.h"
@@ -55,7 +56,8 @@ public:
                 const FSR2*                               fsr2,
                 const FSR3_DX12*                          fsr3dx12,
                 const DLSS2*                              dlss2,
-                const DLSS3_DX12*                         dlss3dx12 )
+                const DLSS3_DX12*                         dlss3dx12,
+                const DLSSRR*                             dlssRr = nullptr )
     {
         // HACKHACK: render into something when the window is minimized
         if( windowWidth == 0 || windowHeight == 0 )
@@ -70,9 +72,10 @@ public:
         upscaledWidth  = windowWidth;
         upscaledHeight = windowHeight;
 
-        upscaleTechnique = params.upscaleTechnique;
-        sharpenTechnique = params.sharpenTechnique;
-        resolutionMode   = params.resolutionMode;
+        upscaleTechnique   = params.upscaleTechnique;
+        sharpenTechnique   = params.sharpenTechnique;
+        resolutionMode     = params.resolutionMode;
+        rayReconstruction  = params.rayReconstruction && dlssRr != nullptr;
 
         // check for correct values
         {
@@ -87,12 +90,17 @@ public:
                     }
                     break;
                 case RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS:
-                    if( !dlss2 && !dlss3dx12 )
+                    if( !dlss2 && !dlss3dx12 && !dlssRr )
                     {
                         upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NEAREST;
                     }
                     break;
                 default: upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NEAREST; break;
+            }
+            if( rayReconstruction &&
+                ( upscaleTechnique != RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS || !dlssRr ) )
+            {
+                rayReconstruction = false;
             }
             switch( sharpenTechnique )
             {
@@ -144,7 +152,7 @@ public:
         }
         else if( upscaleTechnique == RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS )
         {
-            assert( dlss2 || dlss3dx12 );
+            assert( dlss2 || dlss3dx12 || dlssRr );
             if( resolutionMode == RG_RENDER_RESOLUTION_MODE_CUSTOM )
             {
                 renderWidth  = params.customRenderSize.width;
@@ -152,7 +160,12 @@ public:
             }
             else
             {
-                if( dlss3dx12 )
+                if( rayReconstruction && dlssRr )
+                {
+                    std::tie( renderWidth, renderHeight ) =
+                        dlssRr->GetOptimalSettings( windowWidth, windowHeight, resolutionMode );
+                }
+                else if( dlss3dx12 )
                 {
                     std::tie( renderWidth, renderHeight ) =
                         dlss3dx12->GetOptimalSettings( windowWidth, windowHeight, resolutionMode );
@@ -220,6 +233,10 @@ public:
     {
         return upscaleTechnique == RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
     }
+    bool IsNvDlssRayReconstructionEnabled() const
+    {
+        return IsNvDlssEnabled() && rayReconstruction;
+    }
     bool IsUpscaleEnabled() const { return IsAmdFsr2Enabled() || IsNvDlssEnabled(); }
 
     float GetAmdFsrSharpness() const { return 1.0f; } // 0.0 - max, 1.0 - min
@@ -262,6 +279,7 @@ private:
     RgRenderUpscaleTechnique upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_LINEAR;
     RgRenderSharpenTechnique sharpenTechnique = RG_RENDER_SHARPEN_TECHNIQUE_NONE;
     RgRenderResolutionMode   resolutionMode   = RG_RENDER_RESOLUTION_MODE_CUSTOM;
+    bool                     rayReconstruction = false;
 };
 
 }

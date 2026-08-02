@@ -37,6 +37,7 @@ RTGL1::Denoiser::Denoiser( VkDevice                        _device,
     , temporalAccumulation( VK_NULL_HANDLE )
     , varianceEstimation( VK_NULL_HANDLE )
     , atrous{}
+    , noisyCompose( VK_NULL_HANDLE )
 {
     static_assert( sizeof( atrous ) / sizeof( VkPipeline ) == COMPUTE_SVGF_ATROUS_ITERATION_COUNT,
                    "Wrong atrous pipeline count" );
@@ -254,6 +255,52 @@ void RTGL1::Denoiser::Denoise( VkCommandBuffer                               cmd
     }
 }
 
+void RTGL1::Denoiser::ComposeNoisy( VkCommandBuffer                               cmd,
+                                    uint32_t                                      frameIndex,
+                                    const std::shared_ptr< const GlobalUniform >& uniform )
+{
+    typedef FramebufferImageIndex FI;
+
+    CmdLabel label( cmd, "Noisy compose (DLSS-RR)" );
+
+    VkDescriptorSet sets[] = {
+        framebuffers->GetDescSet( frameIndex ),
+        uniform->GetDescSet( frameIndex ),
+    };
+
+    vkCmdBindDescriptorSets( cmd,
+                             VK_PIPELINE_BIND_POINT_COMPUTE,
+                             pipelineLayout,
+                             0,
+                             std::size( sets ),
+                             sets,
+                             0,
+                             nullptr );
+
+    FI fs[] = {
+        FI::FB_IMAGE_INDEX_ALBEDO,
+        FI::FB_IMAGE_INDEX_NORMAL,
+        FI::FB_IMAGE_INDEX_METALLIC_ROUGHNESS,
+        FI::FB_IMAGE_INDEX_THROUGHPUT,
+        FI::FB_IMAGE_INDEX_IS_SKY,
+        FI::FB_IMAGE_INDEX_UNFILTERED_DIRECT,
+        FI::FB_IMAGE_INDEX_UNFILTERED_SPECULAR,
+        FI::FB_IMAGE_INDEX_UNFILTERED_INDIR,
+        FI::FB_IMAGE_INDEX_PRE_FINAL,
+        FI::FB_IMAGE_INDEX_DIFF_PING_COLOR_AND_VARIANCE,
+        FI::FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE,
+    };
+    framebuffers->BarrierMultiple( cmd, frameIndex, fs );
+
+    uint32_t wgCountX = Utils::GetWorkGroupCount( uniform->GetData()->renderWidth,
+                                                  COMPUTE_COMPOSE_GROUP_SIZE_X );
+    uint32_t wgCountY = Utils::GetWorkGroupCount( uniform->GetData()->renderHeight,
+                                                  COMPUTE_COMPOSE_GROUP_SIZE_Y );
+
+    vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, noisyCompose );
+    vkCmdDispatch( cmd, wgCountX, wgCountY, 1 );
+}
+
 void RTGL1::Denoiser::OnShaderReload( const ShaderManager* shaderManager )
 {
     DestroyPipelines();
@@ -281,6 +328,7 @@ void RTGL1::Denoiser::DestroyPipelines()
     vkDestroyPipeline( device, antifirefly, nullptr );
     vkDestroyPipeline( device, temporalAccumulation, nullptr );
     vkDestroyPipeline( device, varianceEstimation, nullptr );
+    vkDestroyPipeline( device, noisyCompose, nullptr );
 
     for( VkPipeline& p : gradientAtrous )
     {
@@ -297,6 +345,7 @@ void RTGL1::Denoiser::DestroyPipelines()
     antifirefly          = VK_NULL_HANDLE;
     temporalAccumulation = VK_NULL_HANDLE;
     varianceEstimation   = VK_NULL_HANDLE;
+    noisyCompose         = VK_NULL_HANDLE;
 }
 
 void RTGL1::Denoiser::CreatePipelines( const ShaderManager* shaderManager )
@@ -433,5 +482,18 @@ void RTGL1::Denoiser::CreatePipelines( const ShaderManager* shaderManager )
                 SET_DEBUG_NAME( device, atrous[ i ], VK_OBJECT_TYPE_PIPELINE, debugNames[ i ] );
             }
         }
+    }
+
+    {
+        VkComputePipelineCreateInfo plInfo = {
+            .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage  = shaderManager->GetStageInfo( "CNoisyCompose" ),
+            .layout = pipelineLayout,
+        };
+
+        VkResult r =
+            vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &plInfo, nullptr, &noisyCompose );
+        VK_CHECKERROR( r );
+        SET_DEBUG_NAME( device, noisyCompose, VK_OBJECT_TYPE_PIPELINE, "Noisy compose pipeline" );
     }
 }

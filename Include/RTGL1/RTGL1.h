@@ -806,6 +806,10 @@ typedef struct RgStartFrameRenderResolutionParams
     // be done in higher resolution.
     RgBool32                 pixelizedRenderSizeEnable;
     RgExtent2D               pixelizedRenderSize;
+    // When true and upscaleTechnique is NVIDIA_DLSS: skip A-SVGF and run DLSS Ray
+    // Reconstruction (denoise + upscale). Requires nvngx_dlssd.dll. Frame generation
+    // should be OFF. Ignores this flag if Ray Reconstruction is unavailable.
+    RgBool32                 rayReconstruction;
 } RgStartFrameRenderResolutionParams;
 
 // Can be linked after RgStartFrameInfo.
