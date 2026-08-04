@@ -438,15 +438,26 @@ ShHitInfo getHitInfoBounce(
 
 
     // HEIGHT / NORMAL MAP (ignored for indirect)
+    // materialStripFlags: bit0=N, bit1=emis, bit2=metallic, bit3=H, bit4=roughness
+
+    const bool stripNormals    = ( globalUniform.materialStripFlags & 1u ) != 0;
+    const bool stripEmissives  = ( globalUniform.materialStripFlags & 2u ) != 0;
+    const bool stripMetallic   = ( globalUniform.materialStripFlags & 4u ) != 0;
+    const bool stripHeight     = ( globalUniform.materialStripFlags & 8u ) != 0;
+    const bool stripRoughness  = ( globalUniform.materialStripFlags & 16u ) != 0;
 
 #if defined( HITINFO_INL_PRIM ) || defined( HITINFO_INL_RFL )
     vec3 tangent, bitangent;
-    if( tr.heightTexture != MATERIAL_NO_TEXTURE || tr.normalTexture != MATERIAL_NO_TEXTURE )
+    const bool needTbn =
+        ( !stripHeight && tr.heightTexture != MATERIAL_NO_TEXTURE ) ||
+        ( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE );
+    if( needTbn )
     {
         makeTangentBitangent( tr.positions, tr.layerTexCoord[ 0 ], tangent, bitangent );
     }
 
-    if( globalUniform.parallaxMaxDepth > 0.0001 && tr.heightTexture != MATERIAL_NO_TEXTURE )
+    if( !stripHeight && globalUniform.parallaxMaxDepth > 0.0001 &&
+        tr.heightTexture != MATERIAL_NO_TEXTURE )
     {
         vec3 viewDirInTextureSpace;
         {
@@ -461,7 +472,7 @@ ShHitInfo getHitInfoBounce(
     }
 
 
-    if (tr.normalTexture != MATERIAL_NO_TEXTURE)
+    if( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE )
     {
         vec2 nrm =
     #if defined( HITINFO_INL_PRIM )
@@ -482,7 +493,7 @@ ShHitInfo getHitInfoBounce(
     }
 
 #if defined( HITINFO_INL_RFL )
-    hasNormalMap = ( tr.normalTexture != MATERIAL_NO_TEXTURE );
+    hasNormalMap = ( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE );
 #endif
 
 #endif // HITINFO_INL_PRIM || HITINFO_INL_RFL
@@ -527,21 +538,32 @@ ShHitInfo getHitInfoBounce(
             getTextureSampleLod( tr.occlusionRougnessMetallicTexture, texCoords[ 0 ], lod ).xyz;
     #endif
 
-        h.roughness = orm[ 1 ];
-        h.metallic  = orm[ 2 ];
+        h.roughness = stripRoughness ? 1.0 : orm[ 1 ];
+        h.metallic  = stripMetallic ? 0.0 : orm[ 2 ];
     }
     else
     {
-        h.roughness = tr.roughnessDefault;
-        h.metallic  = tr.metallicDefault;
+        h.roughness = stripRoughness ? 1.0 : tr.roughnessDefault;
+        h.metallic  = stripMetallic ? 0.0 : tr.metallicDefault;
     }
+    // Dev Materials: soft path between authored roughness and full matte (Strip roughness = hard 1).
+    h.roughness = mix( h.roughness, 1.0, clamp( globalUniform.materialRoughnessTowardMatte, 0.0, 1.0 ) );
     h.roughness = max( h.roughness, max( globalUniform.minRoughness, MIN_GGX_ROUGHNESS ) );
 
 
 
     // EMISSIVE
+    //
+    // With an _e map:
+    //   - Primary / reflection: raw _e (on-screen glow via emissionMaxScreenColor).
+    //   - Indirect: _e * emissiveMult, then emissionMapBoost in RtRaygenIndirect.
+    // Without _e: albedo * emissiveMult (all paths), as before.
 
-    if( tr.emissiveTexture != MATERIAL_NO_TEXTURE )
+    if( stripEmissives )
+    {
+        emission = vec3( 0.0 );
+    }
+    else if( tr.emissiveTexture != MATERIAL_NO_TEXTURE )
     {
         emission =
     #if defined( HITINFO_INL_PRIM )
@@ -550,6 +572,9 @@ ShHitInfo getHitInfoBounce(
             getTextureSampleDerivSet( tr.emissiveTexture, texCoords[ 0 ], derivSet, 0 ).rgb;
     #elif defined( HITINFO_INL_INDIR )
             getTextureSampleLod( tr.emissiveTexture, texCoords[ 0 ], lod ).rgb;
+    #endif
+    #if defined( HITINFO_INL_INDIR )
+        emission *= tr.emissiveMult;
     #endif
     }
     else

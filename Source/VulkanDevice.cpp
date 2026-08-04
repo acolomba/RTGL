@@ -396,6 +396,40 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->parallaxMaxDepth       = std::max( params.heightMapDepth, 0.0f );
     }
 
+    // Dev Materials A/B — also force uniforms even if Override did not rewrite draw params.
+    // Flags: bit0=N, bit1=emis, bit2=metallic, bit3=H, bit4=roughness
+    {
+        uint32_t stripFlags = 0;
+        if( devmode && devmode->materialStripNormals )
+        {
+            stripFlags |= 1u;
+            gu->normalMapStrength = 0.0f;
+        }
+        if( devmode && devmode->materialStripEmissives )
+        {
+            stripFlags |= 2u;
+            gu->emissionMapBoost       = 0.0f;
+            gu->emissionMaxScreenColor = 0.0f;
+        }
+        if( devmode && devmode->materialStripMetallic )
+        {
+            stripFlags |= 4u;
+        }
+        if( devmode && devmode->materialStripHeight )
+        {
+            stripFlags |= 8u;
+            gu->parallaxMaxDepth = 0.0f;
+        }
+        if( devmode && devmode->materialStripRoughness )
+        {
+            stripFlags |= 16u;
+        }
+        gu->materialStripFlags = stripFlags;
+
+        gu->materialRoughnessTowardMatte =
+            ( devmode ? std::clamp( devmode->roughnessTowardMatte, 0.0f, 1.0f ) : 0.0f );
+    }
+
     {
         const auto& params = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
 
@@ -557,6 +591,40 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
     }
 
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;
+
+    {
+        const auto& illum = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+        const bool fromGame = !!illum.enableRrNoisyAntiFirefly;
+        if( devmode && devmode->rrNoisyAntiFireflySticky )
+        {
+            gu->rrNoisyAntiFireflyEnabled = uint32_t( devmode->rrNoisyAntiFirefly );
+        }
+        else
+        {
+            gu->rrNoisyAntiFireflyEnabled = uint32_t( fromGame );
+            if( devmode )
+            {
+                // Keep Dev checkbox visually synced with the active game value.
+                devmode->rrNoisyAntiFirefly = fromGame;
+            }
+        }
+
+        if( devmode && devmode->illumSensSticky )
+        {
+            gu->gradientMultDiffuse =
+                std::clamp( devmode->illumSensDirect, 0.0f, 1.0f );
+            gu->gradientMultIndirect =
+                std::clamp( devmode->illumSensIndirect, 0.0f, 1.0f );
+            gu->gradientMultSpecular =
+                std::clamp( devmode->illumSensSpec, 0.0f, 1.0f );
+        }
+        else if( devmode )
+        {
+            devmode->illumSensDirect   = gu->gradientMultDiffuse;
+            devmode->illumSensIndirect = gu->gradientMultIndirect;
+            devmode->illumSensSpec     = gu->gradientMultSpecular;
+        }
+    }
 
     if( swapchain->IsHDREnabled() )
     {
@@ -1826,6 +1894,24 @@ void RTGL1::VulkanDevice::UploadMeshPrimitive( const RgMeshInfo*          pMesh,
         if( !textureMetaManager->Modify( modified, modified_attachedLight, modified_pbr, false ) )
         {
             return;
+        }
+
+        // Dev Materials A/B: drop texture-meta emissives / attached lights on upload.
+        if( devmode && devmode->materialStripEmissives )
+        {
+            modified.emissive = 0.0f;
+            modified_attachedLight.reset();
+        }
+        if( devmode && modified_pbr )
+        {
+            if( devmode->materialStripMetallic )
+            {
+                modified_pbr->metallicDefault = 0.0f;
+            }
+            if( devmode->materialStripRoughness )
+            {
+                modified_pbr->roughnessDefault = 1.0f;
+            }
         }
 
         if( modified_attachedLight )

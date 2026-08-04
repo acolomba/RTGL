@@ -301,8 +301,16 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
             queues->GetGraphics(),
             cmdManager );
         debugWindows->Init( debugWindows );
+        debugWindows->SetIniFilename( ovrdFolder / "imgui.ini" );
 
         devmode = std::make_unique<Devmode>();
+        if( auto loaded =
+                json_parser::ReadFileAs< DevmodeSettings >( ovrdFolder / "devmode_settings.json" ) )
+        {
+            // ApplyDevmodeSettings is in VulkanDevice_Dev.cpp anonymous namespace — call via
+            // a small public helper instead.
+            Dev_LoadSettings( *loaded );
+        }
 
         observer = std::make_unique< FolderObserver >( ovrdFolder );
     }
@@ -559,6 +567,11 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
 RTGL1::VulkanDevice::~VulkanDevice()
 {
     vkDeviceWaitIdle( device );
+
+    if( devmode )
+    {
+        Dev_SaveSettings( true );
+    }
 
     observer.reset();
     physDevice.reset();

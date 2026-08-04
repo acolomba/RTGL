@@ -961,6 +961,11 @@ typedef struct RgDrawFrameIlluminationParams
     // E.g. first-person flashlight.
     // Null, if none.
     const uint64_t* lightUniqueIdIgnoreFirstPersonViewerShadows;
+    // DLSS-RR path only: neighborhood firefly clamp inside ComposeNoisy.
+    // Default false = stock pre-clamp ComposeNoisy (better temporal stability while moving).
+    // True = clamp ReSTIR outliers before RR (may reduce residual sparkle after bright lights die,
+    // but can hurt temporal stability). Toggle in Dev window or via game cvar.
+    RgBool32        enableRrNoisyAntiFirefly;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

@@ -24,6 +24,9 @@
 #include "CommandBufferManager.h"
 #include "DebugWindows_Swapchain.h"
 
+#include <filesystem>
+#include <string>
+
 struct GLFWwindow;
 
 namespace RTGL1
@@ -62,6 +65,9 @@ public:
     void SetAlwaysOnTop( bool onTop );
     bool IsMinimized() const { return isMinimized; }
 
+    // Absolute path for imgui.ini (window layout). Call after construction.
+    void SetIniFilename( const std::filesystem::path& path );
+
 private:
     VkDevice device;
 
@@ -77,6 +83,9 @@ private:
     bool alwaysOnTop;
 
     bool isMinimized;
+
+    // Owns storage for ImGui::GetIO().IniFilename
+    std::string iniFilenameStorage;
 };
 
 }

@@ -21,12 +21,15 @@
 #include "VulkanDevice.h"
 
 #include "Matrix.h"
+#include "JsonParser.h"
 
 #include "Generated/ShaderCommonC.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <chrono>
+#include <cstring>
 #include <ranges>
 
 namespace
@@ -36,6 +39,227 @@ template< typename To, typename From >
 To ClampPix( From v )
 {
     return std::clamp( To( v ), To( 96 ), To( 3840 ) );
+}
+
+constexpr const char* kDevmodeSettingsFile = "devmode_settings.json";
+constexpr double      kDevmodeSaveDebounceSec = 2.0;
+
+auto DevmodeSettingsPath( const std::filesystem::path& ovrdFolder ) -> std::filesystem::path
+{
+    return ovrdFolder / kDevmodeSettingsFile;
+}
+
+auto CaptureDevmodeSettings( const RTGL1::Devmode& d ) -> RTGL1::DevmodeSettings
+{
+    using DS = RTGL1::DevmodeSettings;
+    DS s{};
+    s.version                      = DS::Version;
+    s.fontGlobalScale              = d.fontGlobalScale;
+    s.debugWindowOnTop             = d.debugWindowOnTop;
+    s.antiFirefly                  = d.antiFirefly;
+    s.rrNoisyAntiFirefly           = d.rrNoisyAntiFirefly;
+    s.rrNoisyAntiFireflySticky     = d.rrNoisyAntiFireflySticky;
+    s.illumSensSticky              = d.illumSensSticky;
+    s.illumSensDirect              = d.illumSensDirect;
+    s.illumSensIndirect            = d.illumSensIndirect;
+    s.illumSensSpec                = d.illumSensSpec;
+    s.rayReconstruction            = d.rayReconstruction;
+    s.rayReconstructionSticky      = d.rayReconstructionSticky;
+    s.materialStripNormals         = d.materialStripNormals;
+    s.materialStripMetallic        = d.materialStripMetallic;
+    s.materialStripRoughness       = d.materialStripRoughness;
+    s.materialStripHeight          = d.materialStripHeight;
+    s.materialStripEmissives       = d.materialStripEmissives;
+    s.roughnessTowardMatte         = d.roughnessTowardMatte;
+    s.materialStripPbrMaps         = false;
+    s.materialStripOrm             = false;
+
+    const auto& m = d.drawInfoOvrd;
+    s.ovrd_enable                        = m.enable;
+    s.ovrd_maxBounceShadows              = m.maxBounceShadows;
+    s.ovrd_enableSecondBounceForIndirect = m.enableSecondBounceForIndirect;
+    s.ovrd_directDiffuseSensitivityToChange   = m.directDiffuseSensitivityToChange;
+    s.ovrd_indirectDiffuseSensitivityToChange = m.indirectDiffuseSensitivityToChange;
+    s.ovrd_specularSensitivityToChange        = m.specularSensitivityToChange;
+    s.ovrd_disableEyeAdaptation          = m.disableEyeAdaptation;
+    s.ovrd_ev100Min                      = m.ev100Min;
+    s.ovrd_ev100Max                      = m.ev100Max;
+    s.ovrd_saturation = { { m.saturation[ 0 ], m.saturation[ 1 ], m.saturation[ 2 ] } };
+    s.ovrd_crosstalk  = { { m.crosstalk[ 0 ], m.crosstalk[ 1 ], m.crosstalk[ 2 ] } };
+    s.ovrd_vsync                         = m.vsync;
+    s.ovrd_frameGeneration               = int( m.frameGeneration );
+    s.ovrd_preferDxgiPresent             = m.preferDxgiPresent;
+    s.ovrd_hdr                           = m.hdr;
+    s.ovrd_upscaleTechnique              = int( m.upscaleTechnique );
+    s.ovrd_sharpenTechnique              = int( m.sharpenTechnique );
+    s.ovrd_resolutionMode                = int( m.resolutionMode );
+    s.ovrd_customRenderSizeScale         = m.customRenderSizeScale;
+    s.ovrd_pixelizedEnable               = m.pixelizedEnable;
+    s.ovrd_pixelizedHeight               = m.pixelizedHeight;
+    s.ovrd_rayReconstruction             = m.rayReconstruction;
+    s.ovrd_normalMapStrength             = m.normalMapStrength;
+    s.ovrd_heightMapDepth                = m.heightMapDepth;
+    s.ovrd_emissionMapBoost              = m.emissionMapBoost;
+    s.ovrd_emissionMaxScreenColor        = m.emissionMaxScreenColor;
+    s.ovrd_lightmapScreenCoverage        = m.lightmapScreenCoverage;
+    s.ovrd_fluidEnabled                  = m.fluidEnabled;
+    s.ovrd_fluidGravity = { { m.fluidGravity.data[ 0 ],
+                              m.fluidGravity.data[ 1 ],
+                              m.fluidGravity.data[ 2 ] } };
+    s.ovrd_allowMapAutoExport            = m.allowMapAutoExport;
+
+    s.cam_fovEnable    = d.cameraOvrd.fovEnable;
+    s.cam_fovDeg       = d.cameraOvrd.fovDeg;
+    s.cam_customEnable = d.cameraOvrd.customEnable;
+    s.cam_customPos    = { { d.cameraOvrd.customPos.data[ 0 ],
+                          d.cameraOvrd.customPos.data[ 1 ],
+                          d.cameraOvrd.customPos.data[ 2 ] } };
+    s.cam_customAngles = { { d.cameraOvrd.customAngles.data[ 0 ],
+                             d.cameraOvrd.customAngles.data[ 1 ] } };
+
+    s.ignoreExternalGeometry            = d.ignoreExternalGeometry;
+    s.allowExportOfExistingReplacements = d.allowExportOfExistingReplacements;
+    s.materialsTableEnable              = d.materialsTableEnable;
+    s.primitivesTableMode               = int( d.primitivesTableMode );
+    s.breakOnTexturePrimitive           = d.breakOnTexturePrimitive;
+    s.breakOnTextureImage               = d.breakOnTextureImage;
+    s.breakOnTexture                    = d.breakOnTexture;
+    s.logFlags                          = d.logFlags;
+    s.logAutoScroll                     = d.logAutoScroll;
+    return s;
+}
+
+void ApplyDevmodeSettings( RTGL1::Devmode& d, const RTGL1::DevmodeSettings& s )
+{
+    d.fontGlobalScale =
+        std::clamp( s.fontGlobalScale, 0.75f, 2.5f );
+    d.debugWindowOnTop             = s.debugWindowOnTop;
+    d.antiFirefly                  = s.antiFirefly;
+    d.rrNoisyAntiFirefly           = s.rrNoisyAntiFirefly;
+    d.rrNoisyAntiFireflySticky     = s.rrNoisyAntiFireflySticky;
+    d.illumSensSticky              = s.illumSensSticky;
+    d.illumSensDirect              = std::clamp( s.illumSensDirect, 0.f, 1.f );
+    d.illumSensIndirect            = std::clamp( s.illumSensIndirect, 0.f, 1.f );
+    d.illumSensSpec                = std::clamp( s.illumSensSpec, 0.f, 1.f );
+    d.rayReconstruction            = s.rayReconstruction;
+    d.rayReconstructionSticky      = s.rayReconstructionSticky;
+    d.materialStripNormals         = s.materialStripNormals;
+    d.materialStripMetallic        = s.materialStripMetallic;
+    d.materialStripRoughness       = s.materialStripRoughness;
+    d.materialStripHeight          = s.materialStripHeight;
+    d.materialStripEmissives       = s.materialStripEmissives;
+    d.roughnessTowardMatte         = std::clamp( s.roughnessTowardMatte, 0.f, 1.f );
+    // Migrate old combined toggles.
+    if( s.materialStripPbrMaps && !s.materialStripNormals && !s.materialStripMetallic &&
+        !s.materialStripRoughness && !s.materialStripHeight )
+    {
+        d.materialStripNormals   = true;
+        d.materialStripMetallic  = true;
+        d.materialStripRoughness = true;
+        d.materialStripHeight    = true;
+    }
+    if( s.materialStripOrm && !s.materialStripMetallic && !s.materialStripRoughness )
+    {
+        d.materialStripMetallic  = true;
+        d.materialStripRoughness = true;
+    }
+
+    auto& m = d.drawInfoOvrd;
+    m.enable                        = s.ovrd_enable;
+    m.maxBounceShadows              = s.ovrd_maxBounceShadows;
+    m.enableSecondBounceForIndirect = s.ovrd_enableSecondBounceForIndirect;
+    m.directDiffuseSensitivityToChange   = s.ovrd_directDiffuseSensitivityToChange;
+    m.indirectDiffuseSensitivityToChange = s.ovrd_indirectDiffuseSensitivityToChange;
+    m.specularSensitivityToChange        = s.ovrd_specularSensitivityToChange;
+    m.disableEyeAdaptation          = s.ovrd_disableEyeAdaptation;
+    m.ev100Min                      = s.ovrd_ev100Min;
+    m.ev100Max                      = s.ovrd_ev100Max;
+    m.saturation[ 0 ] = s.ovrd_saturation[ 0 ];
+    m.saturation[ 1 ] = s.ovrd_saturation[ 1 ];
+    m.saturation[ 2 ] = s.ovrd_saturation[ 2 ];
+    m.crosstalk[ 0 ]  = s.ovrd_crosstalk[ 0 ];
+    m.crosstalk[ 1 ]  = s.ovrd_crosstalk[ 1 ];
+    m.crosstalk[ 2 ]  = s.ovrd_crosstalk[ 2 ];
+    m.vsync                         = s.ovrd_vsync;
+    m.frameGeneration = static_cast< RgFrameGenerationMode >( s.ovrd_frameGeneration );
+    m.preferDxgiPresent             = s.ovrd_preferDxgiPresent;
+    m.hdr                           = s.ovrd_hdr;
+    m.upscaleTechnique =
+        static_cast< RgRenderUpscaleTechnique >( s.ovrd_upscaleTechnique );
+    m.sharpenTechnique =
+        static_cast< RgRenderSharpenTechnique >( s.ovrd_sharpenTechnique );
+    m.resolutionMode = static_cast< RgRenderResolutionMode >( s.ovrd_resolutionMode );
+    m.customRenderSizeScale         = s.ovrd_customRenderSizeScale;
+    m.pixelizedEnable               = s.ovrd_pixelizedEnable;
+    m.pixelizedHeight               = s.ovrd_pixelizedHeight;
+    m.rayReconstruction             = s.ovrd_rayReconstruction;
+    m.normalMapStrength             = s.ovrd_normalMapStrength;
+    m.heightMapDepth                = s.ovrd_heightMapDepth;
+    m.emissionMapBoost              = s.ovrd_emissionMapBoost;
+    m.emissionMaxScreenColor        = s.ovrd_emissionMaxScreenColor;
+    m.lightmapScreenCoverage        = s.ovrd_lightmapScreenCoverage;
+    m.fluidEnabled                  = s.ovrd_fluidEnabled;
+    m.fluidGravity = { s.ovrd_fluidGravity[ 0 ],
+                       s.ovrd_fluidGravity[ 1 ],
+                       s.ovrd_fluidGravity[ 2 ] };
+    m.allowMapAutoExport            = s.ovrd_allowMapAutoExport;
+
+    d.cameraOvrd.fovEnable    = s.cam_fovEnable;
+    d.cameraOvrd.fovDeg       = s.cam_fovDeg;
+    d.cameraOvrd.customEnable = s.cam_customEnable;
+    d.cameraOvrd.customPos    = { s.cam_customPos[ 0 ],
+                               s.cam_customPos[ 1 ],
+                               s.cam_customPos[ 2 ] };
+    d.cameraOvrd.customAngles = { s.cam_customAngles[ 0 ], s.cam_customAngles[ 1 ] };
+
+    d.ignoreExternalGeometry            = s.ignoreExternalGeometry;
+    d.allowExportOfExistingReplacements = s.allowExportOfExistingReplacements;
+    d.materialsTableEnable              = s.materialsTableEnable;
+    d.primitivesTableMode =
+        static_cast< RTGL1::Devmode::DebugPrimMode >( s.primitivesTableMode );
+    d.breakOnTexturePrimitive = s.breakOnTexturePrimitive;
+    d.breakOnTextureImage     = s.breakOnTextureImage;
+    std::memset( d.breakOnTexture, 0, sizeof( d.breakOnTexture ) );
+    std::strncpy( d.breakOnTexture,
+                  s.breakOnTexture.c_str(),
+                  sizeof( d.breakOnTexture ) - 1 );
+    d.logFlags      = s.logFlags;
+    d.logAutoScroll = s.logAutoScroll;
+}
+
+void MarkDevmodeDirty( RTGL1::Devmode& d )
+{
+    d.settingsDirty   = true;
+    d.settingsDirtyAt = ImGui::GetTime();
+}
+
+void MaybeSaveDevmodeSettings( RTGL1::Devmode&                   d,
+                               const std::filesystem::path&      ovrdFolder,
+                               bool                              force )
+{
+    if( !d.settingsDirty )
+    {
+        return;
+    }
+    if( !force && ( ImGui::GetTime() - d.settingsDirtyAt ) < kDevmodeSaveDebounceSec )
+    {
+        return;
+    }
+    if( RTGL1::json_parser::WriteFileAs( DevmodeSettingsPath( ovrdFolder ),
+                                         CaptureDevmodeSettings( d ) ) )
+    {
+        d.settingsDirty = false;
+    }
+}
+
+void ResetDevmodeToDefaults( RTGL1::Devmode& d )
+{
+    // Re-value-init by assignment from a fresh instance.
+    auto fresh            = RTGL1::Devmode{};
+    // Preserve breakOnTexture buffer zeroing via fresh.
+    d                     = std::move( fresh );
+    d.settingsDirty       = true;
+    d.settingsDirtyAt     = ImGui::GetTime();
 }
 
 struct WholeWindow
@@ -90,6 +314,25 @@ bool RTGL1::VulkanDevice::Dev_IsDevmodeInitialized() const
     return debugWindows && devmode;
 }
 
+void RTGL1::VulkanDevice::Dev_LoadSettings( const DevmodeSettings& settings )
+{
+    if( !devmode )
+    {
+        return;
+    }
+    ApplyDevmodeSettings( *devmode, settings );
+    ImGui::GetIO().FontGlobalScale = std::clamp( devmode->fontGlobalScale, 0.75f, 2.5f );
+}
+
+void RTGL1::VulkanDevice::Dev_SaveSettings( bool force ) const
+{
+    if( !devmode )
+    {
+        return;
+    }
+    MaybeSaveDevmodeSettings( *devmode, ovrdFolder, force );
+}
+
 namespace
 {
 
@@ -125,6 +368,9 @@ void RTGL1::VulkanDevice::Dev_Draw() const
         return;
     }
 
+    // Live font scale (base TTF = 15px).
+    ImGui::GetIO().FontGlobalScale = std::clamp( devmode->fontGlobalScale, 0.75f, 2.5f );
+
     auto w = WholeWindow( "Main window" );
     if( !w )
     {
@@ -138,6 +384,21 @@ void RTGL1::VulkanDevice::Dev_Draw() const
         ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImVec4( 0.53f, 0.98f, 0.06f, 1.00f ) );
         devmode->reloadShaders = ImGui::Button( "Reload shaders", { -1, 96 } );
         ImGui::PopStyleColor( 3 );
+
+        if( ImGui::SliderFloat( "UI font scale", &devmode->fontGlobalScale, 0.75f, 2.5f, "%.2f" ) )
+        {
+            MarkDevmodeDirty( *devmode );
+        }
+        ImGui::TextDisabled( "Persisted to rt/devmode_settings.json (with other Dev knobs)." );
+
+        if( ImGui::Button( "Reset Dev settings to defaults", { -1, 0 } ) )
+        {
+            ResetDevmodeToDefaults( *devmode );
+            // Force immediate save so a crash mid-session does not restore bad Override.
+            MaybeSaveDevmodeSettings( *devmode, ovrdFolder, true );
+        }
+        ImGui::TextDisabled(
+            "Clears Override / sticky RR / material kills. Or delete rt/devmode_settings.json." );
 
         auto& modifiers = devmode->drawInfoOvrd;
 
@@ -298,6 +559,15 @@ void RTGL1::VulkanDevice::Dev_Draw() const
                     ImGui::SliderInt( "Pixelization size", &modifiers.pixelizedHeight, 100, 600 );
                 }
             }
+            {
+                if( ImGui::Checkbox( "DLSS Ray Reconstruction##Present",
+                                     &modifiers.rayReconstruction ) )
+                {
+                    devmode->rayReconstruction       = modifiers.rayReconstruction;
+                    devmode->rayReconstructionSticky = true;
+                }
+                ImGui::TextDisabled( "Also under RR / Denoise live (works without Override)." );
+            }
 
             {
                 ImGui::Spacing();
@@ -329,6 +599,7 @@ void RTGL1::VulkanDevice::Dev_Draw() const
         if( ImGui::TreeNode( "Illumination" ) )
         {
             ImGui::Checkbox( "Anti-firefly", &devmode->antiFirefly );
+            ImGui::TextDisabled( "A-SVGF Denoise path only (skipped when DLSS-RR is on)." );
             ImGui::SliderInt( "Shadow rays max depth",
                               &modifiers.maxBounceShadows,
                               0,
@@ -411,6 +682,238 @@ void RTGL1::VulkanDevice::Dev_Draw() const
             ImGui::TreePop();
         }
         ImGui::EndDisabled();
+
+        ImGui::Dummy( ImVec2( 0, 4 ) );
+        ImGui::Separator();
+        ImGui::Dummy( ImVec2( 0, 4 ) );
+
+        // Always editable (not gated by Override) for quick before/after denoise / RR tweaks.
+        if( ImGui::TreeNodeEx( "RR / Denoise live", ImGuiTreeNodeFlags_DefaultOpen ) )
+        {
+            ImGui::TextUnformatted( "These knobs apply immediately (no Override required)." );
+
+            if( ImGui::Checkbox( "DLSS Ray Reconstruction", &devmode->rayReconstruction ) )
+            {
+                devmode->rayReconstructionSticky = true;
+            }
+            ImGui::TextDisabled( "On = ComposeNoisy + DLSS-RR; Off = A-SVGF Denoise path." );
+            if( ImGui::Button( "Follow game (rt_rayreconstr)", { -1, 0 } ) )
+            {
+                devmode->rayReconstructionSticky = false;
+            }
+
+            ImGui::Separator();
+            ImGui::Checkbox( "Anti-firefly (A-SVGF Denoise)", &devmode->antiFirefly );
+            ImGui::TextDisabled( "Only runs when RR is off (Denoise path)." );
+
+            if( ImGui::Checkbox( "RR noisy firefly clamp", &devmode->rrNoisyAntiFirefly ) )
+            {
+                devmode->rrNoisyAntiFireflySticky = true;
+            }
+            ImGui::TextDisabled(
+                "Off = stock ComposeNoisy (usually stabler while moving).\n"
+                "On  = neighborhood clamp before DLSS-RR (sparkle experiment)." );
+            if( ImGui::Button( "A: RR clamp OFF", { -1, 0 } ) )
+            {
+                devmode->rrNoisyAntiFirefly       = false;
+                devmode->rrNoisyAntiFireflySticky = true;
+            }
+            if( ImGui::Button( "B: RR clamp ON", { -1, 0 } ) )
+            {
+                devmode->rrNoisyAntiFirefly       = true;
+                devmode->rrNoisyAntiFireflySticky = true;
+            }
+            if( ImGui::Button( "RR clamp: use game cvar", { -1, 0 } ) )
+            {
+                devmode->rrNoisyAntiFireflySticky = false;
+            }
+
+            ImGui::Separator();
+            ImGui::TextUnformatted( "Lighting-change sensitivity" );
+            ImGui::TextDisabled( "Higher = drop history faster when lights change." );
+            auto sensEdited = false;
+            sensEdited |= ImGui::SliderFloat( "Direct##rrsens",
+                                              &devmode->illumSensDirect,
+                                              0.0f,
+                                              1.0f,
+                                              "%.2f" );
+            sensEdited |= ImGui::SliderFloat( "Indirect##rrsens",
+                                              &devmode->illumSensIndirect,
+                                              0.0f,
+                                              1.0f,
+                                              "%.2f" );
+            sensEdited |= ImGui::SliderFloat( "Specular##rrsens",
+                                              &devmode->illumSensSpec,
+                                              0.0f,
+                                              1.0f,
+                                              "%.2f" );
+            if( sensEdited )
+            {
+                devmode->illumSensSticky = true;
+            }
+            if( ImGui::Button( "Sens: follow game cvars", { -1, 0 } ) )
+            {
+                devmode->illumSensSticky = false;
+            }
+            if( ImGui::Button( "Sens presets: stable (0.5/0.2/0.5)", { -1, 0 } ) )
+            {
+                devmode->illumSensDirect   = 0.5f;
+                devmode->illumSensIndirect = 0.2f;
+                devmode->illumSensSpec     = 0.5f;
+                devmode->illumSensSticky   = true;
+            }
+            if( ImGui::Button( "Sens presets: responsive (1/1/1)", { -1, 0 } ) )
+            {
+                devmode->illumSensDirect   = 1.0f;
+                devmode->illumSensIndirect = 1.0f;
+                devmode->illumSensSpec     = 1.0f;
+                devmode->illumSensSticky   = true;
+            }
+            if( ImGui::Button( "Sens presets: play default (1/0.75/1)", { -1, 0 } ) )
+            {
+                devmode->illumSensDirect   = 1.0f;
+                devmode->illumSensIndirect = 0.75f;
+                devmode->illumSensSpec     = 1.0f;
+                devmode->illumSensSticky   = true;
+            }
+
+            ImGui::Separator();
+            if( devmode->rayReconstructionSticky || devmode->rrNoisyAntiFireflySticky ||
+                devmode->illumSensSticky )
+            {
+                ImGui::TextColored( ImVec4( 1.f, 0.85f, 0.2f, 1.f ), "Sticky Dev override(s) active" );
+            }
+            else
+            {
+                ImGui::TextDisabled( "Following game / draw params" );
+            }
+            ImGui::TextWrapped(
+                "Upscaler quality / sharpen / pixelize still live under Override → Present." );
+            ImGui::TreePop();
+        }
+
+        ImGui::Dummy( ImVec2( 0, 4 ) );
+        ImGui::Separator();
+        ImGui::Dummy( ImVec2( 0, 4 ) );
+
+        if( ImGui::TreeNodeEx( "Materials A/B", ImGuiTreeNodeFlags_DefaultOpen ) )
+        {
+            ImGui::TextUnformatted(
+                "Live kill-switches for authored RT overlays (no Override needed)." );
+            ImGui::TextDisabled(
+                "Does not disable dynlights / flashlight / muzzle / ceiling lamps." );
+            ImGui::TextDisabled(
+                "Split N / ORM / H to isolate RR walk noise (all ON = previous 'Strip PBR maps')." );
+
+            if( ImGui::Checkbox( "Strip normals (_n)", &devmode->materialStripNormals ) )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TextDisabled( "Zeros normalMapStrength; HitInfo skips normal sampling." );
+
+            if( ImGui::Checkbox( "Strip metallic (_orm B)", &devmode->materialStripMetallic ) )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TextDisabled( "Force metallic=0 (dielectric). Roughness unchanged." );
+
+            if( ImGui::Checkbox( "Strip roughness (_orm G)", &devmode->materialStripRoughness ) )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TextDisabled( "Force roughness=1 (fully matte). Metallic unchanged." );
+
+            if( ImGui::SliderFloat( "Roughness toward matte",
+                                    &devmode->roughnessTowardMatte,
+                                    0.f,
+                                    1.f,
+                                    "%.2f" ) )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TextDisabled(
+                "mix(authored, 1). 0=maps as-is, 1=same as Strip roughness. Use this for residual RR shimmer." );
+            if( ImGui::Button( "Matte 0", { 0, 0 } ) )
+            {
+                devmode->roughnessTowardMatte = 0.f;
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::SameLine();
+            if( ImGui::Button( "Matte 0.5", { 0, 0 } ) )
+            {
+                devmode->roughnessTowardMatte = 0.5f;
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::SameLine();
+            if( ImGui::Button( "Matte 1", { 0, 0 } ) )
+            {
+                devmode->roughnessTowardMatte = 1.f;
+                MarkDevmodeDirty( *devmode );
+            }
+
+            if( ImGui::Checkbox( "Strip height (_h parallax)", &devmode->materialStripHeight ) )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TextDisabled( "Zeros parallaxMaxDepth; HitInfo skips height sampling." );
+
+            if( ImGui::Checkbox( "Strip emissives / attached lights",
+                                 &devmode->materialStripEmissives ) )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TextDisabled(
+                "Zeros emission boosts; shaders force emission=0; drops texture-meta attached lights "
+                "on upload." );
+
+            if( ImGui::Button( "ORM strips ON (metal+rough)", { -1, 0 } ) )
+            {
+                devmode->materialStripMetallic  = true;
+                devmode->materialStripRoughness = true;
+                MarkDevmodeDirty( *devmode );
+            }
+            if( ImGui::Button( "ORM strips OFF", { -1, 0 } ) )
+            {
+                devmode->materialStripMetallic  = false;
+                devmode->materialStripRoughness = false;
+                MarkDevmodeDirty( *devmode );
+            }
+            if( ImGui::Button( "PBR strips ON (N+metal+rough+H)", { -1, 0 } ) )
+            {
+                devmode->materialStripNormals   = true;
+                devmode->materialStripMetallic  = true;
+                devmode->materialStripRoughness = true;
+                devmode->materialStripHeight    = true;
+                MarkDevmodeDirty( *devmode );
+            }
+            if( ImGui::Button( "PBR strips OFF", { -1, 0 } ) )
+            {
+                devmode->materialStripNormals   = false;
+                devmode->materialStripMetallic  = false;
+                devmode->materialStripRoughness = false;
+                devmode->materialStripHeight    = false;
+                MarkDevmodeDirty( *devmode );
+            }
+            if( ImGui::Button( "All materials strips ON", { -1, 0 } ) )
+            {
+                devmode->materialStripNormals   = true;
+                devmode->materialStripMetallic  = true;
+                devmode->materialStripRoughness = true;
+                devmode->materialStripHeight    = true;
+                devmode->materialStripEmissives = true;
+                MarkDevmodeDirty( *devmode );
+            }
+            if( ImGui::Button( "All materials strips OFF", { -1, 0 } ) )
+            {
+                devmode->materialStripNormals   = false;
+                devmode->materialStripMetallic  = false;
+                devmode->materialStripRoughness = false;
+                devmode->materialStripHeight    = false;
+                devmode->materialStripEmissives = false;
+                MarkDevmodeDirty( *devmode );
+            }
+            ImGui::TreePop();
+        }
 
         ImGui::Dummy( ImVec2( 0, 4 ) );
         ImGui::Separator();
@@ -544,6 +1047,18 @@ void RTGL1::VulkanDevice::Dev_Draw() const
         ImGui::Text( "%.3f ms/frame (%.1f FPS)",
                      1000.0f / ImGui::GetIO().Framerate,
                      ImGui::GetIO().Framerate );
+
+        {
+            static bool wasActive = false;
+            const bool  active    = ImGui::IsAnyItemActive();
+            if( wasActive && !active )
+            {
+                MarkDevmodeDirty( *devmode );
+            }
+            wasActive = active;
+        }
+        MaybeSaveDevmodeSettings( *devmode, ovrdFolder, false );
+
         ImGui::EndTabItem();
 
         ImGui::Text( "Chosen volumetric light: %d",
@@ -1172,6 +1687,18 @@ void RTGL1::VulkanDevice::Dev_Draw() const
         }
         ImGui::EndTabItem();
     }
+
+    // Persist edits from any tab (debounce-save after widget deactivation).
+    {
+        static bool wasActive = false;
+        const bool  active    = ImGui::IsAnyItemActive();
+        if( wasActive && !active )
+        {
+            MarkDevmodeDirty( *devmode );
+        }
+        wasActive = active;
+    }
+    MaybeSaveDevmodeSettings( *devmode, ovrdFolder, false );
 }
 
 void RTGL1::VulkanDevice::Dev_Override( RgStartFrameInfo&                   info,
@@ -1224,7 +1751,21 @@ void RTGL1::VulkanDevice::Dev_Override( RgStartFrameInfo&                   info
                     static_cast< uint32_t >( aspect * float( modifiers.pixelizedHeight ) ) ),
                 ClampPix< uint32_t >( modifiers.pixelizedHeight ),
             };
+            if( devmode->rayReconstructionSticky )
+            {
+                dst_resol.rayReconstruction   = devmode->rayReconstruction;
+                modifiers.rayReconstruction   = devmode->rayReconstruction;
+            }
+            else
+            {
+                dst_resol.rayReconstruction = modifiers.rayReconstruction;
+                devmode->rayReconstruction  = modifiers.rayReconstruction;
+            }
         }
+    }
+    else if( devmode->rayReconstructionSticky )
+    {
+        resolution.rayReconstruction = devmode->rayReconstruction;
     }
     else
     {
@@ -1250,6 +1791,11 @@ void RTGL1::VulkanDevice::Dev_Override( RgStartFrameInfo&                   info
             modifiers.frameGeneration   = src_resol.frameGeneration;
             modifiers.preferDxgiPresent = src_resol.preferDxgiPresent;
             modifiers.sharpenTechnique  = src_resol.sharpenTechnique;
+            modifiers.rayReconstruction = !!src_resol.rayReconstruction;
+            if( !devmode->rayReconstructionSticky )
+            {
+                devmode->rayReconstruction = modifiers.rayReconstruction;
+            }
 
             if( modifiers.resolutionMode == RG_RENDER_RESOLUTION_MODE_CUSTOM )
             {
@@ -1356,10 +1902,7 @@ void RTGL1::VulkanDevice::Dev_Override( RgDrawFrameIlluminationParams& illuminat
         const RgDrawFrameTonemappingParams&  src_tnmp  = tonemappingp;
         const RgDrawFrameTexturesParams&     src_tex   = textures;
 
-        // reset modifiers
-        {
-            devmode->antiFirefly = true;
-        }
+        // reset modifiers from game — do not clobber live RR/Denoise sticky knobs
         {
             modifiers.maxBounceShadows                 = int( src_illum.maxBounceShadows );
             modifiers.enableSecondBounceForIndirect    = src_illum.enableSecondBounceForIndirect;
@@ -1381,6 +1924,21 @@ void RTGL1::VulkanDevice::Dev_Override( RgDrawFrameIlluminationParams& illuminat
             modifiers.emissionMapBoost       = src_tex.emissionMapBoost;
             modifiers.emissionMaxScreenColor = src_tex.emissionMaxScreenColor;
         }
+    }
+
+    // Materials A/B kill-switches (apply even when Override is off).
+    if( devmode->materialStripNormals )
+    {
+        textures.normalMapStrength = 0.f;
+    }
+    if( devmode->materialStripHeight )
+    {
+        textures.heightMapDepth = 0.f;
+    }
+    if( devmode->materialStripEmissives )
+    {
+        textures.emissionMapBoost       = 0.f;
+        textures.emissionMaxScreenColor = 0.f;
     }
 }
 

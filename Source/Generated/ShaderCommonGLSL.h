@@ -274,7 +274,7 @@ struct ShGlobalUniform
     float primaryRayMinDist;
     uint rayCullMaskWorld_Shadow;
     uint volumeAllowTintUnderwater;
-    uint _unused2;
+    uint rrNoisyAntiFireflyEnabled;
     uint twirlPortalNormal;
     uint lightIndexIgnoreFPVShadows;
     float gradientMultDiffuse;
@@ -295,7 +295,8 @@ struct ShGlobalUniform
     uint hdrDisplay;
     float parallaxMaxDepth;
     uint fluidEnabled;
-    float _pad3;
+    uint materialStripFlags;
+    float materialRoughnessTowardMatte;
     vec4 fluidColor;
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;

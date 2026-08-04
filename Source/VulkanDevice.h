@@ -73,6 +73,7 @@ namespace RTGL1
 {
 
 struct Devmode;
+struct DevmodeSettings;
 
 
 class VulkanDevice
@@ -139,6 +140,8 @@ private:
 private:
     bool Dev_IsDevmodeInitialized() const;
     void Dev_Draw() const;
+    void Dev_LoadSettings( const DevmodeSettings& settings );
+    void Dev_SaveSettings( bool force ) const;
     void Dev_Override( RgStartFrameInfo&                   info,
                        RgStartFrameRenderResolutionParams& resolution,
                        RgStartFrameFluidParams&            fluid ) const;

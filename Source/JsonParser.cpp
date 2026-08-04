@@ -241,6 +241,112 @@ auto RTGL1::json_parser::detail::ReadLibraryConfig( const std::filesystem::path&
 }
 
 
+// clang-format off
+JSON_TYPE( RTGL1::DevmodeSettings )
+      "version", &T::version
+    , "fontGlobalScale", &T::fontGlobalScale
+    , "debugWindowOnTop", &T::debugWindowOnTop
+    , "antiFirefly", &T::antiFirefly
+    , "rrNoisyAntiFirefly", &T::rrNoisyAntiFirefly
+    , "rrNoisyAntiFireflySticky", &T::rrNoisyAntiFireflySticky
+    , "illumSensSticky", &T::illumSensSticky
+    , "illumSensDirect", &T::illumSensDirect
+    , "illumSensIndirect", &T::illumSensIndirect
+    , "illumSensSpec", &T::illumSensSpec
+    , "rayReconstruction", &T::rayReconstruction
+    , "rayReconstructionSticky", &T::rayReconstructionSticky
+    , "materialStripNormals", &T::materialStripNormals
+    , "materialStripMetallic", &T::materialStripMetallic
+    , "materialStripRoughness", &T::materialStripRoughness
+    , "materialStripHeight", &T::materialStripHeight
+    , "materialStripEmissives", &T::materialStripEmissives
+    , "roughnessTowardMatte", &T::roughnessTowardMatte
+    , "materialStripPbrMaps", &T::materialStripPbrMaps
+    , "materialStripOrm", &T::materialStripOrm
+    , "ovrd_enable", &T::ovrd_enable
+    , "ovrd_maxBounceShadows", &T::ovrd_maxBounceShadows
+    , "ovrd_enableSecondBounceForIndirect", &T::ovrd_enableSecondBounceForIndirect
+    , "ovrd_directDiffuseSensitivityToChange", &T::ovrd_directDiffuseSensitivityToChange
+    , "ovrd_indirectDiffuseSensitivityToChange", &T::ovrd_indirectDiffuseSensitivityToChange
+    , "ovrd_specularSensitivityToChange", &T::ovrd_specularSensitivityToChange
+    , "ovrd_disableEyeAdaptation", &T::ovrd_disableEyeAdaptation
+    , "ovrd_ev100Min", &T::ovrd_ev100Min
+    , "ovrd_ev100Max", &T::ovrd_ev100Max
+    , "ovrd_saturation", &T::ovrd_saturation
+    , "ovrd_crosstalk", &T::ovrd_crosstalk
+    , "ovrd_vsync", &T::ovrd_vsync
+    , "ovrd_frameGeneration", &T::ovrd_frameGeneration
+    , "ovrd_preferDxgiPresent", &T::ovrd_preferDxgiPresent
+    , "ovrd_hdr", &T::ovrd_hdr
+    , "ovrd_upscaleTechnique", &T::ovrd_upscaleTechnique
+    , "ovrd_sharpenTechnique", &T::ovrd_sharpenTechnique
+    , "ovrd_resolutionMode", &T::ovrd_resolutionMode
+    , "ovrd_customRenderSizeScale", &T::ovrd_customRenderSizeScale
+    , "ovrd_pixelizedEnable", &T::ovrd_pixelizedEnable
+    , "ovrd_pixelizedHeight", &T::ovrd_pixelizedHeight
+    , "ovrd_rayReconstruction", &T::ovrd_rayReconstruction
+    , "ovrd_normalMapStrength", &T::ovrd_normalMapStrength
+    , "ovrd_heightMapDepth", &T::ovrd_heightMapDepth
+    , "ovrd_emissionMapBoost", &T::ovrd_emissionMapBoost
+    , "ovrd_emissionMaxScreenColor", &T::ovrd_emissionMaxScreenColor
+    , "ovrd_lightmapScreenCoverage", &T::ovrd_lightmapScreenCoverage
+    , "ovrd_fluidEnabled", &T::ovrd_fluidEnabled
+    , "ovrd_fluidGravity", &T::ovrd_fluidGravity
+    , "ovrd_allowMapAutoExport", &T::ovrd_allowMapAutoExport
+    , "cam_fovEnable", &T::cam_fovEnable
+    , "cam_fovDeg", &T::cam_fovDeg
+    , "cam_customEnable", &T::cam_customEnable
+    , "cam_customPos", &T::cam_customPos
+    , "cam_customAngles", &T::cam_customAngles
+    , "ignoreExternalGeometry", &T::ignoreExternalGeometry
+    , "allowExportOfExistingReplacements", &T::allowExportOfExistingReplacements
+    , "materialsTableEnable", &T::materialsTableEnable
+    , "primitivesTableMode", &T::primitivesTableMode
+    , "breakOnTexturePrimitive", &T::breakOnTexturePrimitive
+    , "breakOnTextureImage", &T::breakOnTextureImage
+    , "breakOnTexture", &T::breakOnTexture
+    , "logFlags", &T::logFlags
+    , "logAutoScroll", &T::logAutoScroll
+JSON_TYPE_END;
+// clang-format on
+
+auto RTGL1::json_parser::detail::ReadDevmodeSettings( const std::filesystem::path& path )
+    -> std::optional< DevmodeSettings >
+{
+    return LoadFileAs< DevmodeSettings >( path );
+}
+
+bool RTGL1::json_parser::detail::WriteDevmodeSettings( const std::filesystem::path& path,
+                                                       const DevmodeSettings&       settings )
+{
+    try
+    {
+        if( auto parent = path.parent_path(); !parent.empty() )
+        {
+            std::error_code ec;
+            std::filesystem::create_directories( parent, ec );
+        }
+
+        std::string buffer;
+        glz::write< JSON_OPTS >( settings, buffer );
+
+        std::ofstream out( path, std::ios::binary | std::ios::trunc );
+        if( !out )
+        {
+            debug::Warning( "Failed to open {} for writing DevmodeSettings", path.string() );
+            return false;
+        }
+        out.write( buffer.data(), static_cast< std::streamsize >( buffer.size() ) );
+        return bool( out );
+    }
+    catch( const std::exception& e )
+    {
+        debug::Warning( "WriteDevmodeSettings exception: {}", e.what() );
+        return false;
+    }
+}
+
+
 static constexpr auto set_volumetric = []( RgLightAdditionalEXT& s, const int& input ) -> void {
     if( input != 0 )
     {

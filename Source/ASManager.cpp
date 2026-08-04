@@ -29,6 +29,7 @@
 
 #include "Generated/ShaderCommonC.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -926,7 +927,8 @@ bool RTGL1::ASManager::AddMeshPrimitive( uint32_t                   frameIndex,
                 ( floatToUint8( pbrInfo ? pbrInfo->roughnessDefault : 1.0f ) << 0 ) |
                 ( floatToUint8( pbrInfo ? pbrInfo->metallicDefault : 0.0f ) << 8 ),
 
-            .emissiveMult = Utils::Saturate( primitive.emissive ),
+            // Match TextureMeta: allow emissiveMult > 1 for INDIR GI (do not Saturate).
+            .emissiveMult = std::max( 0.0f, primitive.emissive ),
 
             // values ignored if doesn't exist
             .firstVertex_Layer1 = builtInstance->geometry.firstVertex_Layer1,

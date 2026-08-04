@@ -23,6 +23,8 @@
 #include "Const.h"
 #include "Utils.h"
 
+#include <algorithm>
+
 
 namespace
 {
@@ -275,7 +277,9 @@ bool RTGL1::TextureMetaManager::Modify(
             prim.flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
         }
 
-        prim.emissive = Utils::Saturate( meta->emissiveMult );
+        // Do NOT Saturate to [0,1] — world mats use emissiveMult > 1 for INDIR GI
+        // (_e * mult * mapboost). Clamping made 2.1 and 4.2 identical (=1).
+        prim.emissive = std::max( 0.0f, meta->emissiveMult );
 
         refPbr = RgMeshPrimitivePBREXT{
             .sType            = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_PBR_EXT,

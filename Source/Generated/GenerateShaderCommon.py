@@ -599,7 +599,7 @@ GLOBAL_UNIFORM_STRUCT = [
 
     (TYPE_UINT32,       1,      "rayCullMaskWorld_Shadow",          1),
     (TYPE_UINT32,       1,      "volumeAllowTintUnderwater",        1),
-    (TYPE_UINT32,       1,      "_unused2",                         1),
+    (TYPE_UINT32,       1,      "rrNoisyAntiFireflyEnabled",        1),
     (TYPE_UINT32,       1,      "twirlPortalNormal",                1),
 
     (TYPE_UINT32,       1,      "lightIndexIgnoreFPVShadows",       1),
@@ -625,7 +625,10 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_UINT32,       1,      "hdrDisplay",                       1),
     (TYPE_FLOAT32,      1,      "parallaxMaxDepth",                 1),
     (TYPE_UINT32,       1,      "fluidEnabled",                     1),
-    (TYPE_FLOAT32,      1,      "_pad3",                            1),
+    # bit0=N, bit1=emis, bit2=metallic, bit3=height, bit4=roughness (Dev Materials A/B)
+    (TYPE_UINT32,       1,      "materialStripFlags",               1),
+    # Dev: mix authored roughness toward 1.0 (0=authored, 1=fully matte). Live A/B for RR shimmer.
+    (TYPE_FLOAT32,      1,      "materialRoughnessTowardMatte",     1),
 
     (TYPE_FLOAT32,      4,      "fluidColor",                       1),
 
