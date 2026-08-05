@@ -66,11 +66,10 @@ struct Devmode
     double settingsDirtyAt{ 0.0 };
 
     bool antiFirefly{ true };
-    // DLSS-RR ComposeNoisy neighborhood clamp. Default OFF = pre-fix / stable walk-around.
-    // Independent of Override so A/B works without enabling Override.
-    bool rrNoisyAntiFirefly{ false };
+    // DLSS-RR: A-SVGF temporal before ComposeNoisy. Default OFF — ghosted duplicate view.
+    bool rrTemporalPrefilter{ false };
     // Once true, Dev checkbox wins over game cvar until "Use game cvar" is pressed.
-    bool rrNoisyAntiFireflySticky{ false };
+    bool rrTemporalPrefilterSticky{ false };
 
     // Live RR/denoise knobs (always available; sticky wins over game draw params).
     bool  illumSensSticky{ false };

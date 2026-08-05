@@ -59,7 +59,6 @@ void main()
         distToLight,
         diffuse, specular);
 
-    // demodulate for denoising
     imageStoreUnfilteredDirect(pix, diffuse);
     imageStoreUnfilteredSpecular(pix, demodulateSpecular(specular, surf.specularColor));
     imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, distToLight));

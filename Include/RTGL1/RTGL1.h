@@ -962,10 +962,10 @@ typedef struct RgDrawFrameIlluminationParams
     // Null, if none.
     const uint64_t* lightUniqueIdIgnoreFirstPersonViewerShadows;
     // DLSS-RR path only: neighborhood firefly clamp inside ComposeNoisy.
-    // Default false = stock pre-clamp ComposeNoisy (better temporal stability while moving).
-    // True = clamp ReSTIR outliers before RR (may reduce residual sparkle after bright lights die,
-    // but can hurt temporal stability). Toggle in Dev window or via game cvar.
-    RgBool32        enableRrNoisyAntiFirefly;
+    // DLSS-RR: run A-SVGF temporal accumulation before ComposeNoisy and feed those
+    // buffers to RR (spatial atrous still skipped). Stabilizes flickering lights.
+    // Default: true. (Replaces the old screen-space firefly clamp experiment.)
+    RgBool32        enableRrTemporalPrefilter;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

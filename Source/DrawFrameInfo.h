@@ -288,7 +288,8 @@ namespace detail
             .specularSensitivityToChange                 = 0.5f,
             .polygonalLightSpotlightFactor               = 2.0f,
             .lightUniqueIdIgnoreFirstPersonViewerShadows = nullptr,
-            .enableRrNoisyAntiFirefly                    = false,
+            // Remix-style boiling filter in ComposeNoisy — default ON for DLSS-RR
+            .enableRrTemporalPrefilter                   = false,
         };
     };
 

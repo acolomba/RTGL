@@ -274,7 +274,7 @@ struct ShGlobalUniform
     float primaryRayMinDist;
     uint rayCullMaskWorld_Shadow;
     uint volumeAllowTintUnderwater;
-    uint rrNoisyAntiFireflyEnabled;
+    uint rrTemporalPrefilterEnabled;
     uint twirlPortalNormal;
     uint lightIndexIgnoreFPVShadows;
     float gradientMultDiffuse;

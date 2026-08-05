@@ -57,8 +57,8 @@ auto CaptureDevmodeSettings( const RTGL1::Devmode& d ) -> RTGL1::DevmodeSettings
     s.fontGlobalScale              = d.fontGlobalScale;
     s.debugWindowOnTop             = d.debugWindowOnTop;
     s.antiFirefly                  = d.antiFirefly;
-    s.rrNoisyAntiFirefly           = d.rrNoisyAntiFirefly;
-    s.rrNoisyAntiFireflySticky     = d.rrNoisyAntiFireflySticky;
+    s.rrTemporalPrefilter           = d.rrTemporalPrefilter;
+    s.rrTemporalPrefilterSticky     = d.rrTemporalPrefilterSticky;
     s.illumSensSticky              = d.illumSensSticky;
     s.illumSensDirect              = d.illumSensDirect;
     s.illumSensIndirect            = d.illumSensIndirect;
@@ -135,8 +135,8 @@ void ApplyDevmodeSettings( RTGL1::Devmode& d, const RTGL1::DevmodeSettings& s )
         std::clamp( s.fontGlobalScale, 0.75f, 2.5f );
     d.debugWindowOnTop             = s.debugWindowOnTop;
     d.antiFirefly                  = s.antiFirefly;
-    d.rrNoisyAntiFirefly           = s.rrNoisyAntiFirefly;
-    d.rrNoisyAntiFireflySticky     = s.rrNoisyAntiFireflySticky;
+    d.rrTemporalPrefilter           = s.rrTemporalPrefilter;
+    d.rrTemporalPrefilterSticky     = s.rrTemporalPrefilterSticky;
     d.illumSensSticky              = s.illumSensSticky;
     d.illumSensDirect              = std::clamp( s.illumSensDirect, 0.f, 1.f );
     d.illumSensIndirect            = std::clamp( s.illumSensIndirect, 0.f, 1.f );
@@ -706,26 +706,27 @@ void RTGL1::VulkanDevice::Dev_Draw() const
             ImGui::Checkbox( "Anti-firefly (A-SVGF Denoise)", &devmode->antiFirefly );
             ImGui::TextDisabled( "Only runs when RR is off (Denoise path)." );
 
-            if( ImGui::Checkbox( "RR noisy firefly clamp", &devmode->rrNoisyAntiFirefly ) )
+            if( ImGui::Checkbox( "RR temporal prefilter (A-SVGF)", &devmode->rrTemporalPrefilter ) )
             {
-                devmode->rrNoisyAntiFireflySticky = true;
+                devmode->rrTemporalPrefilterSticky = true;
             }
             ImGui::TextDisabled(
-                "Off = stock ComposeNoisy (usually stabler while moving).\n"
-                "On  = neighborhood clamp before DLSS-RR (sparkle experiment)." );
-            if( ImGui::Button( "A: RR clamp OFF", { -1, 0 } ) )
+                "EXPERIMENTAL — default OFF. Caused faded duplicate/ghost depth view\n"
+                "(ASVGF temporal + RR both reproject; checkerboard vs regular coords).\n"
+                "Prefer soft lamp fades (rt_ceiling_lamp_fade / off)." );
+            if( ImGui::Button( "A: RR temporal OFF", { -1, 0 } ) )
             {
-                devmode->rrNoisyAntiFirefly       = false;
-                devmode->rrNoisyAntiFireflySticky = true;
+                devmode->rrTemporalPrefilter       = false;
+                devmode->rrTemporalPrefilterSticky = true;
             }
-            if( ImGui::Button( "B: RR clamp ON", { -1, 0 } ) )
+            if( ImGui::Button( "B: RR temporal ON", { -1, 0 } ) )
             {
-                devmode->rrNoisyAntiFirefly       = true;
-                devmode->rrNoisyAntiFireflySticky = true;
+                devmode->rrTemporalPrefilter       = true;
+                devmode->rrTemporalPrefilterSticky = true;
             }
-            if( ImGui::Button( "RR clamp: use game cvar", { -1, 0 } ) )
+            if( ImGui::Button( "RR temporal: use game cvar", { -1, 0 } ) )
             {
-                devmode->rrNoisyAntiFireflySticky = false;
+                devmode->rrTemporalPrefilterSticky = false;
             }
 
             ImGui::Separator();
@@ -778,7 +779,7 @@ void RTGL1::VulkanDevice::Dev_Draw() const
             }
 
             ImGui::Separator();
-            if( devmode->rayReconstructionSticky || devmode->rrNoisyAntiFireflySticky ||
+            if( devmode->rayReconstructionSticky || devmode->rrTemporalPrefilterSticky ||
                 devmode->illumSensSticky )
             {
                 ImGui::TextColored( ImVec4( 1.f, 0.85f, 0.2f, 1.f ), "Sticky Dev override(s) active" );

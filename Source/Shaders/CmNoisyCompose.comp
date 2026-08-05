@@ -24,9 +24,9 @@
 // Noisy lighting compose for DLSS Ray Reconstruction (skips A-SVGF).
 // Writes PreFinal + RR G-buffer staging into unused SVGF ping/pong buffers.
 //
-// Includes a screen-space neighborhood firefly clamp on UNFILTERED lighting.
-// The ASVGF AntiFirefly pass is skipped on the RR path; without this clamp,
-// ReSTIR outliers linger as residual sparkle after bright lights die.
+// ALWAYS reads raw unfiltered ReSTIR. The A-SVGF-temporal-into-RR path was
+// removed: it ghosted, and reading DiffTemporary without AccumulateForRR
+// produced an all-black world (only raster sprites visible).
 
 #define DESC_SET_FRAMEBUFFERS 0
 #define DESC_SET_GLOBAL_UNIFORM 1
@@ -35,131 +35,19 @@
 
 layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPOSE_GROUP_SIZE_Y, local_size_z = 1) in;
 
-#define FILTER_RADIUS 2
-#define MAXFLOAT      1000000.0
-
-const int SHARED_WIDTH = FILTER_RADIUS + COMPUTE_COMPOSE_GROUP_SIZE_X + FILTER_RADIUS;
-
-struct FireflyData
-{
-    vec3 diffuse;
-    vec3 specular;
-    vec3 indir;
-};
-
-shared FireflyData s_data[ SHARED_WIDTH ][ SHARED_WIDTH ];
-
-FireflyData fetchUnfilteredAtRegularPix( const ivec2 regularPix )
-{
-    FireflyData d;
-    const ivec2 cb = getCheckerboardPix( regularPix );
-    d.diffuse  = texelFetchUnfilteredDirect( cb );
-    d.specular = texelFetchUnfilteredSpecular( cb );
-    d.indir    = texelFetchUnfilteredIndir( cb );
-    return d;
-}
-
-void fillFilterData( const ivec2 globalBasePix, const int sharedOffset )
-{
-    const ivec2 sharedPix = ivec2( sharedOffset % SHARED_WIDTH, sharedOffset / SHARED_WIDTH );
-    const ivec2 globalPix = globalBasePix + sharedPix;
-    s_data[ sharedPix.y ][ sharedPix.x ] = fetchUnfilteredAtRegularPix( globalPix );
-}
-
-#define GET_SDATA( offsetX, offsetY )                                \
-    ( s_data[ gl_LocalInvocationID.y + ( FILTER_RADIUS + offsetY ) ] \
-            [ gl_LocalInvocationID.x + ( FILTER_RADIUS + offsetX ) ] )
-
-void preloadFirefly()
-{
-    const ivec2 globalBasePix =
-        ivec2( gl_WorkGroupID.xy ) * COMPUTE_COMPOSE_GROUP_SIZE_X - ivec2( FILTER_RADIUS );
-    const int threadIndex = int( gl_LocalInvocationIndex );
-
-    const int sharedCount = SHARED_WIDTH * SHARED_WIDTH;
-    const int threadCount = COMPUTE_COMPOSE_GROUP_SIZE_X * COMPUTE_COMPOSE_GROUP_SIZE_Y;
-
-    const int oneLoadCount = 2 * threadCount - sharedCount;
-
-    if( threadIndex < oneLoadCount )
-    {
-        fillFilterData( globalBasePix, threadIndex );
-    }
-    else
-    {
-        const int neighborsIndex = threadIndex - oneLoadCount;
-        fillFilterData( globalBasePix, oneLoadCount + neighborsIndex * 2 + 0 );
-        fillFilterData( globalBasePix, oneLoadCount + neighborsIndex * 2 + 1 );
-    }
-}
-
 void main()
 {
     const ivec2 pix             = ivec2( gl_GlobalInvocationID.x, gl_GlobalInvocationID.y );
     const ivec2 checkerboardPix = getCheckerboardPix( pix );
 
-    const bool inBounds =
-        pix.x < int( globalUniform.renderWidth ) && pix.y < int( globalUniform.renderHeight );
-
-    vec3 diffuse  = vec3( 0.0 );
-    vec3 indirect = vec3( 0.0 );
-    vec3 specRaw  = vec3( 0.0 );
-
-    if( globalUniform.rrNoisyAntiFireflyEnabled != 0 )
-    {
-        preloadFirefly();
-        barrier();
-
-        if( inBounds )
-        {
-            FireflyData smin;
-            smin.diffuse  = vec3( +MAXFLOAT );
-            smin.specular = vec3( +MAXFLOAT );
-            smin.indir    = vec3( +MAXFLOAT );
-
-            FireflyData smax;
-            smax.diffuse  = vec3( -MAXFLOAT );
-            smax.specular = vec3( -MAXFLOAT );
-            smax.indir    = vec3( -MAXFLOAT );
-
-            for( int i = -FILTER_RADIUS; i <= FILTER_RADIUS; i++ )
-            {
-                for( int j = -FILTER_RADIUS; j <= FILTER_RADIUS; j++ )
-                {
-                    if( i == 0 && j == 0 )
-                    {
-                        continue;
-                    }
-
-                    const FireflyData other = GET_SDATA( i, j );
-
-                    smin.diffuse  = min( smin.diffuse, other.diffuse );
-                    smin.specular = min( smin.specular, other.specular );
-                    smin.indir    = min( smin.indir, other.indir );
-
-                    smax.diffuse  = max( smax.diffuse, other.diffuse );
-                    smax.specular = max( smax.specular, other.specular );
-                    smax.indir    = max( smax.indir, other.indir );
-                }
-            }
-
-            FireflyData c = GET_SDATA( 0, 0 );
-            diffuse  = clamp( c.diffuse, smin.diffuse, smax.diffuse );
-            specRaw  = clamp( c.specular, smin.specular, smax.specular );
-            indirect = clamp( c.indir, smin.indir, smax.indir );
-        }
-    }
-    else if( inBounds )
-    {
-        diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
-        indirect = texelFetchUnfilteredIndir( checkerboardPix );
-        specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
-    }
-
-    if( !inBounds )
+    if( pix.x >= int( globalUniform.renderWidth ) || pix.y >= int( globalUniform.renderHeight ) )
     {
         return;
     }
+
+    const vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
+    const vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
+    const vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
 
     const vec3 albedo     = texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb;
     const vec3 throughput = texelFetch( framebufThroughput_Sampler, checkerboardPix, 0 ).rgb;
@@ -176,7 +64,6 @@ void main()
         roughness            = mrFb.y;
         normal               = texelFetchNormal( checkerboardPix );
 
-        // Match CmSVGFAtrous final combine: rough specular fades to indirect
         const vec3 specular = mix(
             specRaw,
             indirect,
@@ -203,8 +90,6 @@ void main()
     imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );
 
     // RR staging (reused SVGF buffers; safe while A-SVGF is skipped):
-    // DiffPing: world/view normals.xyz + roughness in .w
-    // DiffPong: specular albedo.rgb
     imageStore( framebufDiffPingColorAndVariance, pix, vec4( normal, roughness ) );
     imageStore( framebufDiffPongColorAndVariance, pix, vec4( specAlb, 0.0 ) );
 }

@@ -599,7 +599,8 @@ GLOBAL_UNIFORM_STRUCT = [
 
     (TYPE_UINT32,       1,      "rayCullMaskWorld_Shadow",          1),
     (TYPE_UINT32,       1,      "volumeAllowTintUnderwater",        1),
-    (TYPE_UINT32,       1,      "rrNoisyAntiFireflyEnabled",        1),
+    # When set, ComposeNoisy reads A-SVGF temporal outputs instead of raw unfiltered
+    (TYPE_UINT32,       1,      "rrTemporalPrefilterEnabled",       1),
     (TYPE_UINT32,       1,      "twirlPortalNormal",                1),
 
     (TYPE_UINT32,       1,      "lightIndexIgnoreFPVShadows",       1),

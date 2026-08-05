@@ -140,8 +140,8 @@ struct DevmodeSettings
     bool debugWindowOnTop = false;
     bool antiFirefly      = true;
 
-    bool  rrNoisyAntiFirefly       = false;
-    bool  rrNoisyAntiFireflySticky = false;
+    bool  rrTemporalPrefilter       = false;
+    bool  rrTemporalPrefilterSticky = false;
     bool  illumSensSticky          = false;
     float illumSensDirect          = 1.f;
     float illumSensIndirect        = 0.75f;

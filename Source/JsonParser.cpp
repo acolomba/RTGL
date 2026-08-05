@@ -247,8 +247,8 @@ JSON_TYPE( RTGL1::DevmodeSettings )
     , "fontGlobalScale", &T::fontGlobalScale
     , "debugWindowOnTop", &T::debugWindowOnTop
     , "antiFirefly", &T::antiFirefly
-    , "rrNoisyAntiFirefly", &T::rrNoisyAntiFirefly
-    , "rrNoisyAntiFireflySticky", &T::rrNoisyAntiFireflySticky
+    , "rrTemporalPrefilter", &T::rrTemporalPrefilter
+    , "rrTemporalPrefilterSticky", &T::rrTemporalPrefilterSticky
     , "illumSensSticky", &T::illumSensSticky
     , "illumSensDirect", &T::illumSensDirect
     , "illumSensIndirect", &T::illumSensIndirect

@@ -255,6 +255,87 @@ void RTGL1::Denoiser::Denoise( VkCommandBuffer                               cmd
     }
 }
 
+void RTGL1::Denoiser::AccumulateForRR( VkCommandBuffer                               cmd,
+                                       uint32_t                                      frameIndex,
+                                       const std::shared_ptr< const GlobalUniform >& uniform )
+{
+    typedef FramebufferImageIndex FI;
+
+    VkDescriptorSet sets[] = {
+        framebuffers->GetDescSet( frameIndex ),
+        uniform->GetDescSet( frameIndex ),
+    };
+
+    vkCmdBindDescriptorSets( cmd,
+                             VK_PIPELINE_BIND_POINT_COMPUTE,
+                             pipelineLayout,
+                             0,
+                             std::size( sets ),
+                             sets,
+                             0,
+                             nullptr );
+
+#if GRADIENT_ESTIMATION_ENABLED
+    {
+        CmdLabel label( cmd, "Gradient Atrous (RR pre)" );
+
+        for( uint32_t i = 0; i < COMPUTE_ASVGF_GRADIENT_ATROUS_ITERATION_COUNT; i++ )
+        {
+            uint32_t wgGradCountX = Utils::GetWorkGroupCount(
+                uniform->GetData()->renderWidth / COMPUTE_ASVGF_STRATA_SIZE,
+                COMPUTE_GRADIENT_ATROUS_GROUP_SIZE_X );
+            uint32_t wgGradCountY = Utils::GetWorkGroupCount(
+                uniform->GetData()->renderHeight / COMPUTE_ASVGF_STRATA_SIZE,
+                COMPUTE_GRADIENT_ATROUS_GROUP_SIZE_X );
+
+            if( i % 2 == 0 )
+            {
+                FI fs[] = { FI::FB_IMAGE_INDEX_D_I_S_PING_GRADIENT };
+                framebuffers->BarrierMultiple( cmd, frameIndex, fs );
+            }
+            else
+            {
+                FI fs[] = { FI::FB_IMAGE_INDEX_D_I_S_PONG_GRADIENT };
+                framebuffers->BarrierMultiple( cmd, frameIndex, fs );
+            }
+
+            vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gradientAtrous[ i ] );
+            vkCmdDispatch( cmd, wgGradCountX, wgGradCountY, 1 );
+        }
+    }
+#endif
+
+    {
+        uint32_t wgCountX = Utils::GetWorkGroupCount( uniform->GetData()->renderWidth,
+                                                      COMPUTE_SVGF_TEMPORAL_GROUP_SIZE_X );
+        uint32_t wgCountY = Utils::GetWorkGroupCount( uniform->GetData()->renderHeight,
+                                                      COMPUTE_SVGF_TEMPORAL_GROUP_SIZE_X );
+
+        CmdLabel label( cmd, "Temporal accumulation (RR pre)" );
+
+        FI fs[] = {
+            FI::FB_IMAGE_INDEX_MOTION,
+            FI::FB_IMAGE_INDEX_DEPTH_WORLD,
+            FI::FB_IMAGE_INDEX_DEPTH_GRAD,
+            FI::FB_IMAGE_INDEX_NORMAL,
+            FI::FB_IMAGE_INDEX_METALLIC_ROUGHNESS,
+            FI::FB_IMAGE_INDEX_SURFACE_POSITION,
+            FI::FB_IMAGE_INDEX_VIEW_DIRECTION,
+            FI::FB_IMAGE_INDEX_UNFILTERED_DIRECT,
+            FI::FB_IMAGE_INDEX_UNFILTERED_SPECULAR,
+            FI::FB_IMAGE_INDEX_UNFILTERED_INDIR,
+            FI::FB_IMAGE_INDEX_DIFF_COLOR_HISTORY,
+#if GRADIENT_ESTIMATION_ENABLED
+            FI::FB_IMAGE_INDEX_D_I_S_PING_GRADIENT,
+#endif
+        };
+        framebuffers->BarrierMultiple( cmd, frameIndex, fs );
+
+        vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporalAccumulation );
+        vkCmdDispatch( cmd, wgCountX, wgCountY, 1 );
+    }
+}
+
 void RTGL1::Denoiser::ComposeNoisy( VkCommandBuffer                               cmd,
                                     uint32_t                                      frameIndex,
                                     const std::shared_ptr< const GlobalUniform >& uniform )
@@ -286,6 +367,9 @@ void RTGL1::Denoiser::ComposeNoisy( VkCommandBuffer                             
         FI::FB_IMAGE_INDEX_UNFILTERED_DIRECT,
         FI::FB_IMAGE_INDEX_UNFILTERED_SPECULAR,
         FI::FB_IMAGE_INDEX_UNFILTERED_INDIR,
+        FI::FB_IMAGE_INDEX_DIFF_TEMPORARY,
+        FI::FB_IMAGE_INDEX_SPEC_ACCUM_COLOR,
+        FI::FB_IMAGE_INDEX_INDIR_ACCUM,
         FI::FB_IMAGE_INDEX_PRE_FINAL,
         FI::FB_IMAGE_INDEX_DIFF_PING_COLOR_AND_VARIANCE,
         FI::FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE,

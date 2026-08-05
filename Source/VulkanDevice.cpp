@@ -594,18 +594,18 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
     {
         const auto& illum = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
-        const bool fromGame = !!illum.enableRrNoisyAntiFirefly;
-        if( devmode && devmode->rrNoisyAntiFireflySticky )
+        const bool fromGame = !!illum.enableRrTemporalPrefilter;
+        if( devmode && devmode->rrTemporalPrefilterSticky )
         {
-            gu->rrNoisyAntiFireflyEnabled = uint32_t( devmode->rrNoisyAntiFirefly );
+            gu->rrTemporalPrefilterEnabled = uint32_t( devmode->rrTemporalPrefilter );
         }
         else
         {
-            gu->rrNoisyAntiFireflyEnabled = uint32_t( fromGame );
+            gu->rrTemporalPrefilterEnabled = uint32_t( fromGame );
             if( devmode )
             {
                 // Keep Dev checkbox visually synced with the active game value.
-                devmode->rrNoisyAntiFirefly = fromGame;
+                devmode->rrTemporalPrefilter = fromGame;
             }
         }
 
@@ -791,6 +791,9 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                                           *volumetric );
         if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
         {
+            // Do NOT call AccumulateForRR here — feeding A-SVGF temporal into RR
+            // produced a faded duplicate/ghost depth view (2026-08-05). Keep raw
+            // ComposeNoisy → DLSS-RR. Soft analytic-light fades instead.
             denoiser->ComposeNoisy( cmd, frameIndex, uniform );
         }
         else
