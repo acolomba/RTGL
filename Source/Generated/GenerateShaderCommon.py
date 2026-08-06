@@ -630,6 +630,16 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_UINT32,       1,      "materialStripFlags",               1),
     # Dev: mix authored roughness toward 1.0 (0=authored, 1=fully matte). Live A/B for RR shimmer.
     (TYPE_FLOAT32,      1,      "materialRoughnessTowardMatte",     1),
+    # DLSS-RR disocclusion mask (transient-light history discard). Keep these 3
+    # together with materialRoughnessTowardMatte so vec4 members stay 16-aligned.
+    (TYPE_UINT32,       1,      "rrDisoccEnable",                   1),
+    (TYPE_FLOAT32,      1,      "rrDisoccRatio",                    1),
+    (TYPE_FLOAT32,      1,      "rrDisoccMinDelta",                 1),
+
+    (TYPE_UINT32,       1,      "rrDisoccShowMask",                 1),
+    (TYPE_UINT32,       1,      "_pad0",                            1),
+    (TYPE_UINT32,       1,      "_pad1",                            1),
+    (TYPE_UINT32,       1,      "_pad2",                            1),
 
     (TYPE_FLOAT32,      4,      "fluidColor",                       1),
 
@@ -873,6 +883,12 @@ FRAMEBUFFERS = {
     "ReservoirsInitial"                 : (TYPE_UINT32,     COMPONENT_RG,   0),
 
     "IndirectReservoirsInitial"         : (TYPE_UINT32,     COMPONENT_RGBA, 0),
+
+    # DLSS-RR: pInDisocclusionMask (sentinel 10000.0 forces RR history discard)
+    # and the tile-luminance history it is computed from. Written by CmNoisyCompose
+    # in regular (non-checkerboard) pixel space, RR path only.
+    "RrDisocclusion"                    : (TYPE_FLOAT16,    COMPONENT_R,    0),
+    "RrLumHistory"                      : (TYPE_FLOAT16,    COMPONENT_R,    FRAMEBUF_FLAGS_STORE_PREV),
 }
 
 if GRADIENT_ESTIMATION_ENABLED:

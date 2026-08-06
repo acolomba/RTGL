@@ -27,6 +27,23 @@
 // ALWAYS reads raw unfiltered ReSTIR. The A-SVGF-temporal-into-RR path was
 // removed: it ghosted, and reading DiffTemporary without AccumulateForRR
 // produced an all-black world (only raster sprites visible).
+//
+// RR guides (RR Integration Guide 3.4):
+//   diffuse albedo  = ro_d * throughput * ambient   -> DiffColorHistory
+//   specular albedo = envBRDFApprox2(F0, r^2, NoV)
+//                     * throughput * ambient        -> DiffPongColorAndVariance
+//   normals+roughness (packed)                      -> DiffPingColorAndVariance
+// Every factor that multiplies the color must be in the guides, otherwise it
+// survives RR's internal demodulation as pseudo-noise.
+//
+// Disocclusion mask (RR Integration Guide optional inputs; Remix sentinel):
+// RR has no anti-firefly / history-reset of its own, so transient lights
+// (barrel explosions, muzzle flashes, occluded glows) linger for seconds.
+// Compare the motion-reprojected per-tile mean of the *lighting-only*
+// luminance (view- and albedo-independent) against the previous frame; on a
+// sharp change, write 10000.0 to force RR to drop history for the tile.
+// Per-pixel compares are useless at 1 spp: tile means (16x16 = 256 taps)
+// have ~1/16 the relative noise, so a ratio threshold of 2..4 is stable.
 
 #define DESC_SET_FRAMEBUFFERS 0
 #define DESC_SET_GLOBAL_UNIFORM 1
@@ -35,61 +52,152 @@
 
 layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPOSE_GROUP_SIZE_Y, local_size_z = 1) in;
 
+#define DISOCC_TILE_THREADS ( COMPUTE_COMPOSE_GROUP_SIZE_X * COMPUTE_COMPOSE_GROUP_SIZE_Y )
+#define DISOCC_FORCE_HISTORY_DISCARD 10000.0
+
+// x = current lum, y = 1 if pixel is on screen,
+// z = reprojected previous lum, w = 1 if reprojection was valid
+shared vec4 s_lum[ DISOCC_TILE_THREADS ];
+
 void main()
 {
     const ivec2 pix             = ivec2( gl_GlobalInvocationID.x, gl_GlobalInvocationID.y );
     const ivec2 checkerboardPix = getCheckerboardPix( pix );
 
-    if( pix.x >= int( globalUniform.renderWidth ) || pix.y >= int( globalUniform.renderHeight ) )
+    // no early-out: every invocation must reach the barriers below;
+    // out-of-screen threads contribute zero weight to the tile stats
+    const bool inScreen = pix.x < int( globalUniform.renderWidth ) &&
+                          pix.y < int( globalUniform.renderHeight );
+
+    vec3 illuminated = vec3( 0.0 );
+    // lighting-only signal for the disocclusion mask: irradiance without
+    // albedo (cancels materials) and without specular (view-dependent)
+    float signalLum  = 0.0;
+
+    if( inScreen )
     {
-        return;
+        const vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
+        const vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
+        const vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
+
+        const vec3 albedo     = texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb;
+        const vec3 throughput = texelFetch( framebufThroughput_Sampler, checkerboardPix, 0 ).rgb;
+
+        vec3  normal    = vec3( 0.0, 0.0, 1.0 );
+        float roughness = 1.0;
+        vec3  guideDiff = vec3( 0.5 );
+        vec3  guideSpec = vec3( 0.5 );
+
+        if( !isSkyPix( checkerboardPix ) )
+        {
+            const vec2 mrFb      = texelFetch( framebufMetallicRoughness_Sampler, checkerboardPix, 0 ).xy;
+            const float metallic = mrFb.x;
+            roughness            = mrFb.y;
+            normal               = texelFetchNormal( checkerboardPix );
+
+            const vec3 specular = mix(
+                specRaw,
+                indirect,
+                smoothstep( FAKE_ROUGH_SPECULAR_THRESHOLD,
+                            FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH,
+                            roughness ) );
+
+            const vec3 ro_s = getSpecularColor( albedo, metallic );
+            const vec3 ro_d = albedo * ( 1.0 - metallic );
+
+            // every factor multiplying the color must be in the guides too
+            const vec3 guideMod = throughput * getMaterialAmbient( albedo );
+
+            illuminated = ( ( diffuse + indirect ) * ro_d + specular * ro_s ) * guideMod;
+
+            const vec3 viewDir = texelFetch( framebufViewDirection_Sampler, checkerboardPix, 0 ).xyz;
+            const float NoV    = dot( normal, -viewDir );
+
+            guideDiff = ro_d * guideMod;
+            guideSpec = envBRDFApprox2( ro_s, roughness * roughness, NoV ) * guideMod;
+
+            signalLum = getLuminance( diffuse + indirect );
+        }
+        else
+        {
+            // sky: color is smooth HDR radiance; guides just need to be
+            // bounded and non-zero (RR guide 3.4.2 - do not leave uncleared)
+            illuminated = albedo * throughput;
+            signalLum   = getLuminance( illuminated );
+        }
+
+        imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );
+
+        // RR staging (reused SVGF buffers; safe while A-SVGF is skipped):
+        imageStore( framebufDiffPingColorAndVariance, pix, vec4( normal, roughness ) );
+        imageStore( framebufDiffPongColorAndVariance, pix, vec4( guideSpec, 0.0 ) );
+        imageStore( framebufDiffColorHistory,         pix, vec4( guideDiff, 0.0 ) );
     }
 
-    const vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
-    const vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
-    const vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
+    // -- disocclusion mask -------------------------------------------------
 
-    const vec3 albedo     = texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb;
-    const vec3 throughput = texelFetch( framebufThroughput_Sampler, checkerboardPix, 0 ).rgb;
+    float prevLum   = 0.0;
+    bool  prevValid = false;
 
-    vec3 illuminated;
-    vec3 normal     = vec3( 0.0, 0.0, 1.0 );
-    float roughness = 1.0;
-    vec3  specAlb   = vec3( 0.0 );
-
-    if( !isSkyPix( checkerboardPix ) )
+    if( inScreen && globalUniform.rrDisoccEnable != 0 )
     {
-        const vec2 mrFb      = texelFetch( framebufMetallicRoughness_Sampler, checkerboardPix, 0 ).xy;
-        const float metallic = mrFb.x;
-        roughness            = mrFb.y;
-        normal               = texelFetchNormal( checkerboardPix );
+        const vec2 renderSize = vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+        // MotionDlss: regular-space UV delta, prevUV = curUV + mv
+        const vec2 mv     = texelFetch( framebufMotionDlss_Sampler, pix, 0 ).rg;
+        const vec2 prevUV = ( vec2( pix ) + 0.5 ) / renderSize + mv;
 
-        const vec3 specular = mix(
-            specRaw,
-            indirect,
-            smoothstep( FAKE_ROUGH_SPECULAR_THRESHOLD,
-                        FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH,
-                        roughness ) );
+        const ivec2 prevPix = ivec2( prevUV * renderSize );
 
-        const vec3 ro_s = getSpecularColor( albedo, metallic );
-        const vec3 ro_d = albedo * ( 1.0 - metallic );
-        specAlb         = ro_s;
-
-        illuminated = ( diffuse + indirect ) * ro_d + specular * ro_s;
-        illuminated *= throughput;
-        illuminated *= getMaterialAmbient( albedo );
-    }
-    else
-    {
-        illuminated = albedo * throughput;
-        normal      = vec3( 0.0, 0.0, 1.0 );
-        roughness   = 1.0;
-        specAlb     = vec3( 0.0 );
+        if( all( greaterThanEqual( prevPix, ivec2( 0 ) ) ) &&
+            all( lessThan( prevPix, ivec2( renderSize ) ) ) )
+        {
+            prevLum   = texelFetch( framebufRrLumHistory_Prev_Sampler, prevPix, 0 ).r;
+            prevValid = true;
+        }
     }
 
-    imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );
+    s_lum[ gl_LocalInvocationIndex ] = vec4( inScreen ? signalLum : 0.0,
+                                             inScreen ? 1.0 : 0.0,
+                                             prevValid ? prevLum : 0.0,
+                                             prevValid ? 1.0 : 0.0 );
+    barrier();
 
-    // RR staging (reused SVGF buffers; safe while A-SVGF is skipped):
-    imageStore( framebufDiffPingColorAndVariance, pix, vec4( normal, roughness ) );
-    imageStore( framebufDiffPongColorAndVariance, pix, vec4( specAlb, 0.0 ) );
+    for( uint s = DISOCC_TILE_THREADS / 2; s > 0; s /= 2 )
+    {
+        if( gl_LocalInvocationIndex < s )
+        {
+            s_lum[ gl_LocalInvocationIndex ] += s_lum[ gl_LocalInvocationIndex + s ];
+        }
+        barrier();
+    }
+
+    if( inScreen )
+    {
+        float mask = 0.0;
+
+        if( globalUniform.rrDisoccEnable != 0 )
+        {
+            const vec4 t = s_lum[ 0 ];
+
+            // require most of the tile to reproject on-screen; new screen
+            // regions are handled by RR itself via depth + motion vectors
+            if( t.y > 0.5 && t.w > 0.5 * t.y )
+            {
+                const float meanCur  = t.x / t.y;
+                const float meanPrev = t.z / t.w;
+
+                const float hi = max( meanCur, meanPrev );
+                const float lo = min( meanCur, meanPrev );
+
+                if( hi > lo * max( globalUniform.rrDisoccRatio, 1.0 ) &&
+                    hi - lo > globalUniform.rrDisoccMinDelta )
+                {
+                    mask = DISOCC_FORCE_HISTORY_DISCARD;
+                }
+            }
+        }
+
+        imageStore( framebufRrDisocclusion, pix, vec4( mask ) );
+        imageStore( framebufRrLumHistory, pix, vec4( signalLum ) );
+    }
 }

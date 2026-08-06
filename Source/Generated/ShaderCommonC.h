@@ -302,6 +302,13 @@ struct ShGlobalUniform
     uint32_t fluidEnabled;
     uint32_t materialStripFlags;
     float materialRoughnessTowardMatte;
+    uint32_t rrDisoccEnable;
+    float rrDisoccRatio;
+    float rrDisoccMinDelta;
+    uint32_t rrDisoccShowMask;
+    uint32_t _pad0;
+    uint32_t _pad1;
+    uint32_t _pad2;
     float fluidColor[4];
     float viewProjCubemap[96];
     float skyCubemapRotationTransform[16];

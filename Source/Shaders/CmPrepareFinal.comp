@@ -64,6 +64,15 @@ void main()
         hdr = processDebug( pix, hdr );
     }
 
+    // DLSS-RR disocclusion mask A/B view: tint history-discard tiles red
+    if( globalUniform.rrDisoccShowMask != 0 )
+    {
+        if( texelFetch( framebufRrDisocclusion_Sampler, pix, 0 ).r > 0.0 )
+        {
+            hdr = mix( hdr, vec3( 4.0, 0.0, 0.0 ), 0.5 );
+        }
+    }
+
     imageStore( framebufFinal, pix, vec4( hdr, 0 ) );
 }
 
