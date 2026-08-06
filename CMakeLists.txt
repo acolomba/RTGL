@@ -255,15 +255,34 @@ target_include_directories(RayTracedGL1 PRIVATE "Source/KTX/include" "Source/KTX
 
 # DLSS
 target_include_directories(RayTracedGL1 PRIVATE "Source/Streamline/include")
-if (RG_WITH_NATIVE_DLSS AND DEFINED ENV{DLSS_SDK_PATH})
-    message(STATUS "Found Native DLSS SDK: $ENV{DLSS_SDK_PATH}")
-    target_include_directories(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/include")
+
+# Accept the SDK location from EITHER the environment or -DDLSS_SDK_PATH=...
+# Previously this tested `DEFINED ENV{DLSS_SDK_PATH}` only, so configuring with
+# -DDLSS_SDK_PATH silently skipped this whole block: native DLSS2 AND DLSS Ray
+# Reconstruction were compiled out (DLSSRR.cpp falls through to its empty stub,
+# nvDlssRr is always null), with no error and no runtime log line -- because the
+# log strings themselves were compiled out. Worse, CMake cached the -D value, so
+# every later rebuild reused the poisoned cache. Cost a full debugging session:
+# every RR cvar and guide fix appeared to do nothing because there was no RR.
+if (NOT DEFINED DLSS_SDK_PATH AND DEFINED ENV{DLSS_SDK_PATH})
+    set(DLSS_SDK_PATH "$ENV{DLSS_SDK_PATH}")
+endif()
+
+if (RG_WITH_NATIVE_DLSS AND DLSS_SDK_PATH)
+    if (NOT EXISTS "${DLSS_SDK_PATH}/include/nvsdk_ngx.h")
+        message(FATAL_ERROR
+            "RG_WITH_NATIVE_DLSS=ON and DLSS_SDK_PATH='${DLSS_SDK_PATH}', but "
+            "${DLSS_SDK_PATH}/include/nvsdk_ngx.h is missing. Fix the path or set "
+            "RG_WITH_NATIVE_DLSS=OFF; do not build silently without Ray Reconstruction.")
+    endif()
+    message(STATUS "Found Native DLSS SDK: ${DLSS_SDK_PATH}")
+    target_include_directories(RayTracedGL1 PRIVATE "${DLSS_SDK_PATH}/include")
     add_definitions(-DRG_USE_NATIVE_DLSS2)
     if (WIN32)
         # NVIDIA/DLSS layout uses lib/Windows_x86_64/x64 (older trees used x86_64)
-        set(_NGX_LIB_DIR "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x64")
+        set(_NGX_LIB_DIR "${DLSS_SDK_PATH}/lib/Windows_x86_64/x64")
         if (NOT EXISTS "${_NGX_LIB_DIR}/nvsdk_ngx_d.lib")
-            set(_NGX_LIB_DIR "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64")
+            set(_NGX_LIB_DIR "${DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64")
         endif()
         if (BUILD_TYPE STREQUAL "DEBUG")
             target_link_libraries(RayTracedGL1 PRIVATE "${_NGX_LIB_DIR}/nvsdk_ngx_d_dbg.lib")
@@ -271,9 +290,18 @@ if (RG_WITH_NATIVE_DLSS AND DEFINED ENV{DLSS_SDK_PATH})
             target_link_libraries(RayTracedGL1 PRIVATE "${_NGX_LIB_DIR}/nvsdk_ngx_d.lib")
         endif()
     else()
-        target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Linux_x86_64/libnvsdk_ngx.a")
+        target_link_libraries(RayTracedGL1 PRIVATE "${DLSS_SDK_PATH}/lib/Linux_x86_64/libnvsdk_ngx.a")
         target_link_libraries(RayTracedGL1 PRIVATE ${CMAKE_DL_LIBS})
     endif()
+elseif (RG_WITH_NATIVE_DLSS)
+    # Loud, because the resulting DLL is indistinguishable at a glance from a
+    # working one -- it just has no DLSS-RR in it at all.
+    message(WARNING
+        "RG_WITH_NATIVE_DLSS=ON but DLSS_SDK_PATH is not set (neither as an "
+        "environment variable nor -DDLSS_SDK_PATH=...). Native DLSS2 and DLSS "
+        "Ray Reconstruction WILL BE COMPILED OUT of RTGL1.dll: rt_rayreconstr "
+        "will appear to work but nvDlssRr is always null and no DLSSRR: log "
+        "lines will ever be printed.")
 endif()
 
 # FSR2
