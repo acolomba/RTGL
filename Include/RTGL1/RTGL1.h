@@ -966,6 +966,20 @@ typedef struct RgDrawFrameIlluminationParams
     // buffers to RR (spatial atrous still skipped). Stabilizes flickering lights.
     // Default: true. (Replaces the old screen-space firefly clamp experiment.)
     RgBool32        enableRrTemporalPrefilter;
+    // DLSS-RR: write a disocclusion mask that forces RR to discard its temporal
+    // history where scene lighting changed sharply vs the previous frame
+    // (motion-reprojected, per 16x16 tile). Fixes transient lights (barrel
+    // explosions, muzzle flashes, occluded glows) lingering for seconds.
+    // Default: true
+    RgBool32        enableRrDisocclusionMask;
+    // Tile-mean luminance ratio (current vs previous, symmetric) above which
+    // RR history is discarded. Lower = more responsive, noisier. Default: 3.0
+    float           rrDisocclusionThreshold;
+    // Additional absolute tile-mean luminance delta required to fire, to avoid
+    // false positives in near-black areas. Default: 0.01
+    float           rrDisocclusionMinDelta;
+    // Debug: tint pixels red where the disocclusion mask fired. Default: false
+    RgBool32        rrDisocclusionShowMask;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

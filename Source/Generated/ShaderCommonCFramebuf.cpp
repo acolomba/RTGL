@@ -76,6 +76,9 @@ const VkFormat RTGL1::ShFramebuffers_Formats[] =
     VK_FORMAT_R32G32_UINT, // Reservoirs_Prev
     VK_FORMAT_R32G32_UINT, // ReservoirsInitial
     VK_FORMAT_R32G32B32A32_UINT, // IndirectReservoirsInitial
+    VK_FORMAT_R16_SFLOAT, // RrDisocclusion
+    VK_FORMAT_R16_SFLOAT, // RrLumHistory
+    VK_FORMAT_R16_SFLOAT, // RrLumHistory_Prev
     VK_FORMAT_R16G16_SFLOAT, // GradientInputs
     VK_FORMAT_R16G16_SFLOAT, // GradientInputs_Prev
     VK_FORMAT_R8G8B8A8_UNORM, // DISPingGradient
@@ -158,6 +161,9 @@ const RTGL1::FramebufferImageFlags RTGL1::ShFramebuffers_Flags[] =
     0, // Reservoirs_Prev
     0, // ReservoirsInitial
     0, // IndirectReservoirsInitial
+    0, // RrDisocclusion
+    0, // RrLumHistory
+    0, // RrLumHistory_Prev
     0, // GradientInputs
     0, // GradientInputs_Prev
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_1_3, // DISPingGradient
@@ -246,6 +252,9 @@ const uint32_t RTGL1::ShFramebuffers_Bindings[] =
     75,
     76,
     77,
+    78,
+    79,
+    80,
 };
 
 const uint32_t RTGL1::ShFramebuffers_BindingsSwapped[] = 
@@ -322,19 +331,19 @@ const uint32_t RTGL1::ShFramebuffers_BindingsSwapped[] =
     68,
     70,
     71,
-    73,
     72,
     74,
-    75,
+    73,
     76,
+    75,
     77,
+    78,
+    79,
+    80,
 };
 
 const uint32_t RTGL1::ShFramebuffers_Sampler_Bindings[] = 
 {
-    78,
-    79,
-    80,
     81,
     82,
     83,
@@ -410,21 +419,24 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_Bindings[] =
     153,
     154,
     155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
 };
 
 const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] = 
 {
-    78,
-    79,
     81,
-    80,
-    83,
     82,
-    85,
     84,
+    83,
     86,
-    87,
+    85,
     88,
+    87,
     89,
     90,
     91,
@@ -432,48 +444,48 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     93,
     94,
     95,
-    97,
     96,
-    99,
+    97,
     98,
-    101,
     100,
+    99,
     102,
-    103,
+    101,
     104,
+    103,
     105,
     106,
     107,
     108,
     109,
     110,
-    112,
     111,
+    112,
     113,
     115,
     114,
-    117,
     116,
     118,
-    119,
+    117,
     120,
-    122,
+    119,
     121,
+    122,
     123,
+    125,
     124,
     126,
-    125,
     127,
-    128,
     129,
+    128,
     130,
-    132,
     131,
-    134,
+    132,
     133,
     135,
-    136,
+    134,
     137,
+    136,
     138,
     139,
     140,
@@ -482,16 +494,22 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     143,
     144,
     145,
-    147,
     146,
+    147,
     148,
+    150,
     149,
     151,
-    150,
     152,
     153,
-    154,
     155,
+    154,
+    157,
+    156,
+    158,
+    159,
+    160,
+    161,
 };
 
 const char *const RTGL1::ShFramebuffers_DebugNames[] = 
@@ -568,6 +586,9 @@ const char *const RTGL1::ShFramebuffers_DebugNames[] =
     "Framebuf Reservoirs_Prev",
     "Framebuf ReservoirsInitial",
     "Framebuf IndirectReservoirsInitial",
+    "Framebuf RrDisocclusion",
+    "Framebuf RrLumHistory",
+    "Framebuf RrLumHistory_Prev",
     "Framebuf GradientInputs",
     "Framebuf GradientInputs_Prev",
     "Framebuf DISPingGradient",
@@ -650,6 +671,9 @@ const wchar_t *const RTGL1::ShFramebuffers_DebugNamesW[] =
     L"Framebuf Reservoirs_Prev",
     L"Framebuf ReservoirsInitial",
     L"Framebuf IndirectReservoirsInitial",
+    L"Framebuf RrDisocclusion",
+    L"Framebuf RrLumHistory",
+    L"Framebuf RrLumHistory_Prev",
     L"Framebuf GradientInputs",
     L"Framebuf GradientInputs_Prev",
     L"Framebuf DISPingGradient",

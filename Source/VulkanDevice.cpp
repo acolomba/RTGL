@@ -594,6 +594,12 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
     {
         const auto& illum = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+
+        gu->rrDisoccEnable   = !!illum.enableRrDisocclusionMask;
+        gu->rrDisoccRatio    = std::max( illum.rrDisocclusionThreshold, 1.0f );
+        gu->rrDisoccMinDelta = std::max( illum.rrDisocclusionMinDelta, 0.0f );
+        gu->rrDisoccShowMask = !!illum.rrDisocclusionShowMask;
+
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
         {

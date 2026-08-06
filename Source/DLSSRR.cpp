@@ -329,11 +329,11 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     constexpr FramebufferImageIndex INPUT_IMAGES[] = {
         FB_IMAGE_INDEX_FINAL,
         FB_IMAGE_INDEX_DEPTH_NDC,
-        FB_IMAGE_INDEX_DEPTH_WORLD,
         FB_IMAGE_INDEX_MOTION_DLSS,
-        FB_IMAGE_INDEX_ALBEDO,
+        FB_IMAGE_INDEX_DIFF_COLOR_HISTORY,
         FB_IMAGE_INDEX_DIFF_PING_COLOR_AND_VARIANCE,
         FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE,
+        FB_IMAGE_INDEX_RR_DISOCCLUSION,
     };
 
     framebuffers.BarrierMultiple( cmd, //
@@ -355,10 +355,11 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     NVSDK_NGX_Resource_VK outputResource    = ToNGXResource( framebuffers, frameIndex, OUTPUT_IMAGE, targetSize, true );
     NVSDK_NGX_Resource_VK motionResource    = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_MOTION_DLSS, sourceSize );
     NVSDK_NGX_Resource_VK depthResource     = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DEPTH_NDC, sourceSize );
-    NVSDK_NGX_Resource_VK albedoResource    = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_ALBEDO, sourceSize );
+    // corrected guides staged by CmNoisyCompose (ro_d * mod / envBRDF * mod), not raw Albedo/F0
+    NVSDK_NGX_Resource_VK albedoResource    = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DIFF_COLOR_HISTORY, sourceSize );
     NVSDK_NGX_Resource_VK normalsResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DIFF_PING_COLOR_AND_VARIANCE, sourceSize );
     NVSDK_NGX_Resource_VK specAlbResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE, sourceSize );
-    NVSDK_NGX_Resource_VK specHitResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DEPTH_WORLD, sourceSize );
+    NVSDK_NGX_Resource_VK disoccResource    = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_RR_DISOCCLUSION, sourceSize );
     // clang-format on
 
     // Matrices must outlive Evaluate — NGX reads pointers asynchronously with the cmd buffer.
@@ -394,7 +395,14 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     evalParams.InExposureScale           = 1.0f;
     evalParams.InToneMapperType          = NVSDK_NGX_TONEMAPPER_ONEOVERLUMA;
     evalParams.InFrameTimeDeltaInMsec    = float( timeDelta * 1000.0 );
-    evalParams.pInSpecularHitDistance    = &specHitResource;
+    // No specular hit distance: FB_DEPTH_WORLD was the primary-hit camera
+    // distance, not the reflection ray length — a wrong guide corrupts RR's
+    // specular reprojection every frame. No guide beats a wrong guide.
+    evalParams.pInSpecularHitDistance    = nullptr;
+    // Sentinel 10000.0 written by CmNoisyCompose where scene lighting changed
+    // sharply vs the reprojected previous frame — forces RR to drop history
+    // (transient lights: barrel explosions, muzzle flashes, occluded glows).
+    evalParams.pInDisocclusionMask       = &disoccResource;
     evalParams.pInWorldToViewMatrix      = worldToView;
     evalParams.pInViewToClipMatrix       = viewToClip;
 
