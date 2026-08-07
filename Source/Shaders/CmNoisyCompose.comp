@@ -193,8 +193,22 @@ void main()
             const vec3 viewDir = texelFetch( framebufViewDirection_Sampler, checkerboardPix, 0 ).xyz;
             const float NoV    = dot( normal, -viewDir );
 
-            guideDiff = ro_d * guideMod;
-            guideSpec = envBRDFApprox2( ro_s, roughness * roughness, NoV ) * guideMod;
+            // Floor the guides away from zero. RR demodulates the colour by
+            // these (lighting ~ colour / guide) and remodulates with the same
+            // values, so a small floor is essentially free -- but WITHOUT it the
+            // division explodes wherever ro_d * guideMod approaches 0: dark
+            // albedo, low throughput, and exactly 0 on metallic surfaces. That
+            // is what produces correlated dark worms in dim distant rooms while
+            // brightly lit near walls stay clean, and why A-SVGF (which never
+            // reads these guides) shows none of it.
+            //
+            // The sky branch below has always floored its guides for precisely
+            // this reason, citing RR guide 3.4.2; the world branch never did.
+            const vec3 guideFloor = vec3( globalUniform.rrGuideMin );
+
+            guideDiff = max( ro_d * guideMod, guideFloor );
+            guideSpec = max( envBRDFApprox2( ro_s, roughness * roughness, NoV ) * guideMod,
+                             guideFloor );
 
             signalLum = getLuminance( diffuse + indirect );
         }
@@ -212,11 +226,22 @@ void main()
         // it from checkerboard into regular pixel space, like the guides above.
         // Sky has no specular event -> 0.
         {
-            float specHitDist = isSkyPix( checkerboardPix )
-                                    ? 0.0
-                                    : max( texelFetch( framebufViewDirection_Sampler,
-                                                       checkerboardPix, 0 ).w, 0.0 );
-            imageStore( framebufSpecularHitDistance, pix, vec4( specHitDist ) );
+            const float rawDist =
+                texelFetch( framebufViewDirection_Sampler, checkerboardPix, 0 ).w;
+
+            // MAX_RAY_LENGTH is processDirectIllumination's "no light found"
+            // sentinel, so EVERY shadowed or unlit pixel carries 10000.0 here.
+            // Handing that to NGX says "this pixel's reflection is 10km away"
+            // and wrecks RR's specular reprojection exactly in the dark pixels
+            // -- a black grain over the whole image. 0 is the correct value for
+            // "no specular event"; a wrong guide really is worse than none.
+            const bool noSpecularEvent = isSkyPix( checkerboardPix ) ||
+                                         !( rawDist > 0.0 ) ||           // also catches NaN
+                                         rawDist >= MAX_RAY_LENGTH * 0.5;
+
+            imageStore( framebufSpecularHitDistance,
+                        pix,
+                        vec4( noSpecularEvent ? 0.0 : rawDist ) );
         }
 
         imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );

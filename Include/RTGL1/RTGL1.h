@@ -916,6 +916,19 @@ typedef struct RgDrawFrameTexturesParams
     // What sampler filter to use for materials with RG_MATERIAL_CREATE_DYNAMIC_SAMPLER_FILTER_BIT.
     // Should be changed infrequently, as it reloads all texture descriptors.
     RgSamplerFilter dynamicSamplerFilter;
+    // Added to the texture mip LOD bias. RTGL follows the DLSS Programming
+    // Guide §3.5 and uses log2(renderRes/outputRes) - 1.0, which at Balanced is
+    // about -1.77 mips: textures are sampled far sharper than the render
+    // resolution can represent. That is right for DLSS-SR, which turns the
+    // resulting aliasing plus jitter into detail from a CLEAN image. DLSS-RR
+    // gets the same over-sharp texture inside a NOISY albedo guide, and aliased
+    // high-frequency detail is theoretically hard for a denoiser to tell from
+    // noise. MEASURED 2026-08-07 at +1.0 and +1.8: does NOT fix the worm
+    // artifact on distant detailed textures -- render resolution does (see
+    // mipLodBiasOffset notes in rr-noise-investigation.md). Kept as a knob.
+    // Positive values soften (e.g. +1.0 cancels the guide's -1.0 term).
+    // Default: 0 (inert)
+    float           mipLodBiasOffset;
     float           normalMapStrength;
     // Multiplier for emission map values for indirect lighting.
     float           emissionMapBoost;
@@ -1063,6 +1076,14 @@ typedef struct RgDrawFrameIlluminationParams
     // Higher = longer history = smoother when still, slower to react.
     // Clamped [1,64]. Default: 20
     uint32_t        restirTemporalMCap;
+    // DLSS-RR albedo-guide floor. RR demodulates colour by the diffuse/specular
+    // albedo guides; as a guide approaches zero that division explodes, which
+    // shows as correlated dark filaments in dim, dark-albedo regions (and is
+    // undefined on metallic surfaces, where ro_d is exactly 0). Flooring is
+    // near-free because RR remodulates with the same guide. The sky path has
+    // always done this (RR guide 3.4.2); the world path did not.
+    // 0 disables the floor (pre-fix behaviour). Default: 0.01
+    float           rrGuideMin;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

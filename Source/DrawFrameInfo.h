@@ -303,6 +303,7 @@ namespace detail
             .restirSpatialSamples                        = 8,
             .restirSpatialRadius                         = 30.0f,
             .restirTemporalMCap                          = 20,
+            .rrGuideMin                                  = 0.01f,
         };
     };
 
@@ -415,6 +416,7 @@ namespace detail
             .sType                  = sType,
             .pNext                  = nullptr,
             .dynamicSamplerFilter   = RG_SAMPLER_FILTER_LINEAR,
+            .mipLodBiasOffset       = 0.0f,
             .normalMapStrength      = 1.0f,
             .emissionMapBoost       = 100.0f,
             .emissionMaxScreenColor = 1.5f,

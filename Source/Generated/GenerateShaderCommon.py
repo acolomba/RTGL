@@ -663,7 +663,12 @@ GLOBAL_UNIFORM_STRUCT = [
 
     (TYPE_FLOAT32,      1,      "restirSpatialRadius",              1),
     (TYPE_UINT32,       1,      "restirTemporalMCap",               1),
-    (TYPE_UINT32,       1,      "_pad4",                            1),
+    # DLSS-RR albedo-guide floor. RR demodulates colour by these guides, so a
+    # guide approaching zero makes that division explode -- correlated dark
+    # filaments in dim, dark-albedo areas. The sky branch of CmNoisyCompose
+    # already floors its guides ("bounded and non-zero", RR guide 3.4.2); the
+    # world branch never did. 0 = no floor (old behaviour).
+    (TYPE_FLOAT32,      1,      "rrGuideMin",                       1),
     (TYPE_UINT32,       1,      "_pad5",                            1),
 
     # Shadow rays per pixel for DIRECT illumination. 1 = stock. The direct

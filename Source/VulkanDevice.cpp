@@ -614,6 +614,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->restirSpatialSamples  = std::clamp( illum.restirSpatialSamples, 0u, 16u );
         gu->restirSpatialRadius   = std::clamp( illum.restirSpatialRadius, 1.0f, 64.0f );
         gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );
+        gu->rrGuideMin            = std::clamp( illum.rrGuideMin, 0.0f, 1.0f );
 
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
@@ -671,8 +672,10 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
 
     const auto& cameraInfo = scene->GetCamera( renderResolution.Aspect() );
 
-    bool mipLodBiasUpdated =
-        worldSamplerManager->TryChangeMipLodBias( frameIndex, renderResolution.GetMipLodBias() );
+    bool mipLodBiasUpdated = worldSamplerManager->TryChangeMipLodBias(
+        frameIndex,
+        renderResolution.GetMipLodBias(
+            pnext::get< RgDrawFrameTexturesParams >( drawInfo ).mipLodBiasOffset ) );
     const RgFloat2D jitter = { uniform->GetData()->jitterX, uniform->GetData()->jitterY };
 
     textureManager->SubmitDescriptors(

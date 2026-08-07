@@ -316,7 +316,7 @@ struct ShGlobalUniform
     uint32_t restirSpatialSamples;
     float restirSpatialRadius;
     uint32_t restirTemporalMCap;
-    uint32_t _pad4;
+    float rrGuideMin;
     uint32_t _pad5;
     uint32_t shadowSamples;
     uint32_t debugRestirM;

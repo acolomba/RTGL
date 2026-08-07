@@ -311,7 +311,7 @@ struct ShGlobalUniform
     uint restirSpatialSamples;
     float restirSpatialRadius;
     uint restirTemporalMCap;
-    uint _pad4;
+    float rrGuideMin;
     uint _pad5;
     uint shadowSamples;
     uint debugRestirM;
