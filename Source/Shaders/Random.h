@@ -30,6 +30,9 @@
 #define RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE 72
 #define RANDOM_SALT_LIGHT_CHOOSE_INDIRECT_BASE 96
 #define RANDOM_SALT_RESAMPLE_INDIRECT_BASE 132
+// Extra points on the chosen light for multi-sample shadow visibility.
+// Well clear of RESAMPLE_INDIRECT above so the ranges cannot overlap.
+#define RANDOM_SALT_SHADOW_SAMPLES_BASE 160
 
 // Sample disk uniformly
 // u1, u2 -- uniform random numbers

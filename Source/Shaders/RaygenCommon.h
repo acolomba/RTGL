@@ -544,7 +544,11 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
     {
         vec2 rndOffset = (useBlueNoise ? rndBlueNoise8(bnSeed, salt) : rnd8_4(seed, salt)).xy * 2.0 - 1.0;
         salt++;
-        ivec2 pp = ivec2(floor(posPrev + rndOffset * TEMPORAL_RADIUS));
+        // Jitter radius is a uniform: at 0 this reprojects exactly. See
+        // restirTemporalJitter -- on grazing surfaces the stock 2px offset moves
+        // depth well past the flat 10% reuse threshold, the tap is rejected, and
+        // M collapses to 1 precisely where variance is already worst.
+        ivec2 pp = ivec2(floor(posPrev + rndOffset * globalUniform.restirTemporalJitter));
 
         {
             const float depthPrev = texelFetch(framebufDepthWorld_Prev_Sampler, pp, 0).r;
@@ -653,7 +657,8 @@ bool isDirectIlluminationValid(int bounceIndex)
     return v;
 }
 
-void traceDirectIllumination( const Surface   surf,
+void traceDirectIllumination( uint            seed,
+                              const Surface   surf,
                               const Reservoir reservoir,
                               const vec2      pointRnd,
                               int             bounceIndex,
@@ -676,7 +681,50 @@ void traceDirectIllumination( const Surface   surf,
 
     if (bounceIndex < globalUniform.maxBounceShadowsLights)
     {
-        float visibility = traceVisibility(surf, light.position, reservoir.selected);
+        // Visibility is the dominant variance term at 1 spp: a single shadow ray
+        // makes this a binary 0/1 multiply, so a pixel is either fully lit or
+        // fully black regardless of how well ReSTIR chose the light. That floor
+        // is what survives into the unfiltered signal, and no amount of reuse
+        // decorrelation touches it (measured 2026-08-07: blue-noise reuse taps
+        // changed nothing).
+        //
+        // Averaging visibility over N independently sampled points on the SAME
+        // chosen light turns it into a fraction -> real soft shadow, variance
+        // ~1/sqrt(N). Only the visibility factor is averaged; shading keeps the
+        // reservoir's own sample, so the RIS weight and the light-selection
+        // estimator are untouched and energy is unchanged in expectation.
+        //
+        // DIRECT only: secondary bounces stay at one ray, where the extra cost
+        // would not pay for itself.
+        float visibility;
+    #if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT
+        const uint shadowN = clamp(globalUniform.shadowSamples, 1u, 8u);
+        if (shadowN > 1u)
+        {
+            visibility = 0.0;
+            for (uint si = 0; si < shadowN; si++)
+            {
+                // si == 0 reuses the reservoir's point so N=1 is bit-identical
+                // to the stock path; later taps get fresh points on the light.
+                vec2 prnd = (si == 0u)
+                                ? pointRnd
+                                : rnd16_2(seed, RANDOM_SALT_SHADOW_SAMPLES_BASE + si);
+
+                const LightSample ls =
+                    (si == 0u) ? light
+                               : sampleLight(lightSources[reservoir.selected], surf.position, prnd);
+
+                visibility += traceVisibility(surf, ls.position, reservoir.selected);
+            }
+            visibility /= float(shadowN);
+        }
+        else
+        {
+            visibility = traceVisibility(surf, light.position, reservoir.selected);
+        }
+    #else
+        visibility = traceVisibility(surf, light.position, reservoir.selected);
+    #endif
 
         out_diffuse  *= visibility;
         out_specular *= visibility;
@@ -710,7 +758,7 @@ Reservoir processDirectIllumination(uint seed, const ivec2 pix, const Surface su
         return emptyReservoir();
     } 
 
-    traceDirectIllumination(surf, reservoir, pointRnd, 0, out_distance, out_diffuse, out_specular);
+    traceDirectIllumination(seed, surf, reservoir, pointRnd, 0, out_distance, out_diffuse, out_specular);
     return reservoir;
 }
 #endif
@@ -739,7 +787,7 @@ vec3 processDirectIllumination( uint          seed,
     vec3 out_diffuse;
     vec3 unusedv; float unusedf;
     traceDirectIllumination(
-        surf, reservoir, pointRnd, bounceIndex, unusedf, out_diffuse, unusedv
+        seed, surf, reservoir, pointRnd, bounceIndex, unusedf, out_diffuse, unusedv
     #if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
         , out_lightdirection
     #endif
@@ -773,7 +821,7 @@ void processDirectIllumination(uint seed, const Surface surf, const Reservoir re
     } 
     
     float unusedf;
-    traceDirectIllumination(surf, reservoir, pointRnd, 0, unusedf, out_diffuse, out_specular);
+    traceDirectIllumination(seed, surf, reservoir, pointRnd, 0, unusedf, out_diffuse, out_specular);
 }
 #endif
 

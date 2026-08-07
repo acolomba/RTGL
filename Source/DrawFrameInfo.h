@@ -293,6 +293,9 @@ namespace detail
             .rrFireflyThreshold                          = 0.0f,
             .rrFireflyMinLum                             = 0.01f,
             .restirBlueNoise                             = true,
+            .shadowSamples                               = 1,
+            .debugRestirM                                = false,
+            .restirTemporalJitter                        = 2.0f,
         };
     };
 

@@ -650,10 +650,24 @@ GLOBAL_UNIFORM_STRUCT = [
 
     (TYPE_FLOAT32,      4,      "fluidColor",                       1),
 
-    #(TYPE_FLOAT32,      1,      "_pad0",                            1),
-    #(TYPE_FLOAT32,      1,      "_pad1",                            1),
-    #(TYPE_FLOAT32,      1,      "_pad2",                            1),
-    #(TYPE_FLOAT32,      1,      "_pad3",                            1),
+    # Shadow rays per pixel for DIRECT illumination. 1 = stock. The direct
+    # estimate multiplies by a single binary traceVisibility(), so that 0/1 term
+    # dominates the 1-spp variance and is untouched by anything ReSTIR does
+    # (measured: blue-noise reuse taps changed nothing). Averaging N points on
+    # the chosen light turns it into a soft fraction; variance falls ~1/sqrt(N).
+    # Kept as a full vec4 group so viewProjCubemap below stays 16-byte aligned.
+    (TYPE_UINT32,       1,      "shadowSamples",                    1),
+    # Debug: write ReSTIR reservoir M (accumulated sample count) into the
+    # unfiltered direct buffer instead of radiance. M is what makes 1-spp
+    # ReSTIR converge; if it collapses under camera motion, that is the noise.
+    (TYPE_UINT32,       1,      "debugRestirM",                     1),
+    # ReSTIR temporal tap jitter radius, in pixels. Stock is 2. The jitter buys
+    # decorrelation but costs history exactly where it is hardest to keep: on
+    # grazing surfaces a 2px offset changes depth by far more than the flat 10%
+    # reuse threshold, so the tap is rejected and M collapses. 0 = reproject
+    # exactly (what RTXDI does).
+    (TYPE_FLOAT32,      1,      "restirTemporalJitter",             1),
+    (TYPE_FLOAT32,      1,      "_pad3",                            1),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),

@@ -59,6 +59,25 @@ void main()
         distToLight,
         diffuse, specular);
 
+    // Debug: show the reservoir's accumulated sample count instead of radiance.
+    // ReSTIR at 1 spp only looks clean because temporal reuse grows M over many
+    // frames; the estimator's variance falls with M. If M collapses when the
+    // camera moves (history rejected by testSurfaceForReuse after
+    // reprojection), the raw signal genuinely gets noisier in motion -- which no
+    // denoiser tuning can fix, because it is upstream of every denoiser.
+    // Green ramp = M/32: black is M=1 (worst case, one sample), bright green is
+    // a well-accumulated reservoir. Watch it while standing still, then move.
+    if (globalUniform.debugRestirM != 0)
+    {
+        float mNorm = clamp(float(r.M) / 32.0, 0.0, 1.0);
+        imageStoreUnfilteredDirect(pix, vec3(mNorm * 0.15, mNorm, mNorm * 0.15));
+        imageStoreUnfilteredSpecular(pix, vec3(0.0));
+        imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, distToLight));
+        imageStore(framebufGradientInputs, pix, vec4(0.0));
+        imageStoreReservoir(r, pix);
+        return;
+    }
+
     imageStoreUnfilteredDirect(pix, diffuse);
     imageStoreUnfilteredSpecular(pix, demodulateSpecular(specular, surf.specularColor));
     imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, distToLight));

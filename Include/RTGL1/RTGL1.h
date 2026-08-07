@@ -1003,6 +1003,28 @@ typedef struct RgDrawFrameIlluminationParams
     // Reduces variance at the source, so it helps A-SVGF and RR alike.
     // Default: true
     RgBool32        restirBlueNoise;
+    // Shadow rays per pixel for DIRECT illumination (clamped to [1,8]).
+    // The direct estimate multiplies by a single binary traceVisibility(), so
+    // that 0/1 term dominates 1-spp variance and is untouched by anything
+    // ReSTIR does. Averaging N independent points on the chosen light turns it
+    // into a soft fraction; variance falls roughly as 1/sqrt(N). Only the
+    // visibility factor is averaged -- shading keeps the reservoir's own
+    // sample, so the RIS estimator and expected energy are unchanged.
+    // Costs N-1 extra rays per pixel on the direct pass. 1 = stock.
+    // Default: 1
+    uint32_t        shadowSamples;
+    // Debug: write the ReSTIR reservoir's accumulated sample count M into the
+    // unfiltered-direct buffer instead of radiance (green ramp, M/32). ReSTIR
+    // at 1 spp only converges because temporal reuse grows M; if M collapses
+    // under camera motion the raw signal is genuinely noisier while moving,
+    // upstream of any denoiser. Default: false
+    RgBool32        debugRestirM;
+    // ReSTIR temporal reuse tap jitter radius in pixels. Stock 2.0. The jitter
+    // decorrelates the temporal tap, but on grazing surfaces a 2px offset moves
+    // depth far past the flat 10% reuse threshold, so the tap is rejected and M
+    // (and with it 1-spp convergence) collapses exactly where variance is worst.
+    // 0 reprojects exactly, as RTXDI does. Default: 2.0
+    float           restirTemporalJitter;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

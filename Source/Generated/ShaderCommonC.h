@@ -310,6 +310,10 @@ struct ShGlobalUniform
     float rrFireflyMinLum;
     uint32_t restirBlueNoise;
     float fluidColor[4];
+    uint32_t shadowSamples;
+    uint32_t debugRestirM;
+    float restirTemporalJitter;
+    float _pad3;
     float viewProjCubemap[96];
     float skyCubemapRotationTransform[16];
 };
