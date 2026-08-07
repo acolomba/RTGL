@@ -206,9 +206,27 @@ void main()
             // this reason, citing RR guide 3.4.2; the world branch never did.
             const vec3 guideFloor = vec3( globalUniform.rrGuideMin );
 
-            guideDiff = max( ro_d * guideMod, guideFloor );
-            guideSpec = max( envBRDFApprox2( ro_s, roughness * roughness, NoV ) * guideMod,
-                             guideFloor );
+            // See rrGuideMode in GenerateShaderCommon.py. Mode 1 is what the
+            // 2026-08-06 guide rework introduced; mode 0 restores the raw
+            // material guides that predate it. `illuminated` above is NOT
+            // touched by this -- only what RR is told the albedo is.
+            switch( globalUniform.rrGuideMode )
+            {
+                case 0:
+                    guideDiff = max( albedo, guideFloor );
+                    guideSpec = max( ro_s, guideFloor );
+                    break;
+                case 2:
+                    guideDiff = max( ro_d, guideFloor );
+                    guideSpec = max( envBRDFApprox2( ro_s, roughness * roughness, NoV ),
+                                     guideFloor );
+                    break;
+                default:
+                    guideDiff = max( ro_d * guideMod, guideFloor );
+                    guideSpec = max( envBRDFApprox2( ro_s, roughness * roughness, NoV ) * guideMod,
+                                     guideFloor );
+                    break;
+            }
 
             signalLum = getLuminance( diffuse + indirect );
         }

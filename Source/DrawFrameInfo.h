@@ -304,6 +304,7 @@ namespace detail
             .restirSpatialRadius                         = 30.0f,
             .restirTemporalMCap                          = 20,
             .rrGuideMin                                  = 0.01f,
+            .rrGuideMode                                 = 1,
         };
     };
 

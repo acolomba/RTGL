@@ -312,7 +312,7 @@ struct ShGlobalUniform
     float restirSpatialRadius;
     uint restirTemporalMCap;
     float rrGuideMin;
-    uint _pad5;
+    uint rrGuideMode;
     uint shadowSamples;
     uint debugRestirM;
     float restirTemporalJitter;

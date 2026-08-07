@@ -64,6 +64,7 @@ public:
                 double                        timeDelta,
                 bool                          resetAccumulation,
                 bool                          specHitDistEnabled,
+                bool                          disoccMaskEnabled,
                 const float*                  worldToViewMatrix16,
                 const float*                  viewToClipMatrix16 ) -> FramebufferImageIndex;
 

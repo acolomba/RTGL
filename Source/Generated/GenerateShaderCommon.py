@@ -669,7 +669,21 @@ GLOBAL_UNIFORM_STRUCT = [
     # already floors its guides ("bounded and non-zero", RR guide 3.4.2); the
     # world branch never did. 0 = no floor (old behaviour).
     (TYPE_FLOAT32,      1,      "rrGuideMin",                       1),
-    (TYPE_UINT32,       1,      "_pad5",                            1),
+    # What the DLSS-RR albedo guides actually contain. RR does not merely divide
+    # colour by these and multiply back -- it also uses them as edge-detection
+    # and reprojection weights, so they must be SMOOTH material properties.
+    #   0 = raw material: albedo / F0. What shipped before 2026-08-05, i.e. the
+    #       iterations where the worm artifact was reportedly absent.
+    #   1 = full demodulation: ro_d * throughput * ambient (2026-08-06 change).
+    #       Correct in the "divide then remodulate" sense, but folds two
+    #       non-smooth terms in: throughput is fetched in CHECKERBOARD space, so
+    #       adjacent output pixels read non-adjacent texels; and
+    #       getMaterialAmbient() is a thresholded quadratic that reaches exactly
+    #       0 at black albedo, putting a derivative kink along dark-texture
+    #       contours -- which no guide FLOOR can remove.
+    #   2 = material demodulation only: ro_d / envBRDFApprox2, no throughput,
+    #       no ambient. Separates "which factors" from "which reflectivity model".
+    (TYPE_UINT32,       1,      "rrGuideMode",                      1),
 
     # Shadow rays per pixel for DIRECT illumination. 1 = stock. The direct
     # estimate multiplies by a single binary traceVisibility(), so that 0/1 term

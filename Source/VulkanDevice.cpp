@@ -615,6 +615,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->restirSpatialRadius   = std::clamp( illum.restirSpatialRadius, 1.0f, 64.0f );
         gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );
         gu->rrGuideMin            = std::clamp( illum.rrGuideMin, 0.0f, 1.0f );
+        gu->rrGuideMode           = std::clamp( illum.rrGuideMode, 0u, 2u );
 
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
@@ -840,6 +841,33 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                 dlssOn ? "on" : "off",
                                 rrEnabled ? "on" : "off" );
             }
+
+            // Report which OPTIONAL RR guides are actually bound. rt_rr_disocc 0
+            // used to leave pInDisocclusionMask bound (writing zeros) instead of
+            // passing nullptr, so the "off" arm never tested the configuration it
+            // claimed to. An unreported binding is one nobody can falsify.
+            if( rrActive )
+            {
+                const uint32_t disocc  = uniform->GetData()->rrDisoccEnable;
+                const uint32_t spechit = uniform->GetData()->rrSpecHitDist;
+                const uint32_t guide   = uniform->GetData()->rrGuideMode;
+
+                static bool     s_gHave = false;
+                static uint32_t s_gPrev[ 3 ] = {};
+                if( !s_gHave || s_gPrev[ 0 ] != disocc || s_gPrev[ 1 ] != spechit ||
+                    s_gPrev[ 2 ] != guide )
+                {
+                    s_gHave    = true;
+                    s_gPrev[ 0 ] = disocc;
+                    s_gPrev[ 1 ] = spechit;
+                    s_gPrev[ 2 ] = guide;
+                    debug::Warning( "RR guides: pInDisocclusionMask={}, "
+                                    "pInSpecularHitDistance={}, albedo guide mode={}",
+                                    disocc ? "BOUND" : "nullptr",
+                                    spechit ? "BOUND" : "nullptr",
+                                    guide );
+                }
+            }
         }
 
         if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
@@ -970,6 +998,7 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                          timeDelta,
                                          resetHistory,
                                          uniform->GetData()->rrSpecHitDist != 0,
+                                         uniform->GetData()->rrDisoccEnable != 0,
                                          uniform->GetData()->view,
                                          uniform->GetData()->projection );
             }

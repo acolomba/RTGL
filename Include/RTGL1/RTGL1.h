@@ -1084,6 +1084,14 @@ typedef struct RgDrawFrameIlluminationParams
     // always done this (RR guide 3.4.2); the world path did not.
     // 0 disables the floor (pre-fix behaviour). Default: 0.01
     float           rrGuideMin;
+    // What the DLSS-RR albedo guides contain. RR uses them as edge-detection and
+    // reprojection weights as well as for demodulation, so they want to be
+    // smooth material properties.
+    //   0 = raw material (albedo / F0)  - behaviour before 2026-08-05
+    //   1 = ro_d/envBRDF * throughput * ambient - full demodulation (default)
+    //   2 = ro_d/envBRDF only, no throughput or ambient
+    // Default: 1
+    uint32_t        rrGuideMode;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

@@ -303,6 +303,7 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
                            double                        timeDelta,
                            bool                          resetAccumulation,
                            bool                          specHitDistEnabled,
+                           bool                          disoccMaskEnabled,
                            const float*                  worldToViewMatrix16,
                            const float*                  viewToClipMatrix16 )
     -> FramebufferImageIndex
@@ -419,7 +420,15 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     // Sentinel 10000.0 written by CmNoisyCompose where scene lighting changed
     // sharply vs the reprojected previous frame — forces RR to drop history
     // (transient lights: barrel explosions, muzzle flashes, occluded glows).
-    evalParams.pInDisocclusionMask       = &disoccResource;
+    // Disabling the mask must UNBIND it, not merely write zeros into it. Those
+    // are not the same thing to NGX: an all-zero mask is still a mask, and if
+    // NGX reads it as a per-pixel history-validity signal rather than as a
+    // discard sentinel, all-zero means "discard history everywhere, every
+    // frame" -- RR with no temporal accumulation at all. Binding it
+    // unconditionally is also why toggling rt_rr_disocc appeared to do nothing:
+    // both states left the buffer bound, so the toggle never tested the
+    // pre-2026-08-06 configuration (no mask at all).
+    evalParams.pInDisocclusionMask       = disoccMaskEnabled ? &disoccResource : nullptr;
     evalParams.pInWorldToViewMatrix      = worldToView;
     evalParams.pInViewToClipMatrix       = viewToClip;
 
