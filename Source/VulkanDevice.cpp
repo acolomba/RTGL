@@ -866,6 +866,26 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                     disocc ? "BOUND" : "nullptr",
                                     spechit ? "BOUND" : "nullptr",
                                     guide );
+
+                    // b031a21 replaced the hardcoded TEMPORAL_RADIUS 2 with this
+                    // uniform, and bisect blames that commit for the RR worm
+                    // regression even though 2.0 should reproduce the constant
+                    // exactly. Report the value actually reaching the shader:
+                    // either the cvar is not 2, or the uniform is not landing
+                    // where the shader reads it. Print the neighbouring members
+                    // too -- if those are also wrong, it is the std140 layout.
+                    debug::Warning( "ReSTIR uniforms: temporalJitter={} (stock 2), "
+                                    "shadowSamples={} (stock 1), debugRestirM={}, "
+                                    "spatialSamples={} (stock 8), spatialRadius={} "
+                                    "(stock 30), temporalMCap={} (stock 20), "
+                                    "initialSamples={} (stock 8)",
+                                    uniform->GetData()->restirTemporalJitter,
+                                    uniform->GetData()->shadowSamples,
+                                    uniform->GetData()->debugRestirM,
+                                    uniform->GetData()->restirSpatialSamples,
+                                    uniform->GetData()->restirSpatialRadius,
+                                    uniform->GetData()->restirTemporalMCap,
+                                    uniform->GetData()->restirInitialSamples );
                 }
             }
         }
