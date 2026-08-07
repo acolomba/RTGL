@@ -59,6 +59,59 @@ layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPO
 // z = reprojected previous lum, w = 1 if reprojection was valid
 shared vec4 s_lum[ DISOCC_TILE_THREADS ];
 
+// Firefly clamp for the DLSS-RR path.
+//
+// RTGL feeds RR raw 1-spp radiance: ComposeNoisy applies no spatial filter, and
+// AccumulateForRR (the temporal prefilter) is never called. A-SVGF by contrast
+// runs anti-firefly plus a variance-driven atrous, which is most of why it looks
+// stabler in motion -- once camera movement costs RR its temporal history, what
+// is left underneath is the unfiltered signal. Remix runs an equivalent clamp
+// before RR for the same reason.
+//
+// Deliberately conservative: a pixel is scaled down only if it out-shines the
+// BRIGHTEST of its 4 spatial neighbours by rrFireflyThreshold. A genuinely
+// bright region has bright neighbours and is untouched; only isolated
+// single-sample spikes are. Chroma is preserved (uniform scale), so this
+// suppresses outliers without the blur a real spatial filter would cost -- which
+// matters because NVIDIA's guidance is to feed RR high-quality noisy input, not
+// pre-mangled input.
+vec3 suppressFirefly( const vec3 c, const vec3 n0, const vec3 n1, const vec3 n2, const vec3 n3 )
+{
+    const float thr = globalUniform.rrFireflyThreshold;
+    if( thr <= 0.0 )
+    {
+        return c;
+    }
+
+    const float lumC = getLuminance( c );
+    const float floorLum = globalUniform.rrFireflyMinLum;
+
+    // near-black: ratios are meaningless, and clamping here only eats detail
+    if( lumC <= floorLum )
+    {
+        return c;
+    }
+
+    const float lumN = max( max( getLuminance( n0 ), getLuminance( n1 ) ),
+                            max( getLuminance( n2 ), getLuminance( n3 ) ) );
+
+    const float limit = thr * max( lumN, floorLum );
+
+    return lumC > limit ? c * ( limit / lumC ) : c;
+}
+
+// Spatial neighbour in REGULAR pixel space, mapped back to checkerboard space.
+// Stepping directly in checkerboard coords would not give a spatial neighbour:
+// the two checkerboard halves interleave into alternating columns.
+ivec2 neighbourCheckerboardPix( const ivec2 regularPix, const ivec2 offset )
+{
+    const ivec2 p = clamp( regularPix + offset,
+                           ivec2( 0 ),
+                           ivec2( int( globalUniform.renderWidth ) - 1,
+                                  int( globalUniform.renderHeight ) - 1 ) );
+    return getCheckerboardPix( p );
+}
+
 void main()
 {
     const ivec2 pix             = ivec2( gl_GlobalInvocationID.x, gl_GlobalInvocationID.y );
@@ -76,9 +129,36 @@ void main()
 
     if( inScreen )
     {
-        const vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
-        const vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
-        const vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
+        vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
+        vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
+        vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
+
+        // Off by default -- keep the 12 neighbour fetches out of the common path.
+        if( globalUniform.rrFireflyThreshold > 0.0 )
+        {
+            const ivec2 nbL = neighbourCheckerboardPix( pix, ivec2( -1, 0 ) );
+            const ivec2 nbR = neighbourCheckerboardPix( pix, ivec2( 1, 0 ) );
+            const ivec2 nbU = neighbourCheckerboardPix( pix, ivec2( 0, -1 ) );
+            const ivec2 nbD = neighbourCheckerboardPix( pix, ivec2( 0, 1 ) );
+
+            // Clamp each signal independently: a firefly in direct lighting should
+            // not be masked by a bright neighbour in indirect, and vice versa.
+            diffuse  = suppressFirefly( diffuse,
+                                        texelFetchUnfilteredDirect( nbL ),
+                                        texelFetchUnfilteredDirect( nbR ),
+                                        texelFetchUnfilteredDirect( nbU ),
+                                        texelFetchUnfilteredDirect( nbD ) );
+            indirect = suppressFirefly( indirect,
+                                        texelFetchUnfilteredIndir( nbL ),
+                                        texelFetchUnfilteredIndir( nbR ),
+                                        texelFetchUnfilteredIndir( nbU ),
+                                        texelFetchUnfilteredIndir( nbD ) );
+            specRaw  = suppressFirefly( specRaw,
+                                        texelFetchUnfilteredSpecular( nbL ),
+                                        texelFetchUnfilteredSpecular( nbR ),
+                                        texelFetchUnfilteredSpecular( nbU ),
+                                        texelFetchUnfilteredSpecular( nbD ) );
+        }
 
         const vec3 albedo     = texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb;
         const vec3 throughput = texelFetch( framebufThroughput_Sampler, checkerboardPix, 0 ).rgb;

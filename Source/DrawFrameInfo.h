@@ -288,8 +288,10 @@ namespace detail
             .specularSensitivityToChange                 = 0.5f,
             .polygonalLightSpotlightFactor               = 2.0f,
             .lightUniqueIdIgnoreFirstPersonViewerShadows = nullptr,
-            // Remix-style boiling filter in ComposeNoisy — default ON for DLSS-RR
+            // inert: AccumulateForRR() is never called (see RTGL1.h)
             .enableRrTemporalPrefilter                   = false,
+            .rrFireflyThreshold                          = 0.0f,
+            .rrFireflyMinLum                             = 0.01f,
         };
     };
 

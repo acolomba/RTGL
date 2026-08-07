@@ -600,6 +600,9 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->rrDisoccMinDelta = std::max( illum.rrDisocclusionMinDelta, 0.0f );
         gu->rrDisoccShowMask = !!illum.rrDisocclusionShowMask;
 
+        gu->rrFireflyThreshold = std::max( illum.rrFireflyThreshold, 0.0f );
+        gu->rrFireflyMinLum    = std::max( illum.rrFireflyMinLum, 0.0f );
+
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
         {

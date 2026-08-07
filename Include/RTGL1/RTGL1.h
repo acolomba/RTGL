@@ -961,10 +961,10 @@ typedef struct RgDrawFrameIlluminationParams
     // E.g. first-person flashlight.
     // Null, if none.
     const uint64_t* lightUniqueIdIgnoreFirstPersonViewerShadows;
-    // DLSS-RR path only: neighborhood firefly clamp inside ComposeNoisy.
     // DLSS-RR: run A-SVGF temporal accumulation before ComposeNoisy and feed those
     // buffers to RR (spatial atrous still skipped). Stabilizes flickering lights.
-    // Default: true. (Replaces the old screen-space firefly clamp experiment.)
+    // NOTE: currently INERT -- AccumulateForRR() is never called, VulkanDevice
+    // always takes ComposeNoisy() on the RR path. Kept for API compatibility.
     RgBool32        enableRrTemporalPrefilter;
     // DLSS-RR: write a disocclusion mask that forces RR to discard its temporal
     // history where scene lighting changed sharply vs the previous frame
@@ -980,6 +980,20 @@ typedef struct RgDrawFrameIlluminationParams
     float           rrDisocclusionMinDelta;
     // Debug: tint pixels red where the disocclusion mask fired. Default: false
     RgBool32        rrDisocclusionShowMask;
+    // DLSS-RR: neighbourhood firefly clamp on the noisy lighting in
+    // ComposeNoisy, before it reaches NGX. The RR path has no spatial or
+    // temporal prefilter of any kind (A-SVGF gets anti-firefly + a
+    // variance-driven atrous), so isolated 1-spp spikes go to RR raw; Remix
+    // runs an equivalent clamp. A pixel is scaled down only when its luminance
+    // exceeds this multiple of the BRIGHTEST of its 4 spatial neighbours, so
+    // genuinely bright regions (whose neighbours are also bright) are left
+    // alone and only isolated spikes are touched.
+    // Lower = more aggressive. 0 disables. Default: 4.0
+    float           rrFireflyThreshold;
+    // Absolute luminance floor below which the clamp is skipped, so ratios are
+    // not evaluated in near-black areas where they are meaningless.
+    // Default: 0.01
+    float           rrFireflyMinLum;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

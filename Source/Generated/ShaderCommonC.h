@@ -306,8 +306,8 @@ struct ShGlobalUniform
     float rrDisoccRatio;
     float rrDisoccMinDelta;
     uint32_t rrDisoccShowMask;
-    uint32_t _pad0;
-    uint32_t _pad1;
+    float rrFireflyThreshold;
+    float rrFireflyMinLum;
     uint32_t _pad2;
     float fluidColor[4];
     float viewProjCubemap[96];

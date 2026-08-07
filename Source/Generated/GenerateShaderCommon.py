@@ -637,8 +637,13 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "rrDisoccMinDelta",                 1),
 
     (TYPE_UINT32,       1,      "rrDisoccShowMask",                 1),
-    (TYPE_UINT32,       1,      "_pad0",                            1),
-    (TYPE_UINT32,       1,      "_pad1",                            1),
+    # DLSS-RR firefly clamp, applied to the noisy lighting in CmNoisyCompose
+    # before it reaches RR. RTGL's RR path has no spatial or temporal prefilter
+    # at all (A-SVGF gets anti-firefly + variance-driven atrous), so single-
+    # sample spikes go to NGX raw. Remix runs an equivalent clamp before RR.
+    # 0 = off. Taken from the _pad slots so std140 layout is unchanged.
+    (TYPE_FLOAT32,      1,      "rrFireflyThreshold",               1),
+    (TYPE_FLOAT32,      1,      "rrFireflyMinLum",                  1),
     (TYPE_UINT32,       1,      "_pad2",                            1),
 
     (TYPE_FLOAT32,      4,      "fluidColor",                       1),
