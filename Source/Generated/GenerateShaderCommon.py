@@ -644,7 +644,9 @@ GLOBAL_UNIFORM_STRUCT = [
     # 0 = off. Taken from the _pad slots so std140 layout is unchanged.
     (TYPE_FLOAT32,      1,      "rrFireflyThreshold",               1),
     (TYPE_FLOAT32,      1,      "rrFireflyMinLum",                  1),
-    (TYPE_UINT32,       1,      "_pad2",                            1),
+    # ReSTIR reuse taps sampled with tiled blue noise instead of hash white
+    # noise (the old "TODO: need low discrepancy noise" in selectLight_Direct).
+    (TYPE_UINT32,       1,      "restirBlueNoise",                  1),
 
     (TYPE_FLOAT32,      4,      "fluidColor",                       1),
 

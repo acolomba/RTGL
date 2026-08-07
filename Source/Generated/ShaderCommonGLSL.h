@@ -303,7 +303,7 @@ struct ShGlobalUniform
     uint rrDisoccShowMask;
     float rrFireflyThreshold;
     float rrFireflyMinLum;
-    uint _pad2;
+    uint restirBlueNoise;
     vec4 fluidColor;
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;

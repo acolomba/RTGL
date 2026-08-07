@@ -299,4 +299,32 @@ uint getRandomSeed(const ivec2 pix, uint frameIndex)
     return packRandomSeed(texIndex, offset);
 }
 
+// Seed for rndBlueNoise8() that actually preserves blue noise.
+//
+// getRandomSeed() above hashes the pixel coordinate into the texture offset, so
+// neighbouring pixels read uncorrelated locations of the blue noise texture --
+// which destroys the one property blue noise exists for. Values sampled with it
+// are spatially white, whatever texture they came from.
+//
+// Blue noise only pays off when the texture is TILED over the screen, so that
+// adjacent pixels read adjacent texels and inherit the texture's spatial
+// structure. Pass the REGULAR (non-checkerboard) pixel: checkerboard columns
+// interleave, so tiling in checkerboard space would scramble the neighbourhood
+// exactly like hashing does.
+//
+// The per-frame toroidal shift uses odd strides (coprime with the power-of-two
+// texture size, so they cycle through every offset) and the frame also selects
+// the texture slice, keeping successive frames decorrelated for temporal
+// accumulation.
+uint getBlueNoiseSeed(const ivec2 regularPix, uint frameIndex)
+{
+    uvec2 offset = uvec2(
+        (uint(regularPix.x) + frameIndex * 59u) & (BLUE_NOISE_TEXTURE_SIZE - 1),
+        (uint(regularPix.y) + frameIndex * 37u) & (BLUE_NOISE_TEXTURE_SIZE - 1)
+    );
+    uint texIndex = frameIndex % BLUE_NOISE_TEXTURE_COUNT;
+
+    return packRandomSeed(texIndex, offset);
+}
+
 #endif // RANDOM_H_

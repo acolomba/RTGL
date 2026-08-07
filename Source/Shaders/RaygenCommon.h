@@ -518,6 +518,18 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
     const vec2 posPrev = getPrevScreenPos(framebufMotion_Sampler, pix);
     uint salt = RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE;
 
+    // Blue-noise seed for reuse-tap placement (the "TODO: need low discrepancy
+    // noise" below). Tiled by REGULAR pixel so adjacent pixels get adjacent
+    // texels; see getBlueNoiseSeed(). With white noise the 8 spatial taps clump,
+    // neighbouring pixels reuse overlapping neighbourhoods, and their estimates
+    // end up correlated -- which shows as low-frequency blotching that no
+    // denoiser can separate from signal. Blue noise spreads the taps and makes
+    // the residual high-frequency and spatially even, which is also what
+    // DLSS-RR asks for (decorrelated reservoirs, RR guide 3.5).
+    const bool useBlueNoise = (globalUniform.restirBlueNoise != 0);
+    const uint bnSeed = getBlueNoiseSeed(getRegularPixFromCheckerboardPix(pix),
+                                         globalUniform.frameId);
+
 
     Reservoir initReservoir = imageLoadReservoirInitial(pix);
     
@@ -530,8 +542,8 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
     // temporal
     for (int pixIndex = 0; pixIndex < TEMPORAL_SAMPLES; pixIndex++)
     {
-        // TODO: need low discrepancy noise
-        vec2 rndOffset = rnd8_4(seed, salt++).xy * 2.0 - 1.0;
+        vec2 rndOffset = (useBlueNoise ? rndBlueNoise8(bnSeed, salt) : rnd8_4(seed, salt)).xy * 2.0 - 1.0;
+        salt++;
         ivec2 pp = ivec2(floor(posPrev + rndOffset * TEMPORAL_RADIUS));
 
         {
@@ -570,8 +582,8 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
 
     for (int pixIndex = 0; pixIndex < SPATIAL_SAMPLES; pixIndex++)
     {
-        // TODO: need low discrepancy noise
-        vec2 rndOffset = rnd8_4(seed, salt++).xy * 2.0 - 1.0;
+        vec2 rndOffset = (useBlueNoise ? rndBlueNoise8(bnSeed, salt) : rnd8_4(seed, salt)).xy * 2.0 - 1.0;
+        salt++;
         ivec2 pp = pix + ivec2(rndOffset * SPATIAL_RADIUS);
 
         {

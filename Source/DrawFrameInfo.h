@@ -292,6 +292,7 @@ namespace detail
             .enableRrTemporalPrefilter                   = false,
             .rrFireflyThreshold                          = 0.0f,
             .rrFireflyMinLum                             = 0.01f,
+            .restirBlueNoise                             = true,
         };
     };
 

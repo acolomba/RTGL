@@ -602,6 +602,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
         gu->rrFireflyThreshold = std::max( illum.rrFireflyThreshold, 0.0f );
         gu->rrFireflyMinLum    = std::max( illum.rrFireflyMinLum, 0.0f );
+        gu->restirBlueNoise    = !!illum.restirBlueNoise;
 
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )

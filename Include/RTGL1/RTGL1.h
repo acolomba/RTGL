@@ -994,6 +994,15 @@ typedef struct RgDrawFrameIlluminationParams
     // not evaluated in near-black areas where they are meaningless.
     // Default: 0.01
     float           rrFireflyMinLum;
+    // Place ReSTIR's temporal/spatial reuse taps with tiled blue noise instead
+    // of hash white noise. With white noise the taps clump and neighbouring
+    // pixels reuse overlapping neighbourhoods, correlating their estimates into
+    // low-frequency blotching that no denoiser can separate from signal. Blue
+    // noise spreads them, leaving a high-frequency, spatially even residual --
+    // which is also what DLSS-RR requires (decorrelated reservoirs, guide 3.5).
+    // Reduces variance at the source, so it helps A-SVGF and RR alike.
+    // Default: true
+    RgBool32        restirBlueNoise;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.
