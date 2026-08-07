@@ -63,6 +63,7 @@ public:
                 RgFloat2D                     jitterOffset,
                 double                        timeDelta,
                 bool                          resetAccumulation,
+                bool                          specHitDistEnabled,
                 const float*                  worldToViewMatrix16,
                 const float*                  viewToClipMatrix16 ) -> FramebufferImageIndex;
 

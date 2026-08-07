@@ -1025,6 +1025,44 @@ typedef struct RgDrawFrameIlluminationParams
     // (and with it 1-spp convergence) collapses exactly where variance is worst.
     // 0 reprojects exactly, as RTXDI does. Default: 2.0
     float           restirTemporalJitter;
+    // Feed DLSS-RR pInSpecularHitDistance: the world distance from the shading
+    // point to whatever produced the highlight. Specular does not live ON the
+    // surface, so without this RR reprojects highlights as if it did and glossy
+    // surfaces smear/fizzle under camera motion. Shipping RR integrations all
+    // provide it. Default: true
+    RgBool32        rrSpecularHitDistance;
+
+    // --- Samples per pixel (Doom64-RT) --------------------------------------
+    // The path tracer is 1 spp: convergence is supplied entirely by temporal
+    // accumulation (ReSTIR reservoir M + the denoiser's history), and camera
+    // motion legitimately destroys both, leaving the raw 1-spp signal exposed.
+    // These trade GPU time for a quieter signal at the SOURCE, which is upstream
+    // of the denoiser choice and therefore helps A-SVGF and DLSS-RR equally.
+    // Both clamped to [1,8]. 1 = stock behaviour.
+
+    // Independent direct-lighting estimates per pixel, averaged. Each costs one
+    // extra shadow ray plus RIS/reuse math (no extra rays for the candidates --
+    // calcInitialReservoir traces none outside the initial pass). Default: 1
+    uint32_t        directSamples;
+    // Independent indirect (GI) paths per pixel, RIS-combined into the single
+    // initial reservoir. Each costs ~2 bounce rays + 2 shadow rays, so this is
+    // the expensive one. Default: 1
+    uint32_t        indirectSamples;
+
+    // --- ReSTIR quality (previously hardcoded) ------------------------------
+    // RIS candidate lights considered when building the initial reservoir.
+    // Traces no rays -- pure importance-sampling quality. Clamped [1,32].
+    // Default: 8
+    uint32_t        restirInitialSamples;
+    // Spatial reuse taps in the direct pass. Image reads, no rays.
+    // Clamped [0,16]. Default: 8
+    uint32_t        restirSpatialSamples;
+    // Radius in pixels of those spatial taps. Clamped [1,64]. Default: 30
+    float           restirSpatialRadius;
+    // Cap on accumulated temporal M, as a multiple of the initial reservoir's M.
+    // Higher = longer history = smoother when still, slower to react.
+    // Clamped [1,64]. Default: 20
+    uint32_t        restirTemporalMCap;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

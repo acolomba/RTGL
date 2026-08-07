@@ -33,6 +33,18 @@
 // Extra points on the chosen light for multi-sample shadow visibility.
 // Well clear of RESAMPLE_INDIRECT above so the ranges cannot overlap.
 #define RANDOM_SALT_SHADOW_SAMPLES_BASE 160
+// Per-sample salt bases for the multi-sample-per-pixel loops. Each sample index
+// gets its own stride-sized block so the salt ranges of different samples cannot
+// overlap (selectLight_Direct consumes ~17 salts per invocation).
+// Stride must exceed everything ONE sample consumes, or sample i's draws
+// collide with sample i+1's and the "independent" estimates become correlated
+// -- which would silently defeat the averaging. Budget per sample:
+//   [base +   0, +64 )  selectLight_Direct   (2 temporal + 2 per spatial tap, <=16 taps)
+//   [base +  64, +192)  calcInitialReservoir (2 per RIS candidate, <=32 candidates)
+#define RANDOM_SALT_SPP_STRIDE 256
+#define RANDOM_SALT_SPP_INITIAL_OFFSET 64
+#define RANDOM_SALT_DIRECT_SPP_BASE 1024
+#define RANDOM_SALT_INDIRECT_SPP_BASE 4096
 
 // Sample disk uniformly
 // u1, u2 -- uniform random numbers

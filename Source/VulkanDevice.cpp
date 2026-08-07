@@ -606,6 +606,14 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->shadowSamples      = std::clamp( illum.shadowSamples, 1u, 8u );
         gu->debugRestirM       = !!illum.debugRestirM;
         gu->restirTemporalJitter = std::clamp( illum.restirTemporalJitter, 0.0f, 8.0f );
+        gu->rrSpecHitDist      = !!illum.rrSpecularHitDistance;
+
+        gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
+        gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );
+        gu->restirInitialSamples  = std::clamp( illum.restirInitialSamples, 1u, 32u );
+        gu->restirSpatialSamples  = std::clamp( illum.restirSpatialSamples, 0u, 16u );
+        gu->restirSpatialRadius   = std::clamp( illum.restirSpatialRadius, 1.0f, 64.0f );
+        gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );
 
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
@@ -958,6 +966,7 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                          jitter,
                                          timeDelta,
                                          resetHistory,
+                                         uniform->GetData()->rrSpecHitDist != 0,
                                          uniform->GetData()->view,
                                          uniform->GetData()->projection );
             }

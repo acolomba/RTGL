@@ -302,6 +302,7 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
                            RgFloat2D                     jitterOffset,
                            double                        timeDelta,
                            bool                          resetAccumulation,
+                           bool                          specHitDistEnabled,
                            const float*                  worldToViewMatrix16,
                            const float*                  viewToClipMatrix16 )
     -> FramebufferImageIndex
@@ -343,6 +344,7 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
         FB_IMAGE_INDEX_DIFF_PING_COLOR_AND_VARIANCE,
         FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE,
         FB_IMAGE_INDEX_RR_DISOCCLUSION,
+        FB_IMAGE_INDEX_SPECULAR_HIT_DISTANCE,
     };
 
     framebuffers.BarrierMultiple( cmd, //
@@ -369,6 +371,7 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     NVSDK_NGX_Resource_VK normalsResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DIFF_PING_COLOR_AND_VARIANCE, sourceSize );
     NVSDK_NGX_Resource_VK specAlbResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE, sourceSize );
     NVSDK_NGX_Resource_VK disoccResource    = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_RR_DISOCCLUSION, sourceSize );
+    NVSDK_NGX_Resource_VK specHitDistResource = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_SPECULAR_HIT_DISTANCE, sourceSize );
     // clang-format on
 
     // Matrices must outlive Evaluate — NGX reads pointers asynchronously with the cmd buffer.
@@ -404,10 +407,15 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     evalParams.InExposureScale           = 1.0f;
     evalParams.InToneMapperType          = NVSDK_NGX_TONEMAPPER_ONEOVERLUMA;
     evalParams.InFrameTimeDeltaInMsec    = float( timeDelta * 1000.0 );
-    // No specular hit distance: FB_DEPTH_WORLD was the primary-hit camera
-    // distance, not the reflection ray length — a wrong guide corrupts RR's
-    // specular reprojection every frame. No guide beats a wrong guide.
-    evalParams.pInSpecularHitDistance    = nullptr;
+    // Specular hit distance: world distance from the shading point to whatever
+    // produced the highlight. RR needs it because specular does not live ON the
+    // surface -- without it RR reprojects highlights as if it did, so glossy
+    // surfaces smear and fizzle under camera motion. This was once bound to
+    // FB_DEPTH_WORLD (the primary-hit CAMERA distance -- the wrong signal) and
+    // then correctly set to nullptr; FB_SPECULAR_HIT_DISTANCE is the right value,
+    // resolved from distToLight by CmNoisyCompose. Gated so it can be A/B'd
+    // against the nullptr behaviour without a rebuild.
+    evalParams.pInSpecularHitDistance    = specHitDistEnabled ? &specHitDistResource : nullptr;
     // Sentinel 10000.0 written by CmNoisyCompose where scene lighting changed
     // sharply vs the reprojected previous frame — forces RR to drop history
     // (transient lights: barrel explosions, muzzle flashes, occluded glows).

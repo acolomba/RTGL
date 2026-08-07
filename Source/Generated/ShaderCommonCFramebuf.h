@@ -86,12 +86,13 @@ enum FramebufferImageIndex
     FB_IMAGE_INDEX_RR_DISOCCLUSION = 72,
     FB_IMAGE_INDEX_RR_LUM_HISTORY = 73,
     FB_IMAGE_INDEX_RR_LUM_HISTORY_PREV = 74,
-    FB_IMAGE_INDEX_GRADIENT_INPUTS = 75,
-    FB_IMAGE_INDEX_GRADIENT_INPUTS_PREV = 76,
-    FB_IMAGE_INDEX_D_I_S_PING_GRADIENT = 77,
-    FB_IMAGE_INDEX_D_I_S_PONG_GRADIENT = 78,
-    FB_IMAGE_INDEX_D_I_S_GRADIENT_HISTORY = 79,
-    FB_IMAGE_INDEX_GRADIENT_PREV_PIX = 80,
+    FB_IMAGE_INDEX_SPECULAR_HIT_DISTANCE = 75,
+    FB_IMAGE_INDEX_GRADIENT_INPUTS = 76,
+    FB_IMAGE_INDEX_GRADIENT_INPUTS_PREV = 77,
+    FB_IMAGE_INDEX_D_I_S_PING_GRADIENT = 78,
+    FB_IMAGE_INDEX_D_I_S_PONG_GRADIENT = 79,
+    FB_IMAGE_INDEX_D_I_S_GRADIENT_HISTORY = 80,
+    FB_IMAGE_INDEX_GRADIENT_PREV_PIX = 81,
 };
 
 enum FramebufferImageFlagBits
@@ -106,7 +107,7 @@ enum FramebufferImageFlagBits
 };
 typedef uint32_t FramebufferImageFlags;
 
-constexpr uint32_t ShFramebuffers_Count = 81;
+constexpr uint32_t ShFramebuffers_Count = 82;
 extern const VkFormat ShFramebuffers_Formats[];
 extern const FramebufferImageFlags ShFramebuffers_Flags[];
 extern const uint32_t ShFramebuffers_Bindings[];

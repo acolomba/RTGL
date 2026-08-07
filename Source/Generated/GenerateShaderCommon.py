@@ -650,6 +650,22 @@ GLOBAL_UNIFORM_STRUCT = [
 
     (TYPE_FLOAT32,      4,      "fluidColor",                       1),
 
+    # --- Samples per pixel + ReSTIR quality (Doom64-RT) -----------------------
+    # The path tracer is 1 spp; convergence comes from temporal accumulation
+    # (ReSTIR M + denoiser history), both of which motion legitimately destroys.
+    # These trade GPU time for a quieter RAW signal, which helps A-SVGF and
+    # DLSS-RR equally because it is upstream of both. All default to stock.
+    # Two full vec4 groups so std140 alignment of what follows is unchanged.
+    (TYPE_UINT32,       1,      "directSamples",                    1),
+    (TYPE_UINT32,       1,      "indirectSamples",                  1),
+    (TYPE_UINT32,       1,      "restirInitialSamples",             1),
+    (TYPE_UINT32,       1,      "restirSpatialSamples",             1),
+
+    (TYPE_FLOAT32,      1,      "restirSpatialRadius",              1),
+    (TYPE_UINT32,       1,      "restirTemporalMCap",               1),
+    (TYPE_UINT32,       1,      "_pad4",                            1),
+    (TYPE_UINT32,       1,      "_pad5",                            1),
+
     # Shadow rays per pixel for DIRECT illumination. 1 = stock. The direct
     # estimate multiplies by a single binary traceVisibility(), so that 0/1 term
     # dominates the 1-spp variance and is untouched by anything ReSTIR does
@@ -667,7 +683,8 @@ GLOBAL_UNIFORM_STRUCT = [
     # reuse threshold, so the tap is rejected and M collapses. 0 = reproject
     # exactly (what RTXDI does).
     (TYPE_FLOAT32,      1,      "restirTemporalJitter",             1),
-    (TYPE_FLOAT32,      1,      "_pad3",                            1),
+    # DLSS-RR: feed pInSpecularHitDistance (see the SpecularHitDistance framebuf).
+    (TYPE_UINT32,       1,      "rrSpecHitDist",                    1),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),
@@ -910,6 +927,15 @@ FRAMEBUFFERS = {
     # in regular (non-checkerboard) pixel space, RR path only.
     "RrDisocclusion"                    : (TYPE_FLOAT16,    COMPONENT_R,    0),
     "RrLumHistory"                      : (TYPE_FLOAT16,    COMPONENT_R,    FRAMEBUF_FLAGS_STORE_PREV),
+
+    # DLSS-RR: pInSpecularHitDistance -- world distance from the shading point to
+    # whatever produced the highlight. RR needs this to reproject specular, which
+    # does NOT live on the surface; without it specular is reprojected as if it
+    # did, so glossy surfaces smear and fizzle under camera motion. Was bound to
+    # FB_DEPTH_WORLD once (primary-hit camera distance -- the wrong signal) and
+    # then set to nullptr; this is the correct value. Written by RtRaygenDirect
+    # in checkerboard space, resolved like the other direct outputs.
+    "SpecularHitDistance"               : (TYPE_FLOAT16,    COMPONENT_R,    0),
 }
 
 if GRADIENT_ESTIMATION_ENABLED:

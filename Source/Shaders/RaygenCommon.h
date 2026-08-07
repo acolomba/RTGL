@@ -398,7 +398,10 @@ float targetPdfForLightSample(uint lightIndex, const Surface surf, const vec2 po
 
 Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const vec2 pointRnd)
 {
-    #define INITIAL_SAMPLES 8
+    // RIS candidate count. Traces no rays outside the INITIAL pass (see the
+    // LIGHT_SAMPLE_METHOD_INITIAL guard below), so raising it buys better light
+    // importance sampling almost for free. Clamped C++-side to [1,32].
+    const uint INITIAL_SAMPLES = max(globalUniform.restirInitialSamples, 1u);
     
     Reservoir regularReservoir = emptyReservoir();
 #if LIGHT_GRID_ENABLED
@@ -407,7 +410,7 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
         vec3 gridWorldPos = jitterPositionForLightGrid(surf.position, rnd8_4(seed, salt++).xyz);
         int lightGridBase = cellToArrayIndex(worldToCell(gridWorldPos));
 
-        for (int i = 0; i < INITIAL_SAMPLES; i++)
+        for (uint i = 0; i < INITIAL_SAMPLES; i++)
         {
             // uniform distribution as a coarse source pdf
             float rnd = rnd16(seed, salt++);
@@ -433,7 +436,7 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
     else
 #endif // LIGHT_GRID_ENABLED
     {      
-        for (int i = 0; i < INITIAL_SAMPLES; i++)
+        for (uint i = 0; i < INITIAL_SAMPLES; i++)
         {
             // uniform distribution as a coarse source pdf
             float rnd = rnd16(seed, salt++);
@@ -504,19 +507,31 @@ bool testSurfaceForReuse(
         (dot(curNormal, otherNormal) > NormalThreshold);
 }
 
-// Select light in screen-space for direct illumination
-Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, const vec2 pointRnd)
+// Select light in screen-space for direct illumination.
+//
+// saltBase offsets every random draw so the caller can run this more than once
+// per pixel and get independent selections (multi-sample-per-pixel loop in
+// processDirectIllumination). initReservoir is supplied by the caller rather
+// than loaded here: sample 0 passes the stored one from the initial-reservoir
+// pass (so N=1 is bit-identical to stock), later samples pass fresh RIS
+// candidates from calcInitialReservoir, which costs no rays.
+Reservoir selectLight_Direct(const ivec2 pix, uint seed, uint saltBase,
+                             const Surface surf, const vec2 pointRnd,
+                             const Reservoir initReservoir)
 {
     #define TEMPORAL_SAMPLES 1
     #define TEMPORAL_RADIUS 2
-    #define SPATIAL_SAMPLES 8
-    #define SPATIAL_RADIUS 30
+    // Spatial reuse: image reads only, no rays. More taps / wider radius = a
+    // better-converged reservoir at the cost of bandwidth and (at large radii)
+    // more rejected taps from testSurfaceForReuse. Clamped C++-side.
+    const uint  SPATIAL_SAMPLES = globalUniform.restirSpatialSamples;
+    const float SPATIAL_RADIUS  = globalUniform.restirSpatialRadius;
 
     const ivec3 chRenderArea = getCheckerboardedRenderArea(pix); // assuming that pix is checkerboarded
     const float motionZ = texelFetch(framebufMotion_Sampler, pix, 0).z;
     const float depthCur = texelFetch(framebufDepthWorld_Sampler, pix, 0).r;
     const vec2 posPrev = getPrevScreenPos(framebufMotion_Sampler, pix);
-    uint salt = RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE;
+    uint salt = saltBase;
 
     // Blue-noise seed for reuse-tap placement (the "TODO: need low discrepancy
     // noise" below). Tiled by REGULAR pixel so adjacent pixels get adjacent
@@ -527,12 +542,13 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
     // the residual high-frequency and spatially even, which is also what
     // DLSS-RR asks for (decorrelated reservoirs, RR guide 3.5).
     const bool useBlueNoise = (globalUniform.restirBlueNoise != 0);
+    // saltBase folded in so each sample of the multi-sample loop gets a
+    // different blue-noise slice -- otherwise every sample would place its reuse
+    // taps identically and averaging them would reduce no variance at all.
     const uint bnSeed = getBlueNoiseSeed(getRegularPixFromCheckerboardPix(pix),
-                                         globalUniform.frameId);
+                                         globalUniform.frameId + saltBase);
 
 
-    Reservoir initReservoir = imageLoadReservoirInitial(pix);
-    
     Reservoir combined;
     initCombinedReservoir(
         combined, 
@@ -564,7 +580,7 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
 
         Reservoir temporal = imageLoadReservoir_Prev(pp);
         // renormalize to prevent precision problems
-        normalizeReservoir(temporal, initReservoir.M * 20);
+        normalizeReservoir(temporal, initReservoir.M * max(globalUniform.restirTemporalMCap, 1u));
 
         float temporalTargetPdf_curSurf = 0.0;
         if (temporal.selected != LIGHT_INDEX_NONE)
@@ -584,7 +600,7 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
             temporal, temporalTargetPdf_curSurf, rnd);
     } 
 
-    for (int pixIndex = 0; pixIndex < SPATIAL_SAMPLES; pixIndex++)
+    for (uint pixIndex = 0; pixIndex < SPATIAL_SAMPLES; pixIndex++)
     {
         vec2 rndOffset = (useBlueNoise ? rndBlueNoise8(bnSeed, salt) : rnd8_4(seed, salt)).xy * 2.0 - 1.0;
         salt++;
@@ -645,6 +661,15 @@ Reservoir selectLight_Indir(uint seed, const Surface surf, const vec2 pointRnd)
 vec2 getLightPointRnd(uint seed)
 {
     return rnd16_2(seed, RANDOM_SALT_LIGHT_POINT) * 0.99;
+}
+
+// Point on the light for sample i of the multi-sample loop. Sample 0 must match
+// getLightPointRnd() exactly so N=1 stays bit-identical to stock.
+vec2 getLightPointRndForSample(uint seed, uint sampleIndex)
+{
+    return sampleIndex == 0u
+               ? getLightPointRnd(seed)
+               : rnd16_2(seed, RANDOM_SALT_LIGHT_POINT + sampleIndex) * 0.99;
 }
 
 #if LIGHT_SAMPLE_METHOD != LIGHT_SAMPLE_METHOD_NONE
@@ -750,16 +775,86 @@ Reservoir processDirectIllumination(uint seed, const ivec2 pix, const Surface su
     {
         return emptyReservoir();
     }
-    const vec2 pointRnd = getLightPointRnd(seed);
-    
-    const Reservoir reservoir = selectLight_Direct(pix, seed, surf, pointRnd);
-    if (!isReservoirValid(reservoir))
+    // Multi-sample direct lighting.
+    //
+    // The path tracer is 1 spp and only converges through temporal accumulation,
+    // which camera motion legitimately destroys -- so the raw signal is what
+    // shows through while moving. N independent estimates, averaged, reduce that
+    // variance at the SOURCE (~1/sqrt(N)), upstream of the denoiser, so A-SVGF
+    // and DLSS-RR benefit equally.
+    //
+    // Each sample draws its own light point, its own RIS candidates and its own
+    // reuse taps, so the estimates are genuinely independent rather than N
+    // copies of one answer. Sample 0 reproduces the stock path exactly, which is
+    // what makes N=1 a guaranteed no-op.
+    const uint N = max(globalUniform.directSamples, 1u);
+
+    Reservoir firstReservoir = emptyReservoir();
+    vec3      accumDiffuse   = vec3(0.0);
+    vec3      accumSpecular  = vec3(0.0);
+    uint      validCount     = 0;
+
+    for (uint si = 0; si < N; si++)
+    {
+        const uint saltBase = (si == 0u)
+                                  ? RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE
+                                  : (RANDOM_SALT_DIRECT_SPP_BASE + si * RANDOM_SALT_SPP_STRIDE);
+
+        const vec2 pointRnd = getLightPointRndForSample(seed, si);
+
+        // sample 0 reuses the stored initial reservoir (stock); later samples
+        // draw fresh RIS candidates in-shader, which traces no rays here
+        const Reservoir initial =
+            (si == 0u)
+                ? imageLoadReservoirInitial(pix)
+                : calcInitialReservoir(seed, saltBase + RANDOM_SALT_SPP_INITIAL_OFFSET, surf, pointRnd);
+
+        const Reservoir reservoir =
+            selectLight_Direct(pix, seed, saltBase, surf, pointRnd, initial);
+
+        if (si == 0u)
+        {
+            // the temporal chain, ASVGF gradients and the specular hit distance
+            // guide must stay single-valued -- always sample 0's
+            firstReservoir = reservoir;
+        }
+
+        if (!isReservoirValid(reservoir))
+        {
+            continue;
+        }
+
+        float sampleDist;
+        vec3  sampleDiffuse;
+        vec3  sampleSpecular;
+        traceDirectIllumination(seed, surf, reservoir, pointRnd, 0,
+                                sampleDist, sampleDiffuse, sampleSpecular);
+
+        accumDiffuse  += sampleDiffuse;
+        accumSpecular += sampleSpecular;
+        validCount++;
+
+        if (si == 0u)
+        {
+            out_distance = sampleDist;
+        }
+    }
+
+    if (validCount == 0)
     {
         return emptyReservoir();
-    } 
+    }
 
-    traceDirectIllumination(seed, surf, reservoir, pointRnd, 0, out_distance, out_diffuse, out_specular);
-    return reservoir;
+    // Divide by N, not validCount: an invalid reservoir is a legitimate zero
+    // contribution for that sample, not a sample that did not happen. Dividing
+    // by validCount would bias the estimate brighter wherever some samples miss.
+    accumDiffuse  /= float(N);
+    accumSpecular /= float(N);
+
+    out_diffuse  = accumDiffuse;
+    out_specular = accumSpecular;
+
+    return firstReservoir;
 }
 #endif
 

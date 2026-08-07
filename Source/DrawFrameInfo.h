@@ -296,6 +296,13 @@ namespace detail
             .shadowSamples                               = 1,
             .debugRestirM                                = false,
             .restirTemporalJitter                        = 2.0f,
+            .rrSpecularHitDistance                       = true,
+            .directSamples                               = 1,
+            .indirectSamples                             = 1,
+            .restirInitialSamples                        = 8,
+            .restirSpatialSamples                        = 8,
+            .restirSpatialRadius                         = 30.0f,
+            .restirTemporalMCap                          = 20,
         };
     };
 

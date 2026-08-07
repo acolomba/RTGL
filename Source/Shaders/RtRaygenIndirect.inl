@@ -284,10 +284,58 @@ void main()
         return;
     }
 
-    float          oneOverSourcePdf;
-    SampleIndirect initial = processIndirect( seed, surf, oneOverSourcePdf );
+    // Multi-sample indirect (GI).
+    //
+    // One path per pixel is the dominant GI noise source, and like direct
+    // lighting it is only hidden by temporal accumulation -- which motion
+    // destroys. N independent paths, RIS-combined, cut that variance at the
+    // source for both denoisers.
+    //
+    // RIS rather than a plain average because the storage format holds exactly
+    // one (sample, weight) pair, and neighbours read this image during spatial
+    // reuse -- so it must stay a single well-formed sample, not a blend of
+    // several with mismatched positions/normals.
+    const uint N = max( globalUniform.indirectSamples, 1u );
 
-    restirIndirect_StoreInitialSample( pix, initial, oneOverSourcePdf );
+    if( N == 1u )
+    {
+        // stock path, kept verbatim so N=1 is bit-identical
+        float          oneOverSourcePdf;
+        SampleIndirect initial = processIndirect( seed, surf, oneOverSourcePdf );
+
+        restirIndirect_StoreInitialSample( pix, initial, oneOverSourcePdf );
+        return;
+    }
+
+    ReservoirIndirect ris = emptyReservoirIndirect();
+
+    for( uint si = 0; si < N; si++ )
+    {
+        // A fresh well-formed seed per sample rather than arithmetic on the
+        // packed one: getRandomSeed re-hashes through murmur, so a "virtual
+        // frame" index gives an independent path without corrupting the
+        // blue-noise texture index/offset packing. si == 0 reuses the real seed.
+        const uint sampleSeed =
+            ( si == 0u ) ? seed
+                         : getRandomSeed( pix, globalUniform.frameId + si * 7919u );
+
+        float          oneOverSourcePdf;
+        SampleIndirect s = processIndirect( sampleSeed, surf, oneOverSourcePdf );
+
+        const float targetPdf = targetPdfForIndirectSample( s );
+        const float rndRis    = rnd16( seed, RANDOM_SALT_INDIRECT_SPP_BASE + si );
+
+        updateReservoirIndirect( ris, s, targetPdf, oneOverSourcePdf, rndRis );
+    }
+
+    // Collapse the N-candidate reservoir back into the (sample, weight) pair the
+    // storage format holds. The final pass rebuilds an M=1 reservoir whose
+    // estimator evaluates to radiance * storedWeight, so the stored weight must
+    // be the RIS weight -- (1/targetPdf_selected) * weightSum / N. Storing a raw
+    // oneOverSourcePdf here instead would bias GI brightness with N.
+    const float risWeight = calcSelectedSampleWeightIndirect( ris );
+
+    restirIndirect_StoreInitialSample( pix, ris.selected, risWeight );
 }
 #endif // RT_RAYGEN_INDIRECT_INIT
 

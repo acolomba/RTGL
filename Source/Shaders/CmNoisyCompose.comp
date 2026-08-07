@@ -206,6 +206,19 @@ void main()
             signalLum   = getLuminance( illuminated );
         }
 
+        // DLSS-RR pInSpecularHitDistance: world distance from this shading point
+        // to whatever produced the highlight. framebufViewDirection.w already
+        // carries it (distToLight, written by RtRaygenDirect); this just resolves
+        // it from checkerboard into regular pixel space, like the guides above.
+        // Sky has no specular event -> 0.
+        {
+            float specHitDist = isSkyPix( checkerboardPix )
+                                    ? 0.0
+                                    : max( texelFetch( framebufViewDirection_Sampler,
+                                                       checkerboardPix, 0 ).w, 0.0 );
+            imageStore( framebufSpecularHitDistance, pix, vec4( specHitDist ) );
+        }
+
         imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );
 
         // RR staging (reused SVGF buffers; safe while A-SVGF is skipped):
