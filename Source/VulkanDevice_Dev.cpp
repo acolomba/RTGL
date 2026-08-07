@@ -136,13 +136,30 @@ void ApplyDevmodeSettings( RTGL1::Devmode& d, const RTGL1::DevmodeSettings& s )
     d.debugWindowOnTop             = s.debugWindowOnTop;
     d.antiFirefly                  = s.antiFirefly;
     d.rrTemporalPrefilter           = s.rrTemporalPrefilter;
-    d.rrTemporalPrefilterSticky     = s.rrTemporalPrefilterSticky;
-    d.illumSensSticky              = s.illumSensSticky;
     d.illumSensDirect              = std::clamp( s.illumSensDirect, 0.f, 1.f );
     d.illumSensIndirect            = std::clamp( s.illumSensIndirect, 0.f, 1.f );
     d.illumSensSpec                = std::clamp( s.illumSensSpec, 0.f, 1.f );
     d.rayReconstruction            = s.rayReconstruction;
-    d.rayReconstructionSticky      = s.rayReconstructionSticky;
+
+    // Sticky flags are deliberately NOT restored from disk.
+    //
+    // These make a Dev-UI knob replace the game's per-frame value, and
+    // rayReconstructionSticky does so even when the Override master switch is
+    // OFF (Dev_Override, the `else if( devmode->rayReconstructionSticky )`
+    // branch). Persisting them meant that touching the RR checkbox once, in any
+    // session, silently killed `rt_rayreconstr` in every later launch -- while
+    // gzdoom's `rt_rr_status` still reported "RR REQUESTED = YES", because that
+    // reads the request *before* this override is applied. That cost several
+    // sessions of A/B tests run against A-SVGF while believing they measured
+    // DLSS-RR (2026-08-07).
+    //
+    // The values above still persist, so Dev tuning survives a relaunch; only
+    // the switches that make them override the game reset. Same reasoning as
+    // forcing rt_rr_reset_hold/_now/_debug to 0 in the launcher: a diagnostic
+    // must never outlive the session that enabled it.
+    d.rrTemporalPrefilterSticky    = false;
+    d.illumSensSticky              = false;
+    d.rayReconstructionSticky      = false;
     d.materialStripNormals         = s.materialStripNormals;
     d.materialStripMetallic        = s.materialStripMetallic;
     d.materialStripRoughness       = s.materialStripRoughness;
@@ -165,7 +182,10 @@ void ApplyDevmodeSettings( RTGL1::Devmode& d, const RTGL1::DevmodeSettings& s )
     }
 
     auto& m = d.drawInfoOvrd;
-    m.enable                        = s.ovrd_enable;
+    // NOT restored from disk on purpose -- see the sticky-flag note below.
+    // The override *values* persist (so tuning survives a relaunch), but the
+    // master switch that makes them replace the game's values does not.
+    m.enable                        = false;
     m.maxBounceShadows              = s.ovrd_maxBounceShadows;
     m.enableSecondBounceForIndirect = s.ovrd_enableSecondBounceForIndirect;
     m.directDiffuseSensitivityToChange   = s.ovrd_directDiffuseSensitivityToChange;
@@ -1702,6 +1722,37 @@ void RTGL1::VulkanDevice::Dev_Draw() const
     MaybeSaveDevmodeSettings( *devmode, ovrdFolder, false );
 }
 
+// DLSS-RR is the one Dev knob that silently contradicts the game and is
+// invisible from the game side: gzdoom's rt_rr_status reads its own request,
+// which is what we are about to replace here. Warn whenever the applied value
+// disagrees with what the game asked for, edge-triggered so it does not spam
+// every frame. Requires -rtdebug to be visible (rt_main.cpp mutes RTGL
+// messages otherwise).
+static void Dev_WarnIfRrOverridden( bool gameWants, bool applied )
+{
+    static bool s_haveprev = false;
+    static bool s_prevgame = false;
+    static bool s_prevappl = false;
+
+    if( s_haveprev && gameWants == s_prevgame && applied == s_prevappl )
+    {
+        return;
+    }
+    s_haveprev = true;
+    s_prevgame = gameWants;
+    s_prevappl = applied;
+
+    if( gameWants != applied )
+    {
+        RTGL1::debug::Warning( "Dev override: DLSS Ray Reconstruction forced {} "
+                               "(game requested {} via rt_rayreconstr). "
+                               "Use \"Follow game (rt_rayreconstr)\" in the Dev UI, or delete "
+                               "rt/devmode_settings.json, to hand control back.",
+                               applied ? "ON" : "OFF",
+                               gameWants ? "ON" : "OFF" );
+    }
+}
+
 void RTGL1::VulkanDevice::Dev_Override( RgStartFrameInfo&                   info,
                                         RgStartFrameRenderResolutionParams& resolution,
                                         RgStartFrameFluidParams&            fluid ) const
@@ -1754,11 +1805,15 @@ void RTGL1::VulkanDevice::Dev_Override( RgStartFrameInfo&                   info
             };
             if( devmode->rayReconstructionSticky )
             {
+                Dev_WarnIfRrOverridden( !!dst_resol.rayReconstruction,
+                                        devmode->rayReconstruction );
                 dst_resol.rayReconstruction   = devmode->rayReconstruction;
                 modifiers.rayReconstruction   = devmode->rayReconstruction;
             }
             else
             {
+                Dev_WarnIfRrOverridden( !!dst_resol.rayReconstruction,
+                                        modifiers.rayReconstruction );
                 dst_resol.rayReconstruction = modifiers.rayReconstruction;
                 devmode->rayReconstruction  = modifiers.rayReconstruction;
             }
@@ -1766,6 +1821,11 @@ void RTGL1::VulkanDevice::Dev_Override( RgStartFrameInfo&                   info
     }
     else if( devmode->rayReconstructionSticky )
     {
+        // Reached with the Override master switch OFF -- a sticky Dev-UI RR
+        // toggle still replaces the game's rt_rayreconstr here. Intentional
+        // (the UI advertises "works without Override"), but silent, so warn.
+        Dev_WarnIfRrOverridden( !!resolution.rayReconstruction,
+                                devmode->rayReconstruction );
         resolution.rayReconstruction = devmode->rayReconstruction;
     }
     else
