@@ -685,6 +685,21 @@ GLOBAL_UNIFORM_STRUCT = [
     #       no ambient. Separates "which factors" from "which reflectivity model".
     (TYPE_UINT32,       1,      "rrGuideMode",                      1),
 
+    # Indirect ReSTIR temporal reuse is gated on framebufDISGradientHistory
+    # (the A-SVGF antilag gradient): a tap is rejected when alpha > 0.25.
+    # That buffer is written ONLY by CmASVGFGradientAtrous, which runs only
+    # inside Denoiser::Denoise() -- and DLSS-RR skips Denoise() entirely in
+    # favour of ComposeNoisy(). So under RR the gate reads a buffer nothing
+    # updates. Either it is a dead no-op, or it rejects GI temporal reuse every
+    # frame, which would leave indirect lighting effectively 1-spp with no
+    # accumulation: surfaces fizzle, and only the denoiser's own history hides
+    # it -- exactly what motion takes away.
+    # 1 = apply the gate (stock), 0 = ignore it.
+    (TYPE_UINT32,       1,      "restirIndirAntilag",               1),
+    (TYPE_UINT32,       1,      "_pad6",                            1),
+    (TYPE_UINT32,       1,      "_pad7",                            1),
+    (TYPE_UINT32,       1,      "_pad8",                            1),
+
     # Shadow rays per pixel for DIRECT illumination. 1 = stock. The direct
     # estimate multiplies by a single binary traceVisibility(), so that 0/1 term
     # dominates the 1-spp variance and is untouched by anything ReSTIR does

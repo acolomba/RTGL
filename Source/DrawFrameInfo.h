@@ -305,6 +305,7 @@ namespace detail
             .restirTemporalMCap                          = 20,
             .rrGuideMin                                  = 0.01f,
             .rrGuideMode                                 = 1,
+            .restirIndirAntilag                          = 1,
         };
     };
 

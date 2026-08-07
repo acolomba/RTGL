@@ -616,6 +616,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );
         gu->rrGuideMin            = std::clamp( illum.rrGuideMin, 0.0f, 1.0f );
         gu->rrGuideMode           = std::clamp( illum.rrGuideMode, 0u, 2u );
+        gu->restirIndirAntilag    = !!illum.restirIndirAntilag;
 
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
@@ -842,6 +843,35 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                 rrEnabled ? "on" : "off" );
             }
 
+            // ReSTIR feeds BOTH denoisers, so report it regardless of which one
+            // runs -- the launcher now defaults to A-SVGF, and gating this on RR
+            // would leave the default path with no way to verify its own uniforms.
+            {
+                static bool     s_rHave = false;
+                static uint32_t s_rPrev[ 2 ] = {};
+                const uint32_t  init = uniform->GetData()->restirInitialSamples;
+                const uint32_t  spat = uniform->GetData()->restirSpatialSamples;
+                if( !s_rHave || s_rPrev[ 0 ] != init || s_rPrev[ 1 ] != spat )
+                {
+                    s_rHave      = true;
+                    s_rPrev[ 0 ] = init;
+                    s_rPrev[ 1 ] = spat;
+                    debug::Warning( "ReSTIR: initialSamples={} (stock 8), "
+                                    "spatialSamples={} (stock 8), spatialRadius={} "
+                                    "(stock 30), temporalMCap={} (stock 20), "
+                                    "temporalJitter={} (stock 2), shadowSamples={} "
+                                    "(stock 1), sppDirect={}, sppIndirect={}",
+                                    init,
+                                    spat,
+                                    uniform->GetData()->restirSpatialRadius,
+                                    uniform->GetData()->restirTemporalMCap,
+                                    uniform->GetData()->restirTemporalJitter,
+                                    uniform->GetData()->shadowSamples,
+                                    uniform->GetData()->directSamples,
+                                    uniform->GetData()->indirectSamples );
+                }
+            }
+
             // Report which OPTIONAL RR guides are actually bound. rt_rr_disocc 0
             // used to leave pInDisocclusionMask bound (writing zeros) instead of
             // passing nullptr, so the "off" arm never tested the configuration it
@@ -878,14 +908,17 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                     "shadowSamples={} (stock 1), debugRestirM={}, "
                                     "spatialSamples={} (stock 8), spatialRadius={} "
                                     "(stock 30), temporalMCap={} (stock 20), "
-                                    "initialSamples={} (stock 8)",
+                                    "initialSamples={} (stock 8), indirAntilagGate={}",
                                     uniform->GetData()->restirTemporalJitter,
                                     uniform->GetData()->shadowSamples,
                                     uniform->GetData()->debugRestirM,
                                     uniform->GetData()->restirSpatialSamples,
                                     uniform->GetData()->restirSpatialRadius,
                                     uniform->GetData()->restirTemporalMCap,
-                                    uniform->GetData()->restirInitialSamples );
+                                    uniform->GetData()->restirInitialSamples,
+                                    uniform->GetData()->restirIndirAntilag
+                                        ? "on (reads a buffer RR never writes)"
+                                        : "off" );
                 }
             }
         }

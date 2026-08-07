@@ -415,13 +415,23 @@ void main()
             }
         }
         {
-            const float antilagAlpha_Indir = texelFetch(
-                framebufDISGradientHistory_Sampler, pp / COMPUTE_ASVGF_STRATA_SIZE, 0 )[ 1 ];
-
-            // if there's too much difference, don't use a temporal sample
-            if( antilagAlpha_Indir > 0.25 )
+            // framebufDISGradientHistory is written ONLY by CmASVGFGradientAtrous,
+            // which runs only inside Denoiser::Denoise(). DLSS-RR skips Denoise()
+            // and calls ComposeNoisy() instead, so under RR this gate reads a
+            // buffer that nothing updates -- and rejecting on a stale value would
+            // kill indirect temporal reuse outright, leaving GI at 1 spp with no
+            // accumulation. restirIndirAntilag 0 ignores the gate; see the uniform
+            // comment in GenerateShaderCommon.py.
+            if( globalUniform.restirIndirAntilag != 0 )
             {
-                continue;
+                const float antilagAlpha_Indir = texelFetch(
+                    framebufDISGradientHistory_Sampler, pp / COMPUTE_ASVGF_STRATA_SIZE, 0 )[ 1 ];
+
+                // if there's too much difference, don't use a temporal sample
+                if( antilagAlpha_Indir > 0.25 )
+                {
+                    continue;
+                }
             }
         }
 

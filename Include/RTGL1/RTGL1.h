@@ -1092,6 +1092,11 @@ typedef struct RgDrawFrameIlluminationParams
     //   2 = ro_d/envBRDF only, no throughput or ambient
     // Default: 1
     uint32_t        rrGuideMode;
+    // Apply the A-SVGF antilag gate to INDIRECT ReSTIR temporal reuse.
+    // The gradient buffer it reads is written only by Denoiser::Denoise(),
+    // which DLSS-RR skips -- so under RR the gate reads stale data and may be
+    // rejecting GI temporal reuse every frame. 0 ignores the gate. Default: 1
+    uint32_t        restirIndirAntilag;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

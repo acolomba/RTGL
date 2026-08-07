@@ -318,6 +318,10 @@ struct ShGlobalUniform
     uint32_t restirTemporalMCap;
     float rrGuideMin;
     uint32_t rrGuideMode;
+    uint32_t restirIndirAntilag;
+    uint32_t _pad6;
+    uint32_t _pad7;
+    uint32_t _pad8;
     uint32_t shadowSamples;
     uint32_t debugRestirM;
     float restirTemporalJitter;
