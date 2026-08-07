@@ -795,6 +795,35 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                                           *rasterizer->GetRenderCubemap(),
                                                           *portalList,
                                                           *volumetric );
+        // Ground truth for "is DLSS-RR actually running?". Every input to this
+        // decision fails silently: a null nvDlssRr (NGX create failed, or the
+        // whole DLSSRR.cpp compiled to its stub), a non-DLSS upscaler, or a Dev
+        // override all just quietly select A-SVGF. Nothing downstream reports
+        // which path ran, so a wrong assumption here is unfalsifiable from the
+        // game side -- which is exactly what happened for several sessions.
+        // Edge-triggered, WARNING severity so it is visible without -rtdebug.
+        {
+            const bool haveRrObject = ( nvDlssRr != nullptr );
+            const bool dlssOn       = renderResolution.IsNvDlssEnabled();
+            const bool rrEnabled    = renderResolution.IsNvDlssRayReconstructionEnabled();
+            const bool rrActive     = rrEnabled && haveRrObject;
+
+            static bool s_have = false;
+            static bool s_prev = false;
+            if( !s_have || s_prev != rrActive )
+            {
+                s_have = true;
+                s_prev = rrActive;
+                debug::Warning( "Denoiser path: {} (DLSS-RR object={}, DLSS upscaler={}, "
+                                "RR flag={})",
+                                rrActive ? "DLSS-RR (ComposeNoisy -> nvDlssRr->Apply)"
+                                         : "A-SVGF (Denoise)",
+                                haveRrObject ? "present" : "NULL",
+                                dlssOn ? "on" : "off",
+                                rrEnabled ? "on" : "off" );
+            }
+        }
+
         if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
         {
             // Do NOT call AccumulateForRR here — feeding A-SVGF temporal into RR

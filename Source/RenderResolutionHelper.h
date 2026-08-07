@@ -77,6 +77,36 @@ public:
         resolutionMode     = params.resolutionMode;
         rayReconstruction  = params.rayReconstruction && dlssRr != nullptr;
 
+        // Report what the caller actually asked for, next to which backends
+        // exist. This separates "the game sent the wrong params" from "RTGL
+        // downgraded them", which is otherwise indistinguishable from outside:
+        // every rejection path here silently falls back to another upscaler and
+        // drops rayReconstruction. Finding that gzdoom was sending
+        // upscaleTechnique=AMD_FSR2 alongside rayReconstruction=1 (a stale
+        // rt_upscale_fsr2 in its ini) took an entire investigation without it.
+        // Edge-triggered: a couple of lines per session.
+        {
+            static bool s_have = false;
+            static int  s_prev = -1;
+            const int   st     = int( params.upscaleTechnique ) |
+                             ( int( params.rayReconstruction != 0 ) << 8 ) |
+                             ( int( dlss2 != nullptr ) << 9 ) | ( int( dlssRr != nullptr ) << 10 ) |
+                             ( int( dlss3dx12 != nullptr ) << 11 );
+            if( !s_have || s_prev != st )
+            {
+                s_have = true;
+                s_prev = st;
+                debug::Warning( "Setup(): params.upscaleTechnique={} params.rayReconstruction={} "
+                                "| dlss2={} dlss3dx12={} dlssRr={} fsr2={}",
+                                int( params.upscaleTechnique ),
+                                int( params.rayReconstruction ),
+                                dlss2 ? "yes" : "NULL",
+                                dlss3dx12 ? "yes" : "NULL",
+                                dlssRr ? "yes" : "NULL",
+                                fsr2 ? "yes" : "NULL" );
+            }
+        }
+
         // check for correct values
         {
             switch( upscaleTechnique )
