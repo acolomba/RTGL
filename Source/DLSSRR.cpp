@@ -205,26 +205,35 @@ namespace
         dlssdParams.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
         dlssdParams.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
 
-        NVSDK_NGX_Parameter_SetUI(
-            params,
-            NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
-            NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E );
-        NVSDK_NGX_Parameter_SetUI(
-            params,
-            NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
-            NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E );
-        NVSDK_NGX_Parameter_SetUI(
-            params,
-            NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced,
-            NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E );
-        NVSDK_NGX_Parameter_SetUI(
-            params,
-            NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance,
-            NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E );
-        NVSDK_NGX_Parameter_SetUI(
-            params,
-            NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance,
-            NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E );
+        // Only D and E are usable: A/B/C were removed in SDK 310.4.0, and F..O
+        // silently revert to default behaviour (nvsdk_ngx_defs_dlssd.h:38-53).
+        //   D = default transformer model
+        //   E = latest transformer model (required only if a DoF guide is used;
+        //       we pass none)
+        // Both are pinned across all five quality slots so the preset does not
+        // change under the user when rt_upscale_dlss switches mode -- otherwise
+        // an A/B of image quality would silently also be an A/B of preset.
+        // Set at feature-creation time, so changing this needs a restart.
+        //
+        // E, not D: preset D was A/B'd in-game on 2026-08-07 and was clearly
+        // worse -- visibly noisy even with a static camera, where E converges
+        // cleanly. Keep E unless something specifically motivates revisiting.
+        constexpr auto RR_PRESET = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E;
+
+        for( const char* slot : {
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance,
+             } )
+        {
+            NVSDK_NGX_Parameter_SetUI( params, slot, RR_PRESET );
+        }
+
+        debug::Warning( "DLSSRR: using Ray Reconstruction preset {} ({})",
+                        RR_PRESET == NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D ? "D" : "E",
+                        int( RR_PRESET ) );
 
         NVSDK_NGX_Handle* newFeature{ nullptr };
         NVSDK_NGX_Result  r = NGX_VULKAN_CREATE_DLSSD_EXT1( device,
