@@ -605,6 +605,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->restirBlueNoise    = !!illum.restirBlueNoise;
         gu->shadowSamples      = std::clamp( illum.shadowSamples, 1u, 8u );
         gu->debugRestirM       = !!illum.debugRestirM;
+        gu->debugVisibility    = std::min( illum.debugVisibility, 2u );
         gu->restirTemporalJitter = std::clamp( illum.restirTemporalJitter, 0.0f, 8.0f );
         gu->rrSpecHitDist      = !!illum.rrSpecularHitDistance;
 

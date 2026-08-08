@@ -1032,6 +1032,14 @@ typedef struct RgDrawFrameIlluminationParams
     // under camera motion the raw signal is genuinely noisier while moving,
     // upstream of any denoiser. Default: false
     RgBool32        debugRestirM;
+    // Debug: write the shadow-ray visibility term into the unfiltered-direct
+    // buffer. The final image cannot separate "the occluder never blocked the
+    // ray" from "the shadow is cast but drowned in fill light or smeared by the
+    // denoiser" -- both read as no shadow. Visibility is the only thing a shadow
+    // ray produces, so this shows that and nothing else.
+    // 0 = off, 1 = greyscale (black where shadowed), 2 = normal shading with
+    // shadowed pixels tinted red. Default: 0
+    uint32_t        debugVisibility;
     // ReSTIR temporal reuse tap jitter radius in pixels. Stock 2.0. The jitter
     // decorrelates the temporal tap, but on grazing surfaces a 2px offset moves
     // depth far past the flat 10% reuse threshold, so the tap is rejected and M

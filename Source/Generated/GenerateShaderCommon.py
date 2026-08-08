@@ -696,7 +696,18 @@ GLOBAL_UNIFORM_STRUCT = [
     # it -- exactly what motion takes away.
     # 1 = apply the gate (stock), 0 = ignore it.
     (TYPE_UINT32,       1,      "restirIndirAntilag",               1),
-    (TYPE_UINT32,       1,      "_pad6",                            1),
+    # Debug: write the shadow-ray visibility term into the unfiltered direct
+    # buffer instead of radiance. Visibility is the ONLY thing a shadow ray
+    # produces, so this separates "the occluder never blocks the ray" from
+    # "the shadow is cast but drowned in fill light or smeared by the
+    # denoiser" -- two causes that look identical in the final image, and that
+    # four inconclusive A/B ladders failed to tell apart.
+    # 1 = greyscale visibility (black = shadowed), 2 = red tint on shadowed
+    # pixels over normal shading, so an umbra can be located in context.
+    # Taken from a _pad slot so the std140 layout is unchanged: the group
+    # ending at rrSpecHitDist must stay a whole vec4 or viewProjCubemap below
+    # loses its 16-byte alignment and the C and GLSL layouts diverge.
+    (TYPE_UINT32,       1,      "debugVisibility",                  1),
     (TYPE_UINT32,       1,      "_pad7",                            1),
     (TYPE_UINT32,       1,      "_pad8",                            1),
 

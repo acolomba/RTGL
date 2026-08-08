@@ -295,6 +295,7 @@ namespace detail
             .restirBlueNoise                             = true,
             .shadowSamples                               = 1,
             .debugRestirM                                = false,
+            .debugVisibility                             = 0,
             .restirTemporalJitter                        = 2.0f,
             .rrSpecularHitDistance                       = true,
             .directSamples                               = 1,

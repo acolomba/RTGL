@@ -672,6 +672,14 @@ vec2 getLightPointRndForSample(uint seed, uint sampleIndex)
                : rnd16_2(seed, RANDOM_SALT_LIGHT_POINT + sampleIndex) * 0.99;
 }
 
+// Last visibility term computed by traceDirectIllumination, for debugVisibility.
+// A file-scope value rather than another out-parameter so the debug path adds
+// nothing to the signature every caller has to thread through. Seeded to 1.0
+// (fully lit) so a pixel whose direct lighting never ran -- no light chosen, or
+// bounceIndex past maxBounceShadowsLights -- reads as "not shadowed" instead of
+// as a false umbra, which would be exactly the wrong answer for this debug view.
+float g_debugVisibility = 1.0;
+
 #if LIGHT_SAMPLE_METHOD != LIGHT_SAMPLE_METHOD_NONE
 bool isDirectIlluminationValid(int bounceIndex)
 {
@@ -750,6 +758,8 @@ void traceDirectIllumination( uint            seed,
     #else
         visibility = traceVisibility(surf, light.position, reservoir.selected);
     #endif
+
+        g_debugVisibility = visibility;
 
         out_diffuse  *= visibility;
         out_specular *= visibility;

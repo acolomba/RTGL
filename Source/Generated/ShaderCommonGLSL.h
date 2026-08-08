@@ -314,7 +314,7 @@ struct ShGlobalUniform
     float rrGuideMin;
     uint rrGuideMode;
     uint restirIndirAntilag;
-    uint _pad6;
+    uint debugVisibility;
     uint _pad7;
     uint _pad8;
     uint shadowSamples;
