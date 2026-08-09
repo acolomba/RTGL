@@ -265,8 +265,14 @@ CONST = {
     "BINDING_VOLUMETRIC_STORAGE"                : 0,
     "BINDING_VOLUMETRIC_SAMPLER"                : 1,
     "BINDING_VOLUMETRIC_SAMPLER_PREV"           : 2,
-#   "BINDING_VOLUMETRIC_ILLUMINATION"           : 3,
-#   "BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER"   : 4,
+    # Doom64-RT: uncommented alongside ILLUMINATION_VOLUME=1 above. Volumetric.cpp's
+    # #if ILLUMINATION_VOLUME descriptor-set blocks (image + sampler for the
+    # illumination volume) reference these two names; with the define on and these
+    # commented out, the shader/C++ compile fails on "undeclared identifier" -- this
+    # dict is a single source shared by GLSL and C++ headers, so both need it live
+    # together, not just the top-level ILLUMINATION_VOLUME flag (2026-08-08).
+    "BINDING_VOLUMETRIC_ILLUMINATION"           : 3,
+    "BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER"   : 4,
     "BINDING_FLUID_PARTICLES_ARRAY"             : 0,
     "BINDING_FLUID_GENERATE_ID_TO_SOURCE"       : 1,
     "BINDING_FLUID_SOURCES"                     : 2,
@@ -453,7 +459,13 @@ CONST = {
     "HDR_DISPLAY_LINEAR"                    : 1,
     "HDR_DISPLAY_ST2084"                    : 2,
 
-    "ILLUMINATION_VOLUME"                   : 0,
+    # Doom64-RT: turned on so RsWorld.inl's rasterized-primitive branch can sample the
+    # illumination volume (globalUniform.illumVolumeEnable) instead of the
+    # max(1, avgLuminance) fallback. That branch is what lets a see-through sprite
+    # (spectre, nightmare imp) darken with the room while the sprite stays translucent
+    # and its _e emissive stays untouched -- ldrEmis is computed from baseColor() AFTER
+    # this multiply, so the eyes never see the dimming. Was 0 upstream (2026-08-08).
+    "ILLUMINATION_VOLUME"                   : 1,
 
     "COMPUTE_INDIRECT_FINAL_GROUP_SIZE_X"   : 16,
     "COMPUTE_INDIRECT_FINAL_GROUP_SIZE_Y"   : 16,

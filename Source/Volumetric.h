@@ -27,7 +27,11 @@
 #include "IShaderDependency.h"
 #include "MemoryAllocator.h"
 
-#define ILLUMINATION_VOLUME_ 0
+// Doom64-RT: matches ILLUMINATION_VOLUME in Generated/GenerateShaderCommon.py (the
+// static_assert in Volumetric.cpp enforces they stay in sync). Turned on so rasterized
+// translucent sprites (spectres, nightmare imps) can sample real room irradiance instead
+// of always rendering at full brightness -- see RsWorld.inl's illumVolumeEnable branch.
+#define ILLUMINATION_VOLUME_ 1
 
 namespace RTGL1
 {
