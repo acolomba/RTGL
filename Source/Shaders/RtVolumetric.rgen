@@ -64,6 +64,50 @@ vec3 traceDirectIllumination_SpecificLight( const vec3 from, inout vec3 out_ligh
             bool isShadowed = traceShadowRay( 0, from, light.position, true );
 
             out_lightdirection = safeNormalize2( from - light.position, vec3( 0 ) );
+
+            // Doom64-RT: the sky-reach test, repeated HERE.
+            //
+            // This shader does not go through traceDirectIllumination -- it picks
+            // one light (TryGetVolumetricLight) and shadow-tests it itself. The
+            // visible shafts ARE volumetric scattering of exactly this light, so
+            // the probe added to the shared path never touched them: no red, and
+            // rt_sun_require_sky did nothing to them. This is the code that
+            // actually lights them.
+            if( !isShadowed &&
+                globalUniform.volumeLightSourceIndex == LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET &&
+                ( globalUniform.sunRequireSky > 0.5 || globalUniform.sunLeakDebug > 0.5 ) )
+            {
+                bool reachedSky = traceSunReachesSky(
+                    from, safeNormalize2( light.position - from, vec3( 0, 0, 1 ) ) );
+
+                // The fix runs FIRST, so the debug views show the result of it
+                // rather than replacing it. With require_sky and colour mode both
+                // on, every surviving shaft is red -- and an all-red screen is
+                // exactly the confirmation that the fix worked. Making these two
+                // mutually exclusive (the first attempt) meant the fix could
+                // never be seen, only trusted.
+                if( globalUniform.sunRequireSky > 0.5 && !reachedSky )
+                {
+                    return vec3( 0 );
+                }
+
+                // mode 1: isolate the leak -- drop everything legitimate
+                if( globalUniform.sunLeakDebug > 0.5 && globalUniform.sunLeakDebug < 1.5 &&
+                    reachedSky )
+                {
+                    return vec3( 0 );
+                }
+
+                // mode 2: colour whatever survived. RED reached sky, GREEN escaped
+                // the map. Green rather than blue because these interiors are
+                // near-black and blue reads as shadow in them.
+                if( globalUniform.sunLeakDebug > 1.5 )
+                {
+                    return ( reachedSky ? vec3( 1.0, 0.02, 0.02 ) : vec3( 0.05, 1.0, 0.10 ) ) *
+                           max( globalUniform.sunLeakDebugMul, 0.001 );
+                }
+            }
+
             return radiance * float( !isShadowed );
         }
     }

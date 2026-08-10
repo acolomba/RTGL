@@ -245,6 +245,17 @@ LightSample emptyLightSample()
     return r;
 }
 
+// Doom64-RT: why is this pixel lit by the sun? Set by the sky-reach probe in
+// calcSelectedLight (RaygenCommon.h) and read back below when sunLeakDebug == 2,
+// so the colour on screen encodes the REASON instead of the moon's own colour.
+//   1 = the ray reached SKY  -> a real shaft through a real opening
+//   2 = the ray left the MAP -> a leak
+// Same shader invocation, same pixel, so a plain global carries it.
+// The colour itself is applied in traceDirectIllumination (RaygenCommon.h),
+// which is the one place every light path goes through -- surface, indirect and
+// volumetric. Doing it here instead only ever reached surface shading.
+int g_sunLeakClass = 0;
+
 LightSample sampleDirectionalLight(const DirectionalLight l, const vec3 surfPosition, const vec2 pointRnd)
 {
     vec3 lightNormal;
@@ -260,7 +271,7 @@ LightSample sampleDirectionalLight(const DirectionalLight l, const vec3 surfPosi
     r.position = surfPosition - lightNormal * MAX_RAY_LENGTH;
     r.color = l.color;
     r.dw = 1.0;
-    
+
     return r;
 }
 

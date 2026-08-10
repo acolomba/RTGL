@@ -347,6 +347,44 @@ bool traceShadowRay(uint surfInstCustomIndex, vec3 start, vec3 end, bool ignoreF
     return g_payloadShadow.isShadowed == 1;
 }
 
+// Doom64-RT: does this point actually see the SKY along the light direction?
+//
+// The problem this exists for: traceShadowRay returns "lit" on a MISS, because
+// RtMissShadowCheck.rmiss sets isShadowed = 0. That is correct for a sealed
+// world and wrong for a Doom map, which has no geometry above a ceiling and is
+// full of T-junctions at wall/ceiling seams. Rays leak out of the level, hit
+// nothing, and are scored as seeing the sun -- so the sun washes rooms that
+// have no opening anywhere near them. No aperture rule can catch that, because
+// nothing is squeezing through anything: the ray simply left the map.
+//
+// In a Doom map the sky is the only legitimate way out, and GZDoom already
+// hands us that geometry: sky portals arrive as RG_MESH_PRIMITIVE_SKY_VISIBILITY
+// and live in INSTANCE_MASK_WORLD_2, which is excluded from the normal shadow
+// mask. So probing WORLD_2 alone answers "did the ray get out through the sky,
+// or through a crack?".
+//
+// Only called when the ordinary shadow ray already MISSED, i.e. only for points
+// that are currently considered lit -- so the cost is bounded by how much of the
+// screen the sun touches, not by the frame.
+bool traceSunReachesSky(vec3 start, vec3 dirToLight)
+{
+    g_payloadShadow.isShadowed = 1;
+
+    traceRayEXT(
+        topLevelAS,
+        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(),
+        INSTANCE_MASK_WORLD_2,
+        0, 0,
+        SBT_INDEX_MISS_SHADOW,
+        start, 0.001, dirToLight, globalUniform.sunSkyProbeMaxDist,
+        PAYLOAD_INDEX_SHADOW);
+
+    // isShadowed == 1 means the probe HIT sky geometry, which is what we want:
+    // the ray reached the sky. A miss means it found no sky at all on its way
+    // out of the world.
+    return g_payloadShadow.isShadowed == 1;
+}
+
 float traceVisibility(const Surface surf, const vec3 lightPosition, uint lightIndex)
 {
     const vec3 start = surf.position + surf.toViewerDir * RAY_ORIGIN_LEAK_BIAS;
@@ -758,6 +796,56 @@ void traceDirectIllumination( uint            seed,
     #else
         visibility = traceVisibility(surf, light.position, reservoir.selected);
     #endif
+
+        // Doom64-RT: the sky-reach test, applied HERE rather than in the direct
+        // pass, because this function is the one choke point every path shares --
+        // surface, indirect AND volumetric. Putting it in selectLight_Direct only
+        // covered surface shading, which is why the visible shafts (volumetric
+        // scattering, a different LIGHT_SAMPLE_METHOD) never turned red and why
+        // rt_sun_require_sky appeared to do nothing to them.
+        //
+        // Only for the directional light, and only where the shadow ray already
+        // said "lit" -- so no extra ray is traced for anything already in shadow.
+        if (visibility > 0.0 &&
+            reservoir.selected == LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET &&
+            (globalUniform.sunRequireSky > 0.5 || globalUniform.sunLeakDebug > 0.5))
+        {
+            const vec3 probeStart = surf.position + surf.toViewerDir * RAY_ORIGIN_LEAK_BIAS;
+            const bool reachedSky =
+                traceSunReachesSky(probeStart,
+                                   safeNormalize2(light.position - surf.position, vec3(0)));
+
+            g_sunLeakClass = reachedSky ? 1 : 2;
+
+            // The fix runs FIRST, so the debug views show the result of it rather
+            // than replacing it. With require_sky and colour mode both on, every
+            // surviving shaft is red -- an all-red screen IS the confirmation the
+            // fix worked. Making these mutually exclusive (the first attempt)
+            // meant the fix could never be seen, only trusted.
+            if (globalUniform.sunRequireSky > 0.5 && !reachedSky)
+            {
+                visibility = 0.0;
+            }
+
+            // mode 1: isolate the leak -- drop everything legitimate
+            if (globalUniform.sunLeakDebug > 0.5 && globalUniform.sunLeakDebug < 1.5 && reachedSky)
+            {
+                visibility = 0.0;
+            }
+
+            // mode 2: colour whatever survived. Re-shade, because out_diffuse
+            // above was computed from the moon's real colour.
+            if (globalUniform.sunLeakDebug > 1.5 && visibility > 0.0)
+            {
+                LightSample dbg = light;
+                dbg.color = (reachedSky ? vec3(1.0, 0.02, 0.02) : vec3(0.05, 1.0, 0.10))
+                            * max(globalUniform.sunLeakDebugMul, 0.001);
+                vec3 d2, s2;
+                shade(surf, dbg, calcSelectedSampleWeight(reservoir), d2, s2);
+                out_diffuse  = d2;
+                out_specular = s2;
+            }
+        }
 
         g_debugVisibility = visibility;
 
