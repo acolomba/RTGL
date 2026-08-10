@@ -399,9 +399,9 @@ namespace detail
             .stylizedWaterDebug                    = 0.0f,
                         .stylizedWaterReflMin                  = 0.1f,
             .waterCausticGain                      = 1.2f,
-            .waterCausticScale                     = 0.09f,
+            .waterCausticScale                     = 0.8f,
             .waterCausticSpeed                     = 0.35f,
-            .waterCausticDist                      = 192.0f,
+            .waterCausticDist                      = 6.0f, // metres
         };
     };
 
