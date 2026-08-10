@@ -197,6 +197,49 @@ vec3 getWaterNormal(const RayCone rayCone, const vec3 rayDir, const vec3 baseNor
     return basis * n;   
 }
 
+// Colour the caustic veins tend to at full mask. Pale cyan, not white: white
+// crests read as foam/plastic, the D64 flat's brightest texels are blue-white.
+const vec3 STYLIZED_WATER_CREST_COLOR = vec3( 0.55, 0.80, 1.00 );
+
+// Doom64-RT: stylized water surface colour.
+//
+// The physical water path (refract + Beer-Lambert absorption + mirror
+// reflection) reads far too "real" for Doom 64, and it is also wrong for these
+// maps: D64W2_01 / D64W1_01 are plain FLOOR FLATS, there is no sector under
+// them to refract into. So the stylized path keeps the surface opaque and
+// rebuilds its look from the flat itself: a deep blue body with the texture's
+// own pale caustic veins, shimmering with the animated wave normal.
+//
+//   texAlbedo   the flat as sampled by the primary pass (near-black navy,
+//               veins peak around 0.06 / 0.13 / 0.28 sRGB)
+//   waveNormal  animated water normal (getWaterNormal)
+//   baseNormal  the surface normal before the waves
+// out caustic   0..1 vein mask, reused for the screen-space sheen
+vec3 getStylizedWaterAlbedo( const vec3  texAlbedo,
+                             const vec3  waveNormal,
+                             const vec3  baseNormal,
+                             out   float caustic )
+{
+    // the veins ARE the caustics in the source art: normalize the flat's
+    // luminance against the brightest texel so the mask is art-independent
+    float veins = clamp( getLuminance( texAlbedo ) /
+                             max( 0.0001, globalUniform.stylizedWaterVeinRef ),
+                         0.0,
+                         1.0 );
+
+    // wave crests: how far the animated normal tilts off the plane
+    float tilt    = clamp( length( waveNormal - baseNormal ) * 3.0, 0.0, 1.0 );
+    float shimmer = tilt * tilt;
+
+    // veins keep their shape, but breathe with the waves
+    caustic = clamp( veins * ( 1.0 + globalUniform.stylizedWaterCaustic * shimmer ), 0.0, 1.0 );
+
+    const vec3 body  = globalUniform.stylizedWaterTint.rgb;
+    const vec3 crest = mix( body, STYLIZED_WATER_CREST_COLOR, 0.85 );
+
+    return mix( body, crest, caustic );
+}
+
 mat3 lookAt(const vec3 forward, const vec3 worldUp)
 {
     vec3 right = cross(forward, worldUp);
@@ -542,13 +585,94 @@ void main()
         const vec3 normal =
             getNormal( h.hitPosition, hasNormalMap, h.normal, rayCone, rayDir, isWater, wasPortal );
 
+        // Doom64-RT: stylized water. Only the FIRST hit, only a vacuum->water
+        // crossing (i.e. looking at the surface from above, camera not
+        // submerged); everything else keeps the stock physical behaviour.
+        const bool stylizedWater = ( globalUniform.stylizedWaterStrength > 0.0 ) &&    //
+                                   isWater && i == 0 &&                               //
+                                   currentRayMedia == MEDIA_TYPE_VACUUM &&             //
+                                   newRayMedia == MEDIA_TYPE_WATER;
+
+        // Doom64-RT diagnostic (rt_water_debug). Three outcomes, one glance:
+        //   magenta -- the stylized branch is running
+        //   green   -- RTGL sees this surface as water, but the stylized gate
+        //              rejected it (media/bounce conditions)
+        //   nothing -- the primitive never got RG_MESH_PRIMITIVE_WATER, so the
+        //              JSON meta never reached it (tools/set_water_meta.py)
+        // Written as screen emission so it is visible with no lighting at all.
+        if( globalUniform.stylizedWaterDebug > 0.0 && isWater )
+        {
+            const ivec2 regPix = getRegularPixFromCheckerboardPix( pix );
+            imageStore( framebufAlbedo, regPix, vec4( 0.0 ) );
+            imageStore( framebufScreenEmisRT,
+                        regPix,
+                        vec4( stylizedWater ? vec3( 1, 0, 1 ) : vec3( 0, 1, 0 ), 0.0 ) );
+            imageStoreNormal( pix, normal );
+            // alpha -1: refl/refr WITHOUT a split, so no checkerboard resolve
+            imageStore( framebufThroughput, pix, vec4( vec3( 1.0 ), -1.0 ) );
+            return;
+        }
+
         vec3  rayOrigin = h.hitPosition;
         bool  doSplit   = !wasSplit;
         bool  doRefraction;
         vec3  refractionDir;
         float F;
 
-        if (toRefract && calcRefractionDirection(curIndexOfRefraction, newIndexOfRefraction, rayDir, normal, refractionDir))
+        if( stylizedWater )
+        {
+            // Never refract: these are opaque floor flats, there is nothing
+            // below them to see. Instead spend the checkerboard split on
+            //   odd  pixels: keep the water SURFACE in the G-buffer, so it is
+            //                lit like any other opaque surface;
+            //   even pixels: the mirror reflection, as usual.
+            // CmCheckerboard resolves the two halves into
+            //   F * reflection + (1 - F) * lit water surface,
+            // which is what makes it read as deep blue looking down and
+            // reflective at grazing angles.
+            doRefraction = false;
+
+            F = min( getFresnelSchlick( curIndexOfRefraction, newIndexOfRefraction, -rayDir, normal ),
+                     globalUniform.stylizedWaterReflMax );
+
+            if( isPixOdd )
+            {
+                float caustic;
+                // the base normal must be the one getNormal() actually built
+                // the waves around, or the wave-tilt term reads ~2 everywhere
+                const vec3 baseNormal =
+                    isBackface( h.normal, rayDir ) ? -h.normal : h.normal;
+                const vec3 surfAlbedo =
+                    getStylizedWaterAlbedo( h.albedo, normal, baseNormal, caustic );
+
+                // *2 compensates the split: this half covers two pixels
+                throughput *= ( 1.0 - F ) * 2.0;
+
+                // a little unlit sheen so the caustic pattern still reads in
+                // rooms the path tracer leaves nearly black (the original flat
+                // was drawn bright); purely on-screen, casts no light
+                const vec3 sheen = STYLIZED_WATER_CREST_COLOR * caustic *
+                                   globalUniform.stylizedWaterGlow;
+
+                const ivec2 regPix = getRegularPixFromCheckerboardPix( pix );
+
+                // Keep position / depth / motion / visibility from the primary
+                // pass -- they already describe this exact surface. Only the
+                // shading inputs change.
+                imageStore( framebufAlbedo, regPix, vec4( surfAlbedo, 0.0 ) );
+                imageStore( framebufScreenEmisRT, regPix, vec4( screenEmission + sheen, 0.0 ) );
+                imageStoreNormal( pix, normal );
+                imageStore( framebufMetallicRoughness,
+                            pix,
+                            vec4( 0.0, globalUniform.stylizedWaterRoughness, 0, 0 ) );
+                // alpha == 1: was refl/refr WITH a split -> resolve checkerboard
+                imageStore( framebufThroughput, pix, vec4( throughput, 1.0 ) );
+                return;
+            }
+
+            // even pixels fall through to the reflection branch below
+        }
+        else if (toRefract && calcRefractionDirection(curIndexOfRefraction, newIndexOfRefraction, rayDir, normal, refractionDir))
         {
             doRefraction = isPixOdd;
             F = getFresnelSchlick(curIndexOfRefraction, newIndexOfRefraction, -rayDir, normal);

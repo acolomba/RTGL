@@ -743,6 +743,33 @@ GLOBAL_UNIFORM_STRUCT = [
     # DLSS-RR: feed pInSpecularHitDistance (see the SpecularHitDistance framebuf).
     (TYPE_UINT32,       1,      "rrSpecHitDist",                    1),
 
+    # --- Stylized water (Doom64-RT) ------------------------------------------
+    # Doom 64 water flats (D64W2_01 / D64W1_01) are opaque FLOOR flats: the
+    # physical refract+absorb path has nothing to refract into and reads far too
+    # real for the art. See getStylizedWaterAlbedo() in RaygenPrimary.inl.
+    # Two full scalar groups + one vec4 so viewProjCubemap stays 16-aligned.
+    # 0 = off, stock physical water.
+    (TYPE_FLOAT32,      1,      "stylizedWaterStrength",            1),
+    # how hard the wave crests brighten the texture's own caustic veins
+    (TYPE_FLOAT32,      1,      "stylizedWaterCaustic",             1),
+    # Fresnel clamp: 1.0 = a true mirror at grazing angles
+    (TYPE_FLOAT32,      1,      "stylizedWaterReflMax",             1),
+    (TYPE_FLOAT32,      1,      "stylizedWaterRoughness",           1),
+
+    # unlit on-screen sheen on the veins (casts no light)
+    (TYPE_FLOAT32,      1,      "stylizedWaterGlow",                1),
+    # luminance of the flat's brightest texel, used to normalize the vein mask
+    (TYPE_FLOAT32,      1,      "stylizedWaterVeinRef",             1),
+    # Diagnostic. 1 = paint every surface the shader sees as water:
+    # MAGENTA if the stylized branch is taken, GREEN if RTGL flagged it water
+    # but the stylized gate rejected it. No colour at all => the primitive never
+    # got RG_MESH_PRIMITIVE_WATER, i.e. the JSON meta never reached it.
+    (TYPE_FLOAT32,      1,      "stylizedWaterDebug",               1),
+    (TYPE_FLOAT32,      1,      "_padw1",                           1),
+
+    # deep blue body colour of the water
+    (TYPE_FLOAT32,      4,      "stylizedWaterTint",                1),
+
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),
     (TYPE_FLOAT32,     44,      "skyCubemapRotationTransform",  1),

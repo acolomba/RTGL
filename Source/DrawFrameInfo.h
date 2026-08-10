@@ -389,6 +389,14 @@ namespace detail
             .waterWaveTextureDerivativesMultiplier = 1.0f,
             .waterTextureAreaScale                 = 1.0f,
             .portalNormalTwirl                     = false,
+            .stylizedWaterStrength                 = 0.0f,
+            .stylizedWaterCaustic                  = 1.5f,
+            .stylizedWaterReflMax                  = 0.75f,
+            .stylizedWaterRoughness                = 0.10f,
+            .stylizedWaterGlow                     = 0.15f,
+            .stylizedWaterVeinRef                  = 0.03f,
+            .stylizedWaterTint                     = { 0.02f, 0.09f, 0.24f },
+            .stylizedWaterDebug                    = 0.0f,
         };
     };
 

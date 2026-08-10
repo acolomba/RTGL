@@ -1312,6 +1312,26 @@ typedef struct RgDrawFrameReflectRefractParams
     float           waterTextureAreaScale;
     // If true, portal normal will be twirled around its 'inPosition'.
     RgBool32        portalNormalTwirl;
+    // Doom64-RT: stylized water. Water surfaces stop refracting and instead
+    // stay opaque, shaded as a deep blue body carrying the flat's own caustic
+    // veins, with a Fresnel-weighted mirror reflection on top.
+    // 0 = off (stock physical water).
+    float           stylizedWaterStrength;
+    // How hard the animated wave crests brighten the caustic veins.
+    float           stylizedWaterCaustic;
+    // Fresnel clamp for the reflection half. 1.0 = a true mirror at grazing.
+    float           stylizedWaterReflMax;
+    // Roughness written for the water surface (specular sheen from lights).
+    float           stylizedWaterRoughness;
+    // Unlit on-screen sheen on the veins. Casts no light.
+    float           stylizedWaterGlow;
+    // Luminance of the flat's brightest texel; normalizes the vein mask.
+    float           stylizedWaterVeinRef;
+    // Deep blue body colour of the water.
+    RgFloat3D       stylizedWaterTint;
+    // Diagnostic: paint water surfaces magenta (stylized branch running) or
+    // green (RTGL sees water, stylized gate rejected). 0 = off.
+    float           stylizedWaterDebug;
 } RgDrawFrameReflectRefractParams;
 
 typedef struct RgDrawFrameInfo

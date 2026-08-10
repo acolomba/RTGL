@@ -486,6 +486,17 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             params.waterTextureAreaScale < 0.0001f ? 1.0f : params.waterTextureAreaScale;
 
         gu->twirlPortalNormal = !!params.portalNormalTwirl;
+
+        // Doom64-RT: stylized water
+        gu->stylizedWaterStrength  = std::max( 0.0f, params.stylizedWaterStrength );
+        gu->stylizedWaterCaustic   = std::max( 0.0f, params.stylizedWaterCaustic );
+        gu->stylizedWaterReflMax   = std::clamp( params.stylizedWaterReflMax, 0.0f, 1.0f );
+        gu->stylizedWaterRoughness = std::clamp( params.stylizedWaterRoughness, 0.0f, 1.0f );
+        gu->stylizedWaterGlow      = std::max( 0.0f, params.stylizedWaterGlow );
+        gu->stylizedWaterVeinRef   = std::max( 0.0001f, params.stylizedWaterVeinRef );
+        memcpy( gu->stylizedWaterTint, params.stylizedWaterTint.data, 3 * sizeof( float ) );
+        gu->stylizedWaterTint[ 3 ] = 0.0f;
+        gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
     }
 
     gu->rayCullBackFaces  = rayCullBackFacingTriangles ? 1 : 0;

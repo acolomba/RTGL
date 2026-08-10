@@ -323,6 +323,15 @@ struct ShGlobalUniform
     uint debugRestirM;
     float restirTemporalJitter;
     uint rrSpecHitDist;
+    float stylizedWaterStrength;
+    float stylizedWaterCaustic;
+    float stylizedWaterReflMax;
+    float stylizedWaterRoughness;
+    float stylizedWaterGlow;
+    float stylizedWaterVeinRef;
+    float stylizedWaterDebug;
+    float _padw1;
+    vec4 stylizedWaterTint;
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;
 };
