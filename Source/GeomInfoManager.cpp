@@ -150,6 +150,14 @@ uint32_t RTGL1::GeomInfoManager::GetPrimitiveFlags( const RgMeshInfo*          m
         f |= GEOM_INST_FLAG_REFLECT;
         f |= GEOM_INST_FLAG_REFRACT;
 
+        // Doom64-RT: which of the four liquids this is. Carried as two bits
+        // rather than a per-primitive colour because the geometry instance has
+        // no spare colour channel, and four palettes is all Doom 64 needs.
+        // Neither bit set == index 0 == water, so an upstream caller that only
+        // sets RG_MESH_PRIMITIVE_WATER lands on the old behaviour.
+        f |= ( info.flags & RG_MESH_PRIMITIVE_LIQUID_BIT0 ) ? GEOM_INST_FLAG_LIQUID_BIT0 : 0;
+        f |= ( info.flags & RG_MESH_PRIMITIVE_LIQUID_BIT1 ) ? GEOM_INST_FLAG_LIQUID_BIT1 : 0;
+
         // Doom64-RT probe. WARNING, never ERROR: rt_main's RT_Print turns any
         // RTGL error into a modal Win32 MessageBox whose default action is
         // exit(-1), so an ERROR-severity probe kills the game the moment the

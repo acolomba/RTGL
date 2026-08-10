@@ -507,8 +507,19 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->stylizedWaterRoughness = std::clamp( params.stylizedWaterRoughness, 0.0f, 1.0f );
         gu->stylizedWaterGlow      = std::max( 0.0f, params.stylizedWaterGlow );
         gu->stylizedWaterVeinRef   = std::max( 0.0001f, params.stylizedWaterVeinRef );
-        memcpy( gu->stylizedWaterTint, params.stylizedWaterTint.data, 3 * sizeof( float ) );
-        gu->stylizedWaterTint[ 3 ] = 0.0f;
+        // vec4 in std140: copy the 3 colour floats, zero the pad.
+        for( int i = 0; i < 4; i++ )
+        {
+            memcpy( &gu->stylizedLiquidTint[ i * 4 ],
+                    params.stylizedLiquidTint[ i ].data,
+                    3 * sizeof( float ) );
+            gu->stylizedLiquidTint[ i * 4 + 3 ] = 0.0f;
+
+            memcpy( &gu->stylizedLiquidCrest[ i * 4 ],
+                    params.stylizedLiquidCrest[ i ].data,
+                    3 * sizeof( float ) );
+            gu->stylizedLiquidCrest[ i * 4 + 3 ] = 0.0f;
+        }
         gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
         gu->stylizedWaterReflMin   = std::clamp( params.stylizedWaterReflMin, 0.0f, 1.0f );
         gu->waterCausticGain       = std::max( 0.0f, params.waterCausticGain );

@@ -197,9 +197,27 @@ vec3 getWaterNormal(const RayCone rayCone, const vec3 rayDir, const vec3 baseNor
     return basis * n;   
 }
 
-// Colour the caustic veins tend to at full mask. Pale cyan, not white: white
-// crests read as foam/plastic, the D64 flat's brightest texels are blue-white.
-const vec3 STYLIZED_WATER_CREST_COLOR = vec3( 0.55, 0.80, 1.00 );
+// Doom64-RT: which of the four liquids this surface is.
+//
+// Doom 64 draws water, nukage, sludge and blood as the same 64-frame animated
+// flat design in four palettes (D64W*/D64N*/D64S*/D64B*, plus the WFALL/SFALL/
+// BFALL wall sheets), so they all want this one surface shader and differ only
+// in body and crest colour. The engine classifies by texture name and packs the
+// answer into two geometry-instance bits; index 0 is water, so a primitive that
+// is merely flagged RG_MESH_PRIMITIVE_WATER behaves exactly as before.
+uint getLiquidId( uint geomInstFlags )
+{
+    return ( ( geomInstFlags & GEOM_INST_FLAG_LIQUID_BIT0 ) != 0 ? 1u : 0u ) |
+           ( ( geomInstFlags & GEOM_INST_FLAG_LIQUID_BIT1 ) != 0 ? 2u : 0u );
+}
+
+// Colour the caustic veins tend to at full mask, per liquid. Pale, never white:
+// white crests read as foam/plastic. Water's is blue-white because that is what
+// the D64 flat's brightest texels are; the others follow their own palette.
+vec3 getLiquidCrestColor( uint liquidId )
+{
+    return globalUniform.stylizedLiquidCrest[ liquidId ].rgb;
+}
 
 // Doom64-RT: stylized water surface colour.
 //
@@ -207,17 +225,22 @@ const vec3 STYLIZED_WATER_CREST_COLOR = vec3( 0.55, 0.80, 1.00 );
 // reflection) reads far too "real" for Doom 64, and it is also wrong for these
 // maps: D64W2_01 / D64W1_01 are plain FLOOR FLATS, there is no sector under
 // them to refract into. So the stylized path keeps the surface opaque and
-// rebuilds its look from the flat itself: a deep blue body with the texture's
-// own pale caustic veins, shimmering with the animated wave normal.
+// rebuilds its look from the flat itself: a deep body colour carrying the
+// texture's own pale caustic veins, shimmering with the animated wave normal.
 //
-//   texAlbedo   the flat as sampled by the primary pass (near-black navy,
-//               veins peak around 0.06 / 0.13 / 0.28 sRGB)
+// The body/crest pair comes from liquidId, so nukage, sludge and blood get the
+// same treatment in their own palette rather than turning blue.
+//
+//   texAlbedo   the flat as sampled by the primary pass (near-black, veins peak
+//               around 0.06 / 0.13 / 0.28 sRGB on the water flat)
 //   waveNormal  animated water normal (getWaterNormal)
 //   baseNormal  the surface normal before the waves
+//   liquidId    0 water, 1 nukage, 2 sludge, 3 blood (getLiquidId)
 // out caustic   0..1 vein mask, reused for the screen-space sheen
 vec3 getStylizedWaterAlbedo( const vec3  texAlbedo,
                              const vec3  waveNormal,
                              const vec3  baseNormal,
+                             const uint  liquidId,
                              out   float caustic )
 {
     // the veins ARE the caustics in the source art: normalize the flat's
@@ -234,8 +257,8 @@ vec3 getStylizedWaterAlbedo( const vec3  texAlbedo,
     // veins keep their shape, but breathe with the waves
     caustic = clamp( veins * ( 1.0 + globalUniform.stylizedWaterCaustic * shimmer ), 0.0, 1.0 );
 
-    const vec3 body  = globalUniform.stylizedWaterTint.rgb;
-    const vec3 crest = mix( body, STYLIZED_WATER_CREST_COLOR, 0.85 );
+    const vec3 body  = globalUniform.stylizedLiquidTint[ liquidId ].rgb;
+    const vec3 crest = mix( body, getLiquidCrestColor( liquidId ), 0.85 );
 
     return mix( body, crest, caustic );
 }
@@ -882,8 +905,9 @@ void main()
                 // the waves around, or the wave-tilt term reads ~2 everywhere
                 const vec3 baseNormal =
                     isBackface( h.normal, rayDir ) ? -h.normal : h.normal;
+                const uint liquidId = getLiquidId( h.geometryInstanceFlags );
                 const vec3 surfAlbedo =
-                    getStylizedWaterAlbedo( h.albedo, normal, baseNormal, caustic );
+                    getStylizedWaterAlbedo( h.albedo, normal, baseNormal, liquidId, caustic );
 
                 // *2 compensates the split: this half covers two pixels
                 throughput *= ( 1.0 - F ) * 2.0;
@@ -891,7 +915,7 @@ void main()
                 // a little unlit sheen so the caustic pattern still reads in
                 // rooms the path tracer leaves nearly black (the original flat
                 // was drawn bright); purely on-screen, casts no light
-                const vec3 sheen = STYLIZED_WATER_CREST_COLOR * caustic *
+                const vec3 sheen = getLiquidCrestColor( liquidId ) * caustic *
                                    globalUniform.stylizedWaterGlow;
 
                 const ivec2 regPix = getRegularPixFromCheckerboardPix( pix );

@@ -77,8 +77,8 @@
 #define MATERIAL_BLENDING_TYPE_BIT_MASK (3)
 #define GEOM_INST_FLAG_BLENDING_LAYER_COUNT (4)
 #define GEOM_INST_FLAG_NO_WATER_CAUSTICS (1 << 8)
-#define GEOM_INST_FLAG_RESERVED_1 (1 << 9)
-#define GEOM_INST_FLAG_RESERVED_2 (1 << 10)
+#define GEOM_INST_FLAG_LIQUID_BIT0 (1 << 9)
+#define GEOM_INST_FLAG_LIQUID_BIT1 (1 << 10)
 #define GEOM_INST_FLAG_RESERVED_3 (1 << 11)
 #define GEOM_INST_FLAG_RESERVED_4 (1 << 12)
 #define GEOM_INST_FLAG_GLASS_IF_SMOOTH (1 << 13)
@@ -331,7 +331,8 @@ struct ShGlobalUniform
     float stylizedWaterVeinRef;
     float stylizedWaterDebug;
     float stylizedWaterReflMin;
-    vec4 stylizedWaterTint;
+    vec4 stylizedLiquidTint[4];
+    vec4 stylizedLiquidCrest[4];
     float sunRequireSky;
     float sunLeakDebug;
     float sunLeakDebugMul;

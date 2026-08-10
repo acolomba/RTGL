@@ -319,8 +319,11 @@ CONST = {
     # first 8 bits (MATERIAL_BLENDING_TYPE_BIT_COUNT * GEOM_INST_FLAG_BLENDING_LAYER_COUNT)
     # are for the blending flags per each layer, others can be used
     "GEOM_INST_FLAG_NO_WATER_CAUSTICS"      : BIT( 8 ),
-    "GEOM_INST_FLAG_RESERVED_1"             : BIT( 9 ),
-    "GEOM_INST_FLAG_RESERVED_2"             : BIT( 10 ),
+    # Doom64-RT: 2-bit liquid index (water / nukage / sludge / blood), read by
+    # the stylized water surface to pick its body and crest colour. 0 = water,
+    # so anything that only sets GEOM_INST_FLAG_MEDIA_TYPE_WATER is unchanged.
+    "GEOM_INST_FLAG_LIQUID_BIT0"            : BIT( 9 ),
+    "GEOM_INST_FLAG_LIQUID_BIT1"            : BIT( 10 ),
     "GEOM_INST_FLAG_RESERVED_3"             : BIT( 11 ),
     "GEOM_INST_FLAG_RESERVED_4"             : BIT( 12 ),
     "GEOM_INST_FLAG_GLASS_IF_SMOOTH"        : BIT( 13 ),
@@ -770,8 +773,14 @@ GLOBAL_UNIFORM_STRUCT = [
     # This is the artistic floor that makes it read as reflective from above.
     (TYPE_FLOAT32,      1,      "stylizedWaterReflMin",             1),
 
-    # deep blue body colour of the water
-    (TYPE_FLOAT32,      4,      "stylizedWaterTint",                1),
+    # Body and crest colour per LIQUID, indexed by the 2-bit liquid id in the
+    # geometry instance flags (GEOM_INST_FLAG_LIQUID_BIT*):
+    #   0 water   1 nukage   2 sludge   3 blood
+    # Doom 64's four liquids are the same animated 64-frame flat design in four
+    # palettes, so they share this whole shader and differ only here. [0] is
+    # water, which is the index a primitive with neither bit set gets.
+    (TYPE_FLOAT32,      4,      "stylizedLiquidTint",               4),
+    (TYPE_FLOAT32,      4,      "stylizedLiquidCrest",              4),
 
     # --- Directional light: sky-reach test (Doom64-RT) ------------------------
     # A shadow ray that hits NOTHING is scored as lit (RtMissShadowCheck.rmiss

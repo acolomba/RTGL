@@ -381,6 +381,15 @@ typedef enum RgMeshPrimitiveFlagBits
     // light thrown across a surface, and a camera-facing billboard has no
     // surface for it to lie on -- it just tints the sprite.
     RG_MESH_PRIMITIVE_NO_WATER_CAUSTICS     = 1 << 18,
+    // Doom64-RT: which LIQUID this water-flagged primitive is, as a 2-bit index
+    // into stylizedLiquidTint[] / stylizedLiquidCrest[]. Doom 64 has four
+    // liquids sharing one surface shader and differing only in colour:
+    //   0 water (D64W1/W2, WFALL)  1 nukage (D64N1/N2, SFALL)
+    //   2 sludge (D64S1/S2)        3 blood  (D64B1/B2, BFALL)
+    // Only meaningful together with RG_MESH_PRIMITIVE_WATER; 0 (neither bit)
+    // is water, so every existing caller keeps its behaviour.
+    RG_MESH_PRIMITIVE_LIQUID_BIT0           = 1 << 19,
+    RG_MESH_PRIMITIVE_LIQUID_BIT1           = 1 << 20,
 } RgMeshPrimitiveFlagBits;
 typedef uint32_t RgMeshPrimitiveFlags;
 
@@ -1346,8 +1355,14 @@ typedef struct RgDrawFrameReflectRefractParams
     float           stylizedWaterGlow;
     // Luminance of the flat's brightest texel; normalizes the vein mask.
     float           stylizedWaterVeinRef;
-    // Deep blue body colour of the water.
-    RgFloat3D       stylizedWaterTint;
+    // Doom64-RT: body / crest colour per LIQUID, indexed by the 2-bit
+    // RG_MESH_PRIMITIVE_LIQUID_BIT* value. [0] is water and is what a caller
+    // that never sets those bits gets, so this is the old stylizedWaterTint.
+    //   body  -- the colour the surface tends to where the flat is black
+    //   crest -- the colour the caustic veins tend to at full mask (pale, but
+    //            NOT white: white crests read as foam/plastic)
+    RgFloat3D       stylizedLiquidTint[ 4 ];
+    RgFloat3D       stylizedLiquidCrest[ 4 ];
     // Diagnostic: paint water surfaces magenta (stylized branch running) or
     // green (RTGL sees water, stylized gate rejected). 0 = off.
     float           stylizedWaterDebug;
