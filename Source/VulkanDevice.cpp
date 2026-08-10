@@ -344,6 +344,19 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->skyColorMultiplier = std::max( 0.0f, params.skyColorMultiplier );
         gu->skyColorSaturation = std::max( 0.0f, params.skyColorSaturation );
 
+        // Doom64-RT: sky-reach test for the directional light. See
+        // traceSunReachesSky() in RaygenCommon.h.
+        gu->sunRequireSky      = params.sunRequireSky > 0.5f ? 1.0f : 0.0f;
+        // Pass the MODE through, do not collapse it to a flag: 0 off, 1 isolate
+        // the leak, 2 colour by reason. A `> 0.5f ? 1 : 0` here silently turned
+        // every request for mode 2 into mode 1, so the colour path was
+        // unreachable no matter what the cvar said.
+        gu->sunLeakDebug       = std::clamp( params.sunLeakDebug, 0.0f, 2.0f );
+        gu->sunLeakDebugMul    = std::max( 0.0f, params.sunLeakDebugMul );
+        gu->sunSkyProbeMaxDist = params.sunSkyProbeMaxDist < 0.001f
+                                     ? float( MAX_RAY_LENGTH )
+                                     : params.sunSkyProbeMaxDist;
+
         switch( params.skyType )
         {
             case RG_SKY_TYPE_COLOR: {
@@ -502,6 +515,9 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->waterCausticScale      = std::max( 0.0f, params.waterCausticScale );
         gu->waterCausticSpeed      = params.waterCausticSpeed;
         gu->waterCausticDist       = std::max( 0.0f, params.waterCausticDist );
+        gu->waterCausticRise       = std::max( 0.0f, params.waterCausticRise );
+        gu->waterCausticSlant      = std::max( 0.0f, params.waterCausticSlant );
+        gu->waterCausticWallBoost  = std::max( 0.0f, params.waterCausticWallBoost );
     }
 
     gu->rayCullBackFaces  = rayCullBackFacingTriangles ? 1 : 0;

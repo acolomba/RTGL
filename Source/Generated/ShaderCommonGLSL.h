@@ -76,7 +76,7 @@
 #define MATERIAL_BLENDING_TYPE_BIT_COUNT (2)
 #define MATERIAL_BLENDING_TYPE_BIT_MASK (3)
 #define GEOM_INST_FLAG_BLENDING_LAYER_COUNT (4)
-#define GEOM_INST_FLAG_RESERVED_0 (1 << 8)
+#define GEOM_INST_FLAG_NO_WATER_CAUSTICS (1 << 8)
 #define GEOM_INST_FLAG_RESERVED_1 (1 << 9)
 #define GEOM_INST_FLAG_RESERVED_2 (1 << 10)
 #define GEOM_INST_FLAG_RESERVED_3 (1 << 11)
@@ -332,10 +332,18 @@ struct ShGlobalUniform
     float stylizedWaterDebug;
     float stylizedWaterReflMin;
     vec4 stylizedWaterTint;
+    float sunRequireSky;
+    float sunLeakDebug;
+    float sunLeakDebugMul;
+    float sunSkyProbeMaxDist;
     float waterCausticGain;
     float waterCausticScale;
     float waterCausticSpeed;
     float waterCausticDist;
+    float waterCausticRise;
+    float waterCausticSlant;
+    float waterCausticWallBoost;
+    float _padc1;
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;
 };

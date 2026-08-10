@@ -376,6 +376,11 @@ typedef enum RgMeshPrimitiveFlagBits
     RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS = 1 << 15,
     RG_MESH_PRIMITIVE_NO_SHADOW             = 1 << 16,
     RG_MESH_PRIMITIVE_NO_MOTION_VECTORS     = 1 << 17,
+    // Doom64-RT: this primitive does not RECEIVE projected water caustics.
+    // Set on sprites (enemies, items, the first-person weapon): a caustic is
+    // light thrown across a surface, and a camera-facing billboard has no
+    // surface for it to lie on -- it just tints the sprite.
+    RG_MESH_PRIMITIVE_NO_WATER_CAUSTICS     = 1 << 18,
 } RgMeshPrimitiveFlagBits;
 typedef uint32_t RgMeshPrimitiveFlags;
 
@@ -906,6 +911,20 @@ typedef struct RgDrawFrameSkyParams
     // If equals to zero, then default value is used.
     // Default: identity matrix.
     RgMatrix3D      skyCubemapRotationTransform;
+    // Doom64-RT: sky-reach test for the directional light.
+    // A shadow ray that hits nothing is scored as LIT, and Doom maps are not
+    // watertight, so rays escape at wall/ceiling seams and the sun washes rooms
+    // with no opening. 1 = a ray must reach sky geometry to count as lit.
+    float           sunRequireSky;
+    // Diagnostic: 1 = paint by WHY a surface is lit. RED = ray reached sky
+    // (real light through a real opening), GREEN = ray escaped into the void
+    // (a leak). Independent of sunRequireSky, so leaks can be seen unfixed.
+    float           sunLeakDebug;
+    // Brightness of those debug colours; these rooms are near-black.
+    float           sunLeakDebugMul;
+    // Max length of the sky probe ray, in meters. Only traced when the normal
+    // shadow ray already missed.
+    float           sunSkyProbeMaxDist;
 } RgDrawFrameSkyParams;
 
 // Can be linked after RgDrawFrameInfo.
@@ -1342,6 +1361,12 @@ typedef struct RgDrawFrameReflectRefractParams
     float           waterCausticSpeed;
     // How far below a surface the water may be and still light it, world units.
     float           waterCausticDist;
+    // How far ABOVE the water the caustics still reach, world units.
+    float           waterCausticRise;
+    // How far the probe tilts along the surface normal. 0 = straight down.
+    float           waterCausticSlant;
+    // Extra gain applied to VERTICAL receivers only (walls). 1 = no boost.
+    float           waterCausticWallBoost;
 } RgDrawFrameReflectRefractParams;
 
 typedef struct RgDrawFrameInfo

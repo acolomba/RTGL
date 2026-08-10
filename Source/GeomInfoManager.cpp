@@ -168,6 +168,11 @@ uint32_t RTGL1::GeomInfoManager::GetPrimitiveFlags( const RgMeshInfo*          m
         }
     }
 
+    if( info.flags & RG_MESH_PRIMITIVE_NO_WATER_CAUSTICS )
+    {
+        f |= GEOM_INST_FLAG_NO_WATER_CAUSTICS;
+    }
+
     if( info.flags & RG_MESH_PRIMITIVE_ACID )
     {
         f |= GEOM_INST_FLAG_MEDIA_TYPE_ACID;

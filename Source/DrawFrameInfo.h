@@ -401,7 +401,10 @@ namespace detail
             .waterCausticGain                      = 1.2f,
             .waterCausticScale                     = 0.8f,
             .waterCausticSpeed                     = 0.35f,
-            .waterCausticDist                      = 6.0f, // metres
+            .waterCausticDist                      = 6.0f,  // metres
+            .waterCausticRise                      = 2.0f,  // metres (64 map units)
+            .waterCausticSlant                     = 0.6f,
+            .waterCausticWallBoost                 = 4.0f,
         };
     };
 
@@ -420,6 +423,10 @@ namespace detail
             .skyViewerPosition           = {},
             .pSkyCubemapTextureName      = nullptr,
             .skyCubemapRotationTransform = {},
+            .sunRequireSky                         = 0.0f,
+            .sunLeakDebug                          = 0.0f,
+            .sunLeakDebugMul                       = 1.0f,
+            .sunSkyProbeMaxDist                    = 10000.0f,
         };
     };
 

@@ -240,6 +240,170 @@ vec3 getStylizedWaterAlbedo( const vec3  texAlbedo,
     return mix( body, crest, caustic );
 }
 
+// ---------------------------------------------------------------------------
+// Doom64-RT: caustics projected from water onto the geometry around it.
+//
+// A 1-spp path tracer cannot find these. A caustic is a specular-to-diffuse
+// path -- light focused by the wavy surface onto a wall -- and the chance of a
+// random diffuse bounce landing on the water AND then scattering into a light
+// is effectively zero, so the effect never appears no matter how good the
+// denoiser is.
+//
+// So project them. Each shading point fires ONE probe ray straight down; if it
+// lands on a surface RTGL considers water within waterCausticDist, the point is
+// "over water" and gets an animated caustic field sampled from the same water
+// normal texture the surface waves use, so the two agree.
+//
+// Applied to ALBEDO in the primary pass, NOT to the direct lighting term. Doom
+// 64 interiors are lit mostly by INDIRECT light (sector emissives, sky fill),
+// and the indirect term is written by RtRaygenIndirectFinal.comp -- a COMPUTE
+// shader with no TLAS, which cannot fire this probe. Modulating only the direct
+// term therefore computed the effect perfectly and showed nothing: multiplying
+// a near-zero direct contribution changes nothing. Albedo scales direct and
+// indirect alike.
+//
+// MULTIPLICATIVE, never additive: caustics are focused light, not a light
+// source. A pitch-black room must stay black -- an additive term would make
+// water glow in the dark and wash the GI, exactly the failure documented for
+// world emissives in compat-patches.md.
+// ---------------------------------------------------------------------------
+
+#define WATERPROBE_MISS  0 // nothing below within range
+#define WATERPROBE_OTHER 1 // hit geometry, but it is not water
+#define WATERPROBE_WATER 2 // hit water
+
+// What is directly below this point? The origin is offset along the normal so a
+// point ON a wall probes the floor in FRONT of the wall rather than grazing the
+// wall's own base. Returns a WATERPROBE_* value rather than a bool so the
+// diagnostic can tell "hit nothing" apart from "hit something that is not
+// water" -- different causes, and a bool cannot distinguish them.
+//
+// Closest hit only, so this cannot leak through geometry: a room above a water
+// sector hits its own floor first and reports WATERPROBE_OTHER.
+int probeWaterBelow( const vec3  position,
+                     const vec3  normal,
+                     out   vec3  waterPos,   // world-space point on the water that was hit
+                     out   float waterDist ) // receiver -> water distance, metres
+{
+    const vec3 up     = globalUniform.worldUpVector.xyz;
+    const vec3 origin = position + normal * 0.05;
+
+    // SLANTED, not straight down. A pool almost always has a ledge or walkway
+    // around it, so a wall set back behind that ledge probes straight down onto
+    // the LEDGE and never sees the water -- which is why the first version lit
+    // essentially nothing: the only qualifying surfaces were the few that rise
+    // directly out of the water. Tilting the probe along the surface normal
+    // lets a wall look "down and out" over the ledge to the water in front of
+    // it, which is also where the light physically comes from.
+    //
+    // A floor (normal == up) or a ceiling (normal == -up) still probes straight
+    // down: the normal term only cancels or shortens the vertical component, it
+    // never tips those cases sideways.
+    const vec3 dir = normalize( -up + normal * globalUniform.waterCausticSlant );
+
+    resetPayload();
+
+    // NO face culling. RTGL culls FRONT faces everywhere else
+    // (getAdditionalRayFlags -> gl_RayFlagsCullFrontFacingTrianglesEXT), i.e.
+    // its winding is the opposite of the usual convention. This probe first
+    // used gl_RayFlagsCullBackFacingTrianglesEXT -- exactly the faces RTGL
+    // keeps -- so the ray passed straight THROUGH the water and the effect
+    // never fired once. A probe only needs "is there water below", so it culls
+    // nothing and cannot be wrong about winding again.
+    // rayCullMaskWorld ALONE CANNOT HIT WATER. ASManager completely rewrites the
+    // TLAS instance mask for refractive geometry --
+    //     if( filter & FT::PT_REFRACT ) instance.mask = INSTANCE_MASK_REFRACT;
+    // -- dropping every INSTANCE_MASK_WORLD_* bit, and water is refractive. So a
+    // probe using rayCullMaskWorld (WORLD_0|1|2) is not merely unlikely to find
+    // water, it is INCAPABLE of intersecting it: no reach, slant or winding
+    // change could ever have made it return a hit. RTGL's own refl/refr path
+    // says as much: getReflectionRefractionCullMask ORs in INSTANCE_MASK_REFRACT.
+    traceRayEXT( topLevelAS,
+                 gl_RayFlagsNoneEXT,
+                 globalUniform.rayCullMaskWorld | INSTANCE_MASK_REFRACT,
+                 0, 0, // sbtRecordOffset, sbtRecordStride
+                 SBT_INDEX_MISS_DEFAULT,
+                 origin,
+                 0.001,
+                 dir,
+                 globalUniform.waterCausticDist,
+                 PAYLOAD_INDEX_DEFAULT );
+
+    waterPos  = position;
+    waterDist = 0.0;
+
+    if( !doesPayloadContainHitInfo( g_payload ) )
+    {
+        return WATERPROBE_MISS;
+    }
+
+    int instanceId, instanceCustomIndex;
+    unpackInstanceIdAndCustomIndex( g_payload.instIdAndIndex, instanceId, instanceCustomIndex );
+
+    if( ( geometryInstances[ instanceId ].flags & GEOM_INST_FLAG_MEDIA_TYPE_WATER ) == 0 )
+    {
+        return WATERPROBE_OTHER;
+    }
+
+    // Resolve the exact point on the water. The caustic pattern lives on the
+    // WATER surface, so it has to be sampled there and not at the receiver:
+    // sampling at the receiver projected onto the horizontal plane means a
+    // vertical wall gets identical UVs all the way up, i.e. infinite vertical
+    // smearing. Sampling the hit point also makes the pattern foreshorten
+    // correctly and gives a distance to fade by.
+    int geomIndex, primIndex;
+    unpackGeometryAndPrimitiveIndex( g_payload.geomAndPrimIndex, geomIndex, primIndex );
+
+    const mat3 verts = getOnlyCurPositions( instanceId, primIndex );
+    const vec3 bary  = vec3( 1.0 - g_payload.baryCoords.x - g_payload.baryCoords.y,
+                             g_payload.baryCoords.x,
+                             g_payload.baryCoords.y );
+
+    waterPos  = verts * bary;
+    waterDist = distance( position, waterPos );
+
+    return WATERPROBE_WATER;
+}
+
+// Animated caustic field. Two wave layers scrolling against each other.
+float getWaterCaustic( const vec3 position )
+{
+    const vec3 up = globalUniform.worldUpVector.xyz;
+
+    // Project onto the horizontal plane. This is only correct because the
+    // caller passes a point ON THE WATER: projecting the RECEIVER instead gave
+    // a vertical wall the same UV at every height, which smeared the pattern
+    // into infinite vertical stripes.
+    const vec3 flattened = position - up * dot( position, up );
+    const mat3 basis     = getONB( up );
+    const vec2 xy        = vec2( dot( flattened, basis[ 0 ] ), dot( flattened, basis[ 1 ] ) );
+
+    // world space here is METRES (gzdoom scales by 1/32), so this is UV per
+    // METRE. At 0.09 the field repeated every ~11 m = ~350 map units: a whole
+    // room inside one caustic cell, which brightens and dims as a single flat
+    // wash instead of reading as caustics.
+    const float s = globalUniform.waterCausticScale;
+    const float t = globalUniform.time * globalUniform.waterCausticSpeed;
+
+    vec2 uv0 = xy * s + vec2( t, t * 0.6 );
+    vec2 uv1 = xy * s * 1.3 - vec2( t * 0.7, t );
+
+    // getTextureSampleLod, NOT getTextureSample: a raygen shader has no quad
+    // derivatives, so an implicit-LOD texture() fetch is undefined there.
+    vec2 n0 = getTextureSampleLod( globalUniform.waterNormalTextureIndex, uv0, 0.0 ).xy * 2.0 - 1.0;
+    vec2 n1 = getTextureSampleLod( globalUniform.waterNormalTextureIndex, uv1, 0.0 ).xy * 2.0 - 1.0;
+
+    // Filaments live where the two wave fields CANCEL -- that is where a real
+    // water surface acts as a converging lens. length(n0+n1) is ~0.5..1.5 over
+    // most of the texture, so the first version (1 - clamp(len), then ^8) was
+    // zero almost everywhere: a few sub-pixel dots, which is why it read as
+    // "nothing at all" rather than "too subtle". Widen the band, soften the
+    // curve, so the filaments have area.
+    float converge = 1.0 - clamp( length( n0 + n1 ) * 0.55, 0.0, 1.0 );
+
+    return pow( converge, 3.0 );
+}
+
 mat3 lookAt(const vec3 forward, const vec3 worldUp)
 {
     vec3 right = cross(forward, worldUp);
@@ -461,8 +625,72 @@ void main()
     throughput *= getMediaTransmittance(currentRayMedia, firstHitDepthLinear);
 
 
+    // Doom64-RT: caustics projected from water onto this surface. Folded into
+    // ALBEDO so they show under indirect light too -- see the note above
+    // probeWaterBelow().
+    vec3 primaryAlbedo = h.albedo; // h is const here
+
+    if( globalUniform.waterCausticGain > 0.0 )
+    {
+        vec3  waterPos;
+        float waterDist;
+
+        // Sprites do not receive caustics. A caustic is light thrown ACROSS a
+        // surface; a camera-facing billboard has no surface for it to lie on,
+        // so the pattern just tints the enemy or the weapon and swims as the
+        // camera turns.
+        const bool receives =
+            ( h.geometryInstanceFlags & GEOM_INST_FLAG_NO_WATER_CAUSTICS ) == 0;
+
+        const int probe = receives ? probeWaterBelow( h.hitPosition, h.normal, waterPos, waterDist )
+                                   : WATERPROBE_MISS;
+
+        // Two separate falloffs, because they are not the same distance.
+        //  - along the probe: light spreads, so a wall at the pool edge gets a
+        //    crisp pattern and one set back gets little.
+        //  - with HEIGHT above the water: real caustics climb only a little way
+        //    up a wall. The probe has to reach much further sideways to clear a
+        //    pool's ledge, so sharing one range ran the pattern up the full
+        //    height of every wall -- which is exactly what it looked like.
+        const float up_h  = dot( h.hitPosition - waterPos, globalUniform.worldUpVector.xyz );
+        const float fadeD =
+            1.0 - clamp( waterDist / max( 0.001, globalUniform.waterCausticDist ), 0.0, 1.0 );
+        const float fadeH =
+            1.0 - clamp( max( 0.0, up_h ) / max( 0.001, globalUniform.waterCausticRise ), 0.0, 1.0 );
+
+        const float caustic = ( probe == WATERPROBE_WATER )
+                                  ? getWaterCaustic( waterPos ) * fadeD * fadeH * fadeH
+                                  : 0.0;
+
+        if( globalUniform.stylizedWaterDebug > 0.0 )
+        {
+            //   black -- ray hit nothing below (out of range, or passed through)
+            //   blue  -- hit geometry, but it is not flagged water
+            //   green -- over water; brightness is the caustic field itself
+            primaryAlbedo = probe == WATERPROBE_WATER ? vec3( 0.0, 0.15 + caustic, 0.0 )
+                          : probe == WATERPROBE_OTHER ? vec3( 0.0, 0.0, 0.25 )
+                                                      : vec3( 0.0 );
+        }
+        else
+        {
+            // Walls get their own gain. The same caustic pattern is far fainter
+            // on a vertical surface -- it is seen at a grazing angle and the
+            // light reaching it has already spread -- so one gain tuned on the
+            // pool bottom leaves the walls invisible, and raising that gain
+            // brightens the floor just as much. verticality is 0 on floors and
+            // ceilings, 1 on walls.
+            const float verticality =
+                1.0 - abs( dot( h.normal, globalUniform.worldUpVector.xyz ) );
+
+            const float gain = globalUniform.waterCausticGain *
+                               mix( 1.0, globalUniform.waterCausticWallBoost, verticality );
+
+            primaryAlbedo *= 1.0 + gain * caustic;
+        }
+    }
+
     imageStore(framebufIsSky,               pix, ivec4(0));
-    imageStore(framebufAlbedo,              getRegularPixFromCheckerboardPix(pix), vec4(h.albedo, 0.0));
+    imageStore(framebufAlbedo,              getRegularPixFromCheckerboardPix(pix), vec4(primaryAlbedo, 0.0));
     imageStore(framebufScreenEmisRT,        getRegularPixFromCheckerboardPix(pix), vec4(screenEmission * throughput , 0.0));
     imageStoreNormal(                       pix, h.normal);
     imageStore(framebufMetallicRoughness,   pix, vec4(h.metallic, h.roughness, 0, 0));
@@ -600,7 +828,7 @@ void main()
         //   nothing -- the primitive never got RG_MESH_PRIMITIVE_WATER, so the
         //              JSON meta never reached it (tools/set_water_meta.py)
         // Written as screen emission so it is visible with no lighting at all.
-        if( globalUniform.stylizedWaterDebug > 0.0 && isWater )
+        if( globalUniform.stylizedWaterDebug > 0.5 && globalUniform.stylizedWaterDebug < 1.5 && isWater )
         {
             const ivec2 regPix = getRegularPixFromCheckerboardPix( pix );
             imageStore( framebufAlbedo, regPix, vec4( 0.0 ) );

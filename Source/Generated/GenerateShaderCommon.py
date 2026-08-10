@@ -318,7 +318,7 @@ CONST = {
     "GEOM_INST_FLAG_BLENDING_LAYER_COUNT"   : 4,         
     # first 8 bits (MATERIAL_BLENDING_TYPE_BIT_COUNT * GEOM_INST_FLAG_BLENDING_LAYER_COUNT)
     # are for the blending flags per each layer, others can be used
-    "GEOM_INST_FLAG_RESERVED_0"             : BIT( 8 ),
+    "GEOM_INST_FLAG_NO_WATER_CAUSTICS"      : BIT( 8 ),
     "GEOM_INST_FLAG_RESERVED_1"             : BIT( 9 ),
     "GEOM_INST_FLAG_RESERVED_2"             : BIT( 10 ),
     "GEOM_INST_FLAG_RESERVED_3"             : BIT( 11 ),
@@ -773,6 +773,32 @@ GLOBAL_UNIFORM_STRUCT = [
     # deep blue body colour of the water
     (TYPE_FLOAT32,      4,      "stylizedWaterTint",                1),
 
+    # --- Directional light: sky-reach test (Doom64-RT) ------------------------
+    # A shadow ray that hits NOTHING is scored as lit (RtMissShadowCheck.rmiss
+    # sets isShadowed = 0). Doom maps are not watertight and have no geometry
+    # above a ceiling, so rays leave the world through T-junctions at wall/
+    # ceiling seams and come back "lit" -- the moon then washes rooms that have
+    # no opening at all. Widening the light or gating apertures cannot fix that,
+    # because nothing is being squeezed through anything.
+    #
+    # The test: in a Doom map the sky is the ONLY legitimate way out, so a ray
+    # that escapes without hitting sky geometry escaped through a modelling gap.
+    # 1 = require the ray to reach sky (WORLD_2) before counting as lit.
+    (TYPE_FLOAT32,      1,      "sunRequireSky",                    1),
+    # Diagnostic. 1 = ignore the light's colour and paint by WHY a surface is
+    # lit: RED  = the ray reached sky, i.e. genuine moonlight through a real
+    # opening; GREEN = the ray escaped into the void, i.e. a leak. Surfaces the
+    # moon does not reach are untouched. Works whether or not sunRequireSky is
+    # on, so the leak can be seen before it is fixed.
+    (TYPE_FLOAT32,      1,      "sunLeakDebug",                     1),
+    # Brightness of those debug colours. These rooms are near-black, so the
+    # classification is invisible at the moon's real intensity.
+    (TYPE_FLOAT32,      1,      "sunLeakDebugMul",                  1),
+    # Max length of the extra sky probe ray, in meters. Only traced when the
+    # normal shadow ray already missed, i.e. only for pixels that are currently
+    # lit, so this is bounded by how much of the screen the moon touches.
+    (TYPE_FLOAT32,      1,      "sunSkyProbeMaxDist",               1),
+
     # --- Projected water caustics (Doom64-RT) --------------------------------
     # Caustics cast BY the water ONTO the geometry around it. A path tracer at
     # 1 spp will never find these by itself (they are a focused specular-to-
@@ -787,6 +813,21 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "waterCausticSpeed",                1),
     # how far below a surface the water may be and still light it (world units)
     (TYPE_FLOAT32,      1,      "waterCausticDist",                 1),
+
+    # How far ABOVE the water the caustics still reach, metres. Separate from
+    # waterCausticDist on purpose: real caustics climb only a little way up a
+    # wall, while the probe itself has to reach much further sideways to clear
+    # a pool's ledge. One combined range made the pattern run up the full
+    # height of every wall.
+    (TYPE_FLOAT32,      1,      "waterCausticRise",                 1),
+    # how far the probe tilts along the surface normal (0 = straight down)
+    (TYPE_FLOAT32,      1,      "waterCausticSlant",                1),
+    # Extra gain for VERTICAL receivers. Caustics on a wall are seen at a
+    # grazing angle and are physically fainter than the same pattern on a floor,
+    # so a single gain that reads well on the pool bottom leaves the walls
+    # barely visible -- and raising it brightens everything instead.
+    (TYPE_FLOAT32,      1,      "waterCausticWallBoost",            1),
+    (TYPE_FLOAT32,      1,      "_padc1",                           1),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),
