@@ -1332,6 +1332,16 @@ typedef struct RgDrawFrameReflectRefractParams
     // Diagnostic: paint water surfaces magenta (stylized branch running) or
     // green (RTGL sees water, stylized gate rejected). 0 = off.
     float           stylizedWaterDebug;
+    // Reflection strength at normal incidence (looking straight down).
+    // Physical water is 0.02; raise it to make the surface read as reflective.
+    float           stylizedWaterReflMin;
+    // Caustics projected from water onto the geometry around it. 0 = off
+    // (and no probe ray is traced).
+    float           waterCausticGain;
+    float           waterCausticScale;
+    float           waterCausticSpeed;
+    // How far below a surface the water may be and still light it, world units.
+    float           waterCausticDist;
 } RgDrawFrameReflectRefractParams;
 
 typedef struct RgDrawFrameInfo

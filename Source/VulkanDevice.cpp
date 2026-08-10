@@ -497,6 +497,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         memcpy( gu->stylizedWaterTint, params.stylizedWaterTint.data, 3 * sizeof( float ) );
         gu->stylizedWaterTint[ 3 ] = 0.0f;
         gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
+        gu->stylizedWaterReflMin   = std::clamp( params.stylizedWaterReflMin, 0.0f, 1.0f );
+        gu->waterCausticGain       = std::max( 0.0f, params.waterCausticGain );
+        gu->waterCausticScale      = std::max( 0.0f, params.waterCausticScale );
+        gu->waterCausticSpeed      = params.waterCausticSpeed;
+        gu->waterCausticDist       = std::max( 0.0f, params.waterCausticDist );
     }
 
     gu->rayCullBackFaces  = rayCullBackFacingTriangles ? 1 : 0;

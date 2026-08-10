@@ -30,6 +30,7 @@
 #include "Utils.h"
 
 #include <ranges>
+#include <set>
 
 static_assert( sizeof( RTGL1::ShGeometryInstance ) % 16 == 0,
                "Std430 structs must be aligned by 16 bytes" );
@@ -148,6 +149,23 @@ uint32_t RTGL1::GeomInfoManager::GetPrimitiveFlags( const RgMeshInfo*          m
         f |= GEOM_INST_FLAG_MEDIA_TYPE_WATER;
         f |= GEOM_INST_FLAG_REFLECT;
         f |= GEOM_INST_FLAG_REFRACT;
+
+        // Doom64-RT probe. WARNING, never ERROR: rt_main's RT_Print turns any
+        // RTGL error into a modal Win32 MessageBox whose default action is
+        // exit(-1), so an ERROR-severity probe kills the game the moment the
+        // first water primitive is uploaded. Warning goes through Printf.
+        {
+            static std::set< std::string > s_seenWater;
+            auto nm = std::string{ info.pTextureName ? info.pTextureName : "?" };
+            if( s_seenWater.insert( nm ).second )
+            {
+                debug::Warning( "RTwaterProbe: \"{}\" primFlags=0x{:X} geomFlags=0x{:X} dynVtx={}",
+                              nm,
+                              uint32_t( info.flags ),
+                              f,
+                              int( isDynamicVertexData ) );
+            }
+        }
     }
 
     if( info.flags & RG_MESH_PRIMITIVE_ACID )

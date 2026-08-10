@@ -394,9 +394,14 @@ namespace detail
             .stylizedWaterReflMax                  = 0.75f,
             .stylizedWaterRoughness                = 0.10f,
             .stylizedWaterGlow                     = 0.15f,
-            .stylizedWaterVeinRef                  = 0.03f,
+            .stylizedWaterVeinRef                  = 0.1f,
             .stylizedWaterTint                     = { 0.02f, 0.09f, 0.24f },
             .stylizedWaterDebug                    = 0.0f,
+                        .stylizedWaterReflMin                  = 0.1f,
+            .waterCausticGain                      = 1.2f,
+            .waterCausticScale                     = 0.09f,
+            .waterCausticSpeed                     = 0.35f,
+            .waterCausticDist                      = 192.0f,
         };
     };
 

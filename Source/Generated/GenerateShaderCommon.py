@@ -765,10 +765,28 @@ GLOBAL_UNIFORM_STRUCT = [
     # but the stylized gate rejected it. No colour at all => the primitive never
     # got RG_MESH_PRIMITIVE_WATER, i.e. the JSON meta never reached it.
     (TYPE_FLOAT32,      1,      "stylizedWaterDebug",               1),
-    (TYPE_FLOAT32,      1,      "_padw1",                           1),
+    # Reflection strength at NORMAL incidence. Real water is F0=0.02, i.e.
+    # looking straight down the reflection is 2% and effectively invisible.
+    # This is the artistic floor that makes it read as reflective from above.
+    (TYPE_FLOAT32,      1,      "stylizedWaterReflMin",             1),
 
     # deep blue body colour of the water
     (TYPE_FLOAT32,      4,      "stylizedWaterTint",                1),
+
+    # --- Projected water caustics (Doom64-RT) --------------------------------
+    # Caustics cast BY the water ONTO the geometry around it. A path tracer at
+    # 1 spp will never find these by itself (they are a focused specular-to-
+    # diffuse path), so they are projected: each shading point fires one probe
+    # ray straight down, and if it lands on a water-flagged surface within
+    # waterCausticDist, its lighting is modulated by an animated caustic field
+    # sampled from the same water normal texture the surface waves use.
+    # Multiplicative, so a dark room stays dark. 0 = off, no probe ray traced.
+    (TYPE_FLOAT32,      1,      "waterCausticGain",                 1),
+    # caustic field frequency, in UV per world unit
+    (TYPE_FLOAT32,      1,      "waterCausticScale",                1),
+    (TYPE_FLOAT32,      1,      "waterCausticSpeed",                1),
+    # how far below a surface the water may be and still light it (world units)
+    (TYPE_FLOAT32,      1,      "waterCausticDist",                 1),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),

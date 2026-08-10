@@ -632,8 +632,20 @@ void main()
             // reflective at grazing angles.
             doRefraction = false;
 
-            F = min( getFresnelSchlick( curIndexOfRefraction, newIndexOfRefraction, -rayDir, normal ),
-                     globalUniform.stylizedWaterReflMax );
+            // NOT physical Fresnel. Water's F0 is ~0.02, so a correct Schlick
+            // term makes the reflection invisible from anywhere but a grazing
+            // angle -- which is exactly why the first version looked like it
+            // reflected nothing at all. Keep the SHAPE of the Schlick curve
+            // (weak head-on, strong at grazing) but remap its range onto
+            // [reflMin, reflMax] so the surface reads as reflective from above.
+            {
+                const float cosTheta = clamp( dot( normal, -normalize( rayDir ) ), 0.0, 1.0 );
+                const float curve    = pow( 1.0 - cosTheta, 5.0 );
+                F                    = mix( globalUniform.stylizedWaterReflMin,
+                                            globalUniform.stylizedWaterReflMax,
+                                            curve );
+                F                    = clamp( F, 0.0, 1.0 );
+            }
 
             if( isPixOdd )
             {

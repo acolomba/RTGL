@@ -330,8 +330,12 @@ struct ShGlobalUniform
     float stylizedWaterGlow;
     float stylizedWaterVeinRef;
     float stylizedWaterDebug;
-    float _padw1;
+    float stylizedWaterReflMin;
     vec4 stylizedWaterTint;
+    float waterCausticGain;
+    float waterCausticScale;
+    float waterCausticSpeed;
+    float waterCausticDist;
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;
 };

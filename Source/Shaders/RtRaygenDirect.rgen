@@ -34,6 +34,88 @@
 #define LIGHT_SAMPLE_METHOD (LIGHT_SAMPLE_METHOD_DIRECT)
 #include "RaygenCommon.h"
 
+
+// ---------------------------------------------------------------------------
+// Doom64-RT: caustics projected from water onto the geometry around it.
+//
+// A 1-spp path tracer cannot find these. A caustic is a specular-to-diffuse
+// path -- light refracted/reflected by the wavy surface and focused onto a
+// wall -- and the chance of a random diffuse bounce landing on the water AND
+// scattering into a light is effectively zero, so the effect simply never
+// appears no matter how good the denoiser is.
+//
+// So project them instead. Each shading point fires ONE probe ray straight
+// down; if it lands on a surface RTGL considers water within waterCausticDist,
+// the point is "over water" and its lighting gets modulated by an animated
+// caustic field. The field is sampled from the same water normal texture the
+// surface waves use, so the two agree.
+//
+// The modulation is MULTIPLICATIVE on direct lighting, never additive: caustics
+// are focused light, not a light source. A pitch-black room must stay black --
+// an additive term would make water glow in the dark and wash the GI, exactly
+// the failure documented for world emissives in compat-patches.md.
+// ---------------------------------------------------------------------------
+
+// Is there water directly below this point? Probe ray, offset along the normal
+// so a point ON a wall probes the floor in FRONT of the wall rather than
+// grazing the wall's own base.
+bool isOverWater( const vec3 position, const vec3 normal )
+{
+    const vec3 up     = globalUniform.worldUpVector.xyz;
+    const vec3 origin = position + normal * 0.05;
+
+    resetPayload();
+
+    traceRayEXT( topLevelAS,
+                 gl_RayFlagsCullBackFacingTrianglesEXT,
+                 globalUniform.rayCullMaskWorld,
+                 0, 0, // sbtRecordOffset, sbtRecordStride
+                 SBT_INDEX_MISS_DEFAULT,
+                 origin,
+                 0.001,
+                 -up,
+                 globalUniform.waterCausticDist,
+                 PAYLOAD_INDEX_DEFAULT );
+
+    if( !doesPayloadContainHitInfo( g_payload ) )
+    {
+        return false;
+    }
+
+    int instanceId, instanceCustomIndex;
+    unpackInstanceIdAndCustomIndex( g_payload.instIdAndIndex, instanceId, instanceCustomIndex );
+
+    return ( geometryInstances[ instanceId ].flags & GEOM_INST_FLAG_MEDIA_TYPE_WATER ) != 0;
+}
+
+// Animated caustic field. Two wave fields scrolling against each other; the
+// filaments are where they CONVERGE, which is what focuses light in real
+// caustics -- hence the sharp power curve rather than a plain texture lookup.
+float getWaterCaustic( const vec3 position )
+{
+    const vec3 up = globalUniform.worldUpVector.xyz;
+
+    // project onto the horizontal plane: the pattern belongs to the water
+    // surface, so on a vertical wall it correctly reads as upward streaks
+    const vec3 flat3 = position - up * dot( position, up );
+    const mat3 basis = getONB( up );
+    const vec2 xy    = vec2( dot( flat3, basis[ 0 ] ), dot( flat3, basis[ 1 ] ) );
+
+    const float s = globalUniform.waterCausticScale;
+    const float t = globalUniform.time * globalUniform.waterCausticSpeed;
+
+    vec2 uv0 = xy * s + vec2( t, t * 0.6 );
+    vec2 uv1 = xy * s * 1.3 - vec2( t * 0.7, t );
+
+    vec2 n0 = getTextureSample( globalUniform.waterNormalTextureIndex, uv0 ).xy * 2.0 - 1.0;
+    vec2 n1 = getTextureSample( globalUniform.waterNormalTextureIndex, uv1 ).xy * 2.0 - 1.0;
+
+    float converge = 1.0 - clamp( length( n0 + n1 ), 0.0, 1.0 );
+
+    // sharp: caustics are thin bright filaments over a mostly dark field
+    return pow( converge, 8.0 );
+}
+
 void main()
 {
     const ivec2 pix = ivec2(gl_LaunchIDEXT.xy);
@@ -106,6 +188,16 @@ void main()
         imageStore(framebufGradientInputs, pix, vec4(0.0));
         imageStoreReservoir(r, pix);
         return;
+    }
+
+    // Doom64-RT: water caustics on the surrounding geometry. Applied here, to
+    // the noisy direct term, so it is upstream of BOTH denoisers and of the
+    // DLSS-RR guides -- a post-denoise multiply would not be present in the
+    // guides RR demodulates by, which is what makes such terms shimmer.
+    if( globalUniform.waterCausticGain > 0.0 && isOverWater( surf.position, surf.normal ) )
+    {
+        const float caustic = getWaterCaustic( surf.position );
+        diffuse *= 1.0 + globalUniform.waterCausticGain * caustic;
     }
 
     imageStoreUnfilteredDirect(pix, diffuse);
