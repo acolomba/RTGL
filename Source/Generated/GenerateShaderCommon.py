@@ -810,7 +810,12 @@ GLOBAL_UNIFORM_STRUCT = [
     # "does the LAVA flag survive into the shader" on its own, which no amount
     # of staring at brightness can.
     (TYPE_FLOAT32,      1,      "lavaDebug",                        1),
+    # THE PAD COUNT IS LOAD-BEARING. This block is scalars in a std140 struct, so
+    # it must be a multiple of FOUR floats or every field after it -- including
+    # the mat4s at the end -- reads shifted, and the frame comes out black with
+    # only the HUD on top. Eleven floats here did exactly that. Count them.
     (TYPE_FLOAT32,      1,      "_padlava0",                        1),
+    (TYPE_FLOAT32,      1,      "_padlava1",                        1),
     (TYPE_FLOAT32,      1,      "_padlava",                         1),
 
     # --- Directional light: sky-reach test (Doom64-RT) ------------------------

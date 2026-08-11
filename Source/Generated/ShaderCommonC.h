@@ -348,6 +348,7 @@ struct ShGlobalUniform
     float lavaGiBoost;
     float lavaDebug;
     float _padlava0;
+    float _padlava1;
     float _padlava;
     float sunRequireSky;
     float sunLeakDebug;
