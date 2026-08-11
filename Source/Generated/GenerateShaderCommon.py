@@ -817,6 +817,12 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "_padlava0",                        1),
     (TYPE_FLOAT32,      1,      "_padlava1",                        1),
     (TYPE_FLOAT32,      1,      "_padlava",                         1),
+    # Hue of the heat, multiplying the lava's emission on BOTH the screen and
+    # the GI path. The flat's own cracks photograph yellow-orange once they are
+    # boosted; pulling green and blue down is what makes it read as molten rock
+    # rather than as a light bulb. A vec4, so it does not disturb the scalar
+    # count above -- which is load-bearing, see the note there.
+    (TYPE_FLOAT32,      4,      "lavaTint",                         1),
 
     # --- Directional light: sky-reach test (Doom64-RT) ------------------------
     # A shadow ray that hits NOTHING is scored as lit (RtMissShadowCheck.rmiss

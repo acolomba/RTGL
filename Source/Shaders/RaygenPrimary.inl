@@ -778,7 +778,8 @@ void main()
     vec3 primaryEmission = screenEmission;
     if( ( h.geometryInstanceFlags & GEOM_INST_FLAG_LAVA ) != 0 )
     {
-        primaryEmission *= globalUniform.lavaEmisBoost * getLavaHeat( h.hitPosition );
+        primaryEmission *= globalUniform.lavaEmisBoost * getLavaHeat( h.hitPosition ) *
+                           globalUniform.lavaTint.rgb;
 
         // rt_lava_debug: does the flag survive into the shader at all? A boost
         // that produces no visible change cannot distinguish "the multiply is

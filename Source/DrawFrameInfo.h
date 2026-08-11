@@ -419,6 +419,7 @@ namespace detail
             .lavaPulseSpeed                        = 0.35f,
             .lavaGiBoost                           = 1.0f,
             .lavaDebug                             = 0.0f,
+            .lavaTint                              = { 1.0f, 0.55f, 0.30f },
             .stylizedWaterDebug                    = 0.0f,
                         .stylizedWaterReflMin                  = 0.1f,
             .waterCausticGain                      = 1.2f,

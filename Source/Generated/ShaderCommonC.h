@@ -350,6 +350,7 @@ struct ShGlobalUniform
     float _padlava0;
     float _padlava1;
     float _padlava;
+    float lavaTint[4];
     float sunRequireSky;
     float sunLeakDebug;
     float sunLeakDebugMul;

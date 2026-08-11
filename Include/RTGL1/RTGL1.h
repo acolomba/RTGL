@@ -1419,6 +1419,8 @@ typedef struct RgDrawFrameReflectRefractParams
     float           lavaGiBoost;
     // 1 = paint lava surfaces magenta.
     float           lavaDebug;
+    // Hue of the heat, applied to both the screen emission and the GI.
+    RgFloat3D       lavaTint;
     // Diagnostic: paint water surfaces magenta (stylized branch running) or
     // green (RTGL sees water, stylized gate rejected). 0 = off.
     float           stylizedWaterDebug;

@@ -593,7 +593,9 @@ ShHitInfo getHitInfoBounce(
 #if defined( HITINFO_INL_INDIR )
     if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_LAVA ) != 0 )
     {
-        emission *= globalUniform.lavaGiBoost;
+        // Tinted here too, or the room bounces a different colour than the
+        // surface it came off -- the giveaway that the hue is a screen effect.
+        emission *= globalUniform.lavaGiBoost * globalUniform.lavaTint.rgb;
     }
 #endif
 
