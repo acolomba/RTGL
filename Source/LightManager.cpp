@@ -469,6 +469,49 @@ void RTGL1::LightManager::Add( uint32_t           frameIndex,
                         lext, CalculateLightStyle( light.additional, lightstyles ), transform ) );
             },
             [ & ]( const RgLightSphericalEXT& lext ) {
+                // Doom64-RT probe. The lava light family reported "119 uploaded"
+                // from the gzdoom side every frame while lighting nothing, so the
+                // question is what actually crosses this boundary and survives.
+                // Keyed on the id range so it costs one compare for every other
+                // light in the game. WARNING, never Error: RT_Print turns an RTGL
+                // error into a modal box that exits.
+                const bool l_isLava = ( light.base.uniqueID >= ( 1ull << 47 ) &&
+                                        light.base.uniqueID < ( 1ull << 48 ) );
+                if( l_isLava )
+                {
+                    static uint32_t s_seen  = 0;
+                    static uint32_t s_dim   = 0;
+                    static uint32_t s_added = 0;
+                    s_seen++;
+                    if( IsLightColorTooDim( lext ) )
+                    {
+                        s_dim++;
+                    }
+                    else
+                    {
+                        s_added++;
+                    }
+                    if( ( s_seen % 600 ) == 1 )
+                    {
+                        const float area = float( RG_PI ) * std::max( MIN_SPHERE_RADIUS, lext.radius ) *
+                                           std::max( MIN_SPHERE_RADIUS, lext.radius );
+                        auto  c    = RTGL1::Utils::UnpackColor4DPacked32< RgFloat3D >( lext.color );
+                        float mult = CalculateLightStyle( light.additional, lightstyles );
+                        debug::Warning( "LAVA PROBE: seen={} dim={} added={} | pos=({:.2f} {:.2f} {:.2f}) m "
+                                        "intensity={:.1f} radius={:.3f} area={:.4f} color=({:.2f} {:.2f} {:.2f}) "
+                                        "mult={:.2f} -> radiance=({:.1f} {:.1f} {:.1f}) | regLightCount={} arrayEnd={}",
+                                        s_seen, s_dim, s_added,
+                                        lext.position.data[ 0 ], lext.position.data[ 1 ], lext.position.data[ 2 ],
+                                        lext.intensity, lext.radius, area,
+                                        c.data[ 0 ], c.data[ 1 ], c.data[ 2 ], mult,
+                                        c.data[ 0 ] * lext.intensity / area * mult,
+                                        c.data[ 1 ] * lext.intensity / area * mult,
+                                        c.data[ 2 ] * lext.intensity / area * mult,
+                                        regLightCount,
+                                        GetLightArrayEnd( regLightCount, dirLightCount ) );
+                    }
+                }
+
                 if( IsLightColorTooDim( lext ) )
                 {
                     return;
