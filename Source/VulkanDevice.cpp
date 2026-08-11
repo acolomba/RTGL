@@ -527,6 +527,8 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->lavaFlowPixel          = std::max( 0.0f, params.lavaFlowPixel );
         gu->lavaPulse              = std::clamp( params.lavaPulse, 0.0f, 1.0f );
         gu->lavaPulseSpeed         = params.lavaPulseSpeed;
+        gu->lavaGiBoost            = std::max( 0.0f, params.lavaGiBoost );
+        gu->lavaDebug              = std::max( 0.0f, params.lavaDebug );
         gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
         gu->stylizedWaterReflMin   = std::clamp( params.stylizedWaterReflMin, 0.0f, 1.0f );
         gu->waterCausticGain       = std::max( 0.0f, params.waterCausticGain );

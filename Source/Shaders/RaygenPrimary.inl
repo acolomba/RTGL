@@ -779,6 +779,16 @@ void main()
     if( ( h.geometryInstanceFlags & GEOM_INST_FLAG_LAVA ) != 0 )
     {
         primaryEmission *= globalUniform.lavaEmisBoost * getLavaHeat( h.hitPosition );
+
+        // rt_lava_debug: does the flag survive into the shader at all? A boost
+        // that produces no visible change cannot distinguish "the multiply is
+        // not happening" from "the emission it multiplies is already zero", and
+        // guessing between those cost a round.
+        if( globalUniform.lavaDebug > 0.5 )
+        {
+            primaryAlbedo    = vec3( 0.0 );
+            primaryEmission  = vec3( 1.0, 0.0, 1.0 );
+        }
     }
 
     imageStore(framebufIsSky,               pix, ivec4(0));

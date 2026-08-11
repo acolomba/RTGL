@@ -417,6 +417,8 @@ namespace detail
             .lavaFlowPixel                         = 0.25f,
             .lavaPulse                             = 0.10f,
             .lavaPulseSpeed                        = 0.35f,
+            .lavaGiBoost                           = 1.0f,
+            .lavaDebug                             = 0.0f,
             .stylizedWaterDebug                    = 0.0f,
                         .stylizedWaterReflMin                  = 0.1f,
             .waterCausticGain                      = 1.2f,

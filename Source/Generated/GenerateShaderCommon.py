@@ -800,6 +800,17 @@ GLOBAL_UNIFORM_STRUCT = [
     # Whole-surface breathing, on top of the drift.
     (TYPE_FLOAT32,      1,      "lavaPulse",                        1),
     (TYPE_FLOAT32,      1,      "lavaPulseSpeed",                   1),
+    # Indirect (GI) multiplier for lava emission, separate from the screen one.
+    # This is the knob that lets the LAVA ITSELF light the room, as an area
+    # source, instead of the grid of analytic point lights -- which is what a
+    # lake actually is, and which does not leave circles of illumination on the
+    # walls as the player walks past each one.
+    (TYPE_FLOAT32,      1,      "lavaGiBoost",                      1),
+    # Debug: 1 = paint every surface the shader sees as lava magenta. Answers
+    # "does the LAVA flag survive into the shader" on its own, which no amount
+    # of staring at brightness can.
+    (TYPE_FLOAT32,      1,      "lavaDebug",                        1),
+    (TYPE_FLOAT32,      1,      "_padlava0",                        1),
     (TYPE_FLOAT32,      1,      "_padlava",                         1),
 
     # --- Directional light: sky-reach test (Doom64-RT) ------------------------

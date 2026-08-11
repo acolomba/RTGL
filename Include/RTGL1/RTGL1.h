@@ -1413,6 +1413,12 @@ typedef struct RgDrawFrameReflectRefractParams
     float           lavaFlowPixel;
     float           lavaPulse;
     float           lavaPulseSpeed;
+    // Indirect multiplier: the lava lighting the room as an AREA source, which
+    // is what it is. Analytic point lights over a lake give each one its own
+    // pool and a visible circle on the wall as the player walks past.
+    float           lavaGiBoost;
+    // 1 = paint lava surfaces magenta.
+    float           lavaDebug;
     // Diagnostic: paint water surfaces magenta (stylized branch running) or
     // green (RTGL sees water, stylized gate rejected). 0 = off.
     float           stylizedWaterDebug;

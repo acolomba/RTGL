@@ -582,6 +582,21 @@ ShHitInfo getHitInfoBounce(
         emission = h.albedo * tr.emissiveMult;
     }
 
+    // Doom64-RT: lava as an AREA light source.
+    //
+    // Applied on the INDIRECT path only, which is the whole point: a lake lights
+    // a room by being a large warm surface, not by a grid of point lights, and
+    // the grid version leaves a visible circle on the wall as the player walks
+    // past each one. Indirect emission is already the mechanism for that
+    // (emissiveMult here, emissionMapBoost in RtRaygenIndirect); it just needs
+    // to be strong enough on this one material.
+#if defined( HITINFO_INL_INDIR )
+    if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_LAVA ) != 0 )
+    {
+        emission *= globalUniform.lavaGiBoost;
+    }
+#endif
+
 
 
     // MISC

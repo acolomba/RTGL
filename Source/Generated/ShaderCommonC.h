@@ -345,6 +345,9 @@ struct ShGlobalUniform
     float lavaFlowPixel;
     float lavaPulse;
     float lavaPulseSpeed;
+    float lavaGiBoost;
+    float lavaDebug;
+    float _padlava0;
     float _padlava;
     float sunRequireSky;
     float sunLeakDebug;
