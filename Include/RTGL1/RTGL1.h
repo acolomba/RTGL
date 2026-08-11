@@ -390,6 +390,13 @@ typedef enum RgMeshPrimitiveFlagBits
     // is water, so every existing caller keeps its behaviour.
     RG_MESH_PRIMITIVE_LIQUID_BIT0           = 1 << 19,
     RG_MESH_PRIMITIVE_LIQUID_BIT1           = 1 << 20,
+    // Doom64-RT: lava. Not a liquid id -- lava does not use the water surface
+    // path at all. This exists because the lava's emission has to be handled by
+    // the renderer rather than baked: an 8-bit _e map caps at 1.0, screen
+    // emission is _e * emissionMaxScreenColor (3), and the bloom threshold is
+    // 16, so a lava flat physically cannot bloom no matter what is painted in
+    // it. It also gives the flow animation somewhere to live.
+    RG_MESH_PRIMITIVE_LAVA                  = 1 << 21,
 } RgMeshPrimitiveFlagBits;
 typedef uint32_t RgMeshPrimitiveFlags;
 
@@ -1168,6 +1175,38 @@ typedef struct RgDrawFrameVolumetricParams
     float           lightMultiplier;
     RgBool32        allowTintUnderwater;
     RgFloat3D       underwaterColor;
+    // Doom64-RT: ILLUMINATED FOG.
+    //
+    // The stock froxel pass scatters exactly ONE light -- the one
+    // LightManager::TryGetVolumetricLight picks (a RG_LIGHT_ADDITIONAL_VOLUMETRIC
+    // light if any, otherwise the sun). On a map with no sun and no volumetric
+    // light, the fog therefore receives nothing at all and is flat ambient.
+    // When this is set, each froxel runs the full NEE/ReSTIR direct estimate
+    // instead, so every torch, lava pool and monitor lights the fog it sits in.
+    // Requires RTGL to be built with ILLUMINATION_VOLUME.
+    RgBool32        illuminateFromAllLights;
+    // Scattering albedo of the medium: multiplies the in-scattered radiance,
+    // ambient and lit alike, so the fog and everything glowing inside it take
+    // this hue. Extinction stays monochrome, so distant geometry fades TOWARD
+    // this colour rather than being colour-filtered by it.
+    // Default (and the no-op value): { 1, 1, 1 }.
+    //
+    // This is the NEAR end of a near->far ramp; the three fields below are the
+    // far end. The froxel grid's slices are uniform in distance, so separating
+    // the two costs one mix() per cell.
+    RgFloat3D       mediaColor;
+    // Tint and density at the far plane of the volume. Set equal to
+    // mediaColor / scaterring for a uniform medium.
+    RgFloat3D       mediaColorFar;
+    float           farScattering;
+    // Shape of the near->far interpolation. 1 = linear, > 1 holds the near
+    // value longer and thickens late, < 1 thickens immediately. Default: 1.
+    float           densityCurve;
+    // Fade volumetric in-scattering out within this many metres OF A LIGHT.
+    // A light at the camera lights the froxels in front of it by inverse
+    // square and whites out the screen -- physically what a headlight in fog
+    // does, and unplayable. 0 = no fade (physical). Default: 0.
+    float           lightNearFade;
 } RgDrawFrameVolumetricParams;
 
 // Can be linked after RgDrawFrameInfo.
@@ -1363,6 +1402,17 @@ typedef struct RgDrawFrameReflectRefractParams
     //            NOT white: white crests read as foam/plastic)
     RgFloat3D       stylizedLiquidTint[ 4 ];
     RgFloat3D       stylizedLiquidCrest[ 4 ];
+    // Doom64-RT lava. Screen-emission multiplier for lava surfaces, on top of
+    // emissionMaxScreenColor -- this is what lets the cracks reach the bloom
+    // threshold. The rest animate the heat: a slowly drifting field that is
+    // quantized to a world-space cell so it stays as chunky as the art.
+    float           lavaEmisBoost;
+    float           lavaFlowStrength;
+    float           lavaFlowSpeed;
+    float           lavaFlowScale;
+    float           lavaFlowPixel;
+    float           lavaPulse;
+    float           lavaPulseSpeed;
     // Diagnostic: paint water surfaces magenta (stylized branch running) or
     // green (RTGL sees water, stylized gate rejected). 0 = off.
     float           stylizedWaterDebug;

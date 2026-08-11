@@ -520,6 +520,13 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                     3 * sizeof( float ) );
             gu->stylizedLiquidCrest[ i * 4 + 3 ] = 0.0f;
         }
+        gu->lavaEmisBoost          = std::max( 0.0f, params.lavaEmisBoost );
+        gu->lavaFlowStrength       = std::clamp( params.lavaFlowStrength, 0.0f, 1.0f );
+        gu->lavaFlowSpeed          = params.lavaFlowSpeed;
+        gu->lavaFlowScale          = std::max( 0.0f, params.lavaFlowScale );
+        gu->lavaFlowPixel          = std::max( 0.0f, params.lavaFlowPixel );
+        gu->lavaPulse              = std::clamp( params.lavaPulse, 0.0f, 1.0f );
+        gu->lavaPulseSpeed         = params.lavaPulseSpeed;
         gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
         gu->stylizedWaterReflMin   = std::clamp( params.stylizedWaterReflMin, 0.0f, 1.0f );
         gu->waterCausticGain       = std::max( 0.0f, params.waterCausticGain );
@@ -610,6 +617,26 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                                             gu->volumeFallbackSrcColor[ 2 ] > 0.01f );
 
             gu->volumeLightMult = std::max( 0.0f, params.lightMultiplier );
+
+            // Doom64-RT: illuminated fog. The all-lights froxel estimate lives
+            // in the ILLUMINATION_VOLUME branch of RtVolumetric.rgen, so it is
+            // only available when RTGL was built with that on.
+#if ILLUMINATION_VOLUME
+            gu->volumeAllLights = params.illuminateFromAllLights;
+#else
+            gu->volumeAllLights = 0;
+#endif
+            RG_SET_VEC3_A( gu->volumeMediaColor, params.mediaColor.data );
+            RG_MAX_VEC3( gu->volumeMediaColor, 0.0f );
+            RG_SET_VEC3_A( gu->volumeMediaColorFar, params.mediaColorFar.data );
+            RG_MAX_VEC3( gu->volumeMediaColorFar, 0.0f );
+            // Negative farScattering means "uniform": the caller did not ask for
+            // a ramp, so the far end is the near end. Cheaper to answer here
+            // than to make every caller restate the density twice.
+            gu->volumeScatteringFar =
+                params.farScattering < 0.0f ? gu->volumeScattering : params.farScattering;
+            gu->volumeDensityCurve   = std::max( 0.01f, params.densityCurve );
+            gu->volumeLightNearFade  = std::max( 0.0f, params.lightNearFade );
 
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );

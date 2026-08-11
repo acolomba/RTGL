@@ -79,7 +79,7 @@
 #define GEOM_INST_FLAG_NO_WATER_CAUSTICS (1 << 8)
 #define GEOM_INST_FLAG_LIQUID_BIT0 (1 << 9)
 #define GEOM_INST_FLAG_LIQUID_BIT1 (1 << 10)
-#define GEOM_INST_FLAG_RESERVED_3 (1 << 11)
+#define GEOM_INST_FLAG_LAVA (1 << 11)
 #define GEOM_INST_FLAG_RESERVED_4 (1 << 12)
 #define GEOM_INST_FLAG_GLASS_IF_SMOOTH (1 << 13)
 #define GEOM_INST_FLAG_MIRROR_IF_SMOOTH (1 << 14)
@@ -333,6 +333,14 @@ struct ShGlobalUniform
     float stylizedWaterReflMin;
     vec4 stylizedLiquidTint[4];
     vec4 stylizedLiquidCrest[4];
+    float lavaEmisBoost;
+    float lavaFlowStrength;
+    float lavaFlowSpeed;
+    float lavaFlowScale;
+    float lavaFlowPixel;
+    float lavaPulse;
+    float lavaPulseSpeed;
+    float _padlava;
     float sunRequireSky;
     float sunLeakDebug;
     float sunLeakDebugMul;
@@ -344,7 +352,13 @@ struct ShGlobalUniform
     float waterCausticRise;
     float waterCausticSlant;
     float waterCausticWallBoost;
-    float _padc1;
+    uint volumeAllLights;
+    vec4 volumeMediaColor;
+    vec4 volumeMediaColorFar;
+    float volumeScatteringFar;
+    float volumeDensityCurve;
+    float volumeLightNearFade;
+    float _padf2;
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;
 };

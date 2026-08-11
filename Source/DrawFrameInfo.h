@@ -328,6 +328,12 @@ namespace detail
             .fallbackSourceColor     = { 0, 0, 0 },
             .fallbackSourceDirection = { 0, -1, 0 },
             .lightMultiplier         = 1.0f,
+            .illuminateFromAllLights = false,
+            .mediaColor              = { 1.0f, 1.0f, 1.0f },
+            .mediaColorFar           = { 1.0f, 1.0f, 1.0f },
+            .farScattering           = 0.2f,
+            .densityCurve            = 1.0f,
+            .lightNearFade           = 0.0f,
         };
     };
 
@@ -404,6 +410,13 @@ namespace detail
                                                        { 0.60f, 1.00f, 0.45f },
                                                        { 1.00f, 0.80f, 0.45f },
                                                        { 1.00f, 0.45f, 0.40f } },
+            .lavaEmisBoost                         = 6.0f,
+            .lavaFlowStrength                      = 0.45f,
+            .lavaFlowSpeed                         = 0.03f,
+            .lavaFlowScale                         = 0.12f,
+            .lavaFlowPixel                         = 0.25f,
+            .lavaPulse                             = 0.10f,
+            .lavaPulseSpeed                        = 0.35f,
             .stylizedWaterDebug                    = 0.0f,
                         .stylizedWaterReflMin                  = 0.1f,
             .waterCausticGain                      = 1.2f,

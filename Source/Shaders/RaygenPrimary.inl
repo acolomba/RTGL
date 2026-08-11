@@ -264,6 +264,66 @@ vec3 getStylizedWaterAlbedo( const vec3  texAlbedo,
 }
 
 // ---------------------------------------------------------------------------
+// Doom64-RT: lava.
+//
+// Two things the texture pipeline cannot do for itself, which is the whole
+// reason lava carries a geometry flag.
+//
+// 1. BLOOM. Primary emission is the raw _e sample; _e is an 8-bit texture so it
+//    caps at 1.0, screen emission is that times emissionMaxScreenColor (3), and
+//    rt_bloom_threshold is 16. A lava flat therefore cannot reach the bloom
+//    threshold by any amount of painting -- it tops out at a fifth of it. The
+//    boost is applied here, to lava only, so the rest of the game's emissives
+//    keep the balance they were tuned with.
+//
+// 2. MOTION. The flat is a 5-frame ping-pong of a static crackle, and its
+//    animation had to be averaged away (the frames light different cracks, which
+//    read as blinking). So the heat has to move in the shader instead: a
+//    low-frequency field drifting across the surface, plus a slow global pulse.
+//
+// The field is QUANTIZED to a world-space cell before it is sampled. A smooth
+// gradient sliding over 64x64 pixel art reads as a modern shader bolted onto the
+// wrong texture; stepping it to roughly the flat's own texel size keeps the
+// motion as chunky as the thing it is moving over.
+float getLavaHeat( const vec3 position )
+{
+    const vec3 up   = globalUniform.worldUpVector.xyz;
+    const vec3 onPlane = position - up * dot( position, up );
+    const mat3 onb  = getONB( up );
+    vec2       xy   = vec2( dot( onPlane, onb[ 0 ] ), dot( onPlane, onb[ 1 ] ) );
+
+    // chunky on purpose -- see above
+    const float cell = max( 0.01, globalUniform.lavaFlowPixel );
+    xy               = floor( xy / cell ) * cell;
+
+    // Two layers drifting against each other, so the pattern never settles into
+    // a direction the eye can follow. getTextureSampleLod, not getTextureSample:
+    // a raygen shader has no quad derivatives.
+    const float t  = globalUniform.time * globalUniform.lavaFlowSpeed;
+    const float sc = globalUniform.lavaFlowScale;
+
+    const float a =
+        getTextureSampleLod( globalUniform.waterNormalTextureIndex, xy * sc + vec2( t, t * 0.6 ), 0.0 ).x;
+    const float b = getTextureSampleLod(
+                        globalUniform.waterNormalTextureIndex, xy * sc * 1.7 - vec2( t * 0.8, t * 0.3 ), 0.0 )
+                        .y;
+
+    // 0..1, centred so the mean stays put: this MULTIPLIES the emission, and a
+    // field with a mean above 1 would quietly brighten the lava as well as
+    // animate it, which is a different decision from the one being made here.
+    const float field = clamp( ( a + b ) * 0.5, 0.0, 1.0 );
+    const float drift = mix( 1.0 - globalUniform.lavaFlowStrength,
+                             1.0 + globalUniform.lavaFlowStrength,
+                             field );
+
+    // and the whole surface breathing under it
+    const float pulse =
+        1.0 + globalUniform.lavaPulse * sin( globalUniform.time * globalUniform.lavaPulseSpeed );
+
+    return drift * pulse;
+}
+
+// ---------------------------------------------------------------------------
 // Doom64-RT: caustics projected from water onto the geometry around it.
 //
 // A 1-spp path tracer cannot find these. A caustic is a specular-to-diffuse
@@ -712,9 +772,18 @@ void main()
         }
     }
 
+    // Doom64-RT lava: boost and animate the emission of lava surfaces only.
+    // Emission, not albedo -- the albedo is the artist's crust and stays as
+    // painted; what moves is how hot it is.
+    vec3 primaryEmission = screenEmission;
+    if( ( h.geometryInstanceFlags & GEOM_INST_FLAG_LAVA ) != 0 )
+    {
+        primaryEmission *= globalUniform.lavaEmisBoost * getLavaHeat( h.hitPosition );
+    }
+
     imageStore(framebufIsSky,               pix, ivec4(0));
     imageStore(framebufAlbedo,              getRegularPixFromCheckerboardPix(pix), vec4(primaryAlbedo, 0.0));
-    imageStore(framebufScreenEmisRT,        getRegularPixFromCheckerboardPix(pix), vec4(screenEmission * throughput , 0.0));
+    imageStore(framebufScreenEmisRT,        getRegularPixFromCheckerboardPix(pix), vec4(primaryEmission * throughput , 0.0));
     imageStoreNormal(                       pix, h.normal);
     imageStore(framebufMetallicRoughness,   pix, vec4(h.metallic, h.roughness, 0, 0));
     imageStore(framebufDepthWorld,          pix, vec4(firstHitDepthLinear));

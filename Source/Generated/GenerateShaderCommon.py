@@ -324,7 +324,8 @@ CONST = {
     # so anything that only sets GEOM_INST_FLAG_MEDIA_TYPE_WATER is unchanged.
     "GEOM_INST_FLAG_LIQUID_BIT0"            : BIT( 9 ),
     "GEOM_INST_FLAG_LIQUID_BIT1"            : BIT( 10 ),
-    "GEOM_INST_FLAG_RESERVED_3"             : BIT( 11 ),
+    # Doom64-RT: lava surface. See RG_MESH_PRIMITIVE_LAVA.
+    "GEOM_INST_FLAG_LAVA"                   : BIT( 11 ),
     "GEOM_INST_FLAG_RESERVED_4"             : BIT( 12 ),
     "GEOM_INST_FLAG_GLASS_IF_SMOOTH"        : BIT( 13 ),
     "GEOM_INST_FLAG_MIRROR_IF_SMOOTH"       : BIT( 14 ),
@@ -782,6 +783,25 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      4,      "stylizedLiquidTint",               4),
     (TYPE_FLOAT32,      4,      "stylizedLiquidCrest",              4),
 
+    # --- Lava (Doom64-RT) ----------------------------------------------------
+    # The lava's emission cannot be baked bright enough to bloom: _e is 8-bit so
+    # it caps at 1.0, screen emission is _e * emissionMaxScreenColor (3), and
+    # rt_bloom_threshold is 16. lavaEmisBoost is applied to lava surfaces only,
+    # which is the whole reason the geometry carries a LAVA flag.
+    (TYPE_FLOAT32,      1,      "lavaEmisBoost",                    1),
+    # Heat that moves. A low-frequency field drifting across the surface,
+    # QUANTIZED to lavaFlowPixel world units so it stays as chunky as the flat
+    # it sits on -- a smooth gradient over pixel art reads as a modern shader
+    # bolted onto the wrong texture.
+    (TYPE_FLOAT32,      1,      "lavaFlowStrength",                 1),
+    (TYPE_FLOAT32,      1,      "lavaFlowSpeed",                    1),
+    (TYPE_FLOAT32,      1,      "lavaFlowScale",                    1),
+    (TYPE_FLOAT32,      1,      "lavaFlowPixel",                    1),
+    # Whole-surface breathing, on top of the drift.
+    (TYPE_FLOAT32,      1,      "lavaPulse",                        1),
+    (TYPE_FLOAT32,      1,      "lavaPulseSpeed",                   1),
+    (TYPE_FLOAT32,      1,      "_padlava",                         1),
+
     # --- Directional light: sky-reach test (Doom64-RT) ------------------------
     # A shadow ray that hits NOTHING is scored as lit (RtMissShadowCheck.rmiss
     # sets isShadowed = 0). Doom maps are not watertight and have no geometry
@@ -836,7 +856,39 @@ GLOBAL_UNIFORM_STRUCT = [
     # so a single gain that reads well on the pool bottom leaves the walls
     # barely visible -- and raising it brightens everything instead.
     (TYPE_FLOAT32,      1,      "waterCausticWallBoost",            1),
-    (TYPE_FLOAT32,      1,      "_padc1",                           1),
+    # --- Illuminated fog (Doom64-RT) -----------------------------------------
+    # The froxel pass scatters ONE light: whatever TryGetVolumetricLight picked,
+    # which on a map with no sun and no RG_LIGHT_ADDITIONAL_VOLUMETRIC light is
+    # nothing at all -- so its fog is flat ambient with no source in it. 1 makes
+    # each froxel run the full direct-lighting estimate instead, so every light
+    # in the map scatters. Taken from the _padc1 slot, so std140 is unchanged.
+    (TYPE_UINT32,       1,      "volumeAllLights",                  1),
+
+    # Scattering albedo of the medium. Multiplies the whole in-scattered term --
+    # ambient AND lit -- so a coloured fog colours what glows inside it too.
+    # Extinction stays monochrome (the transmittance channel is a single float
+    # all the way to CmPrepareFinal), so distance fades TOWARD this colour
+    # rather than filtering by it. { 1, 1, 1 } is the no-op.
+    #
+    # NEAR value of a near->far ramp: the froxel grid's slices are uniform in
+    # DISTANCE (VOLUMETRIC_DISTANCE_POW 1), so cell.z is a straight depth
+    # fraction and near/far can be separated for free. Setting the _Far pair
+    # equal to these is the uniform medium.
+    (TYPE_FLOAT32,      4,      "volumeMediaColor",                 1),
+    (TYPE_FLOAT32,      4,      "volumeMediaColorFar",              1),
+
+    # Density and tint at the FAR plane of the volume, and the shape of the
+    # interpolation between them (1 = linear, >1 holds the near value longer and
+    # thickens late, <1 thickens immediately).
+    (TYPE_FLOAT32,      1,      "volumeScatteringFar",              1),
+    (TYPE_FLOAT32,      1,      "volumeDensityCurve",               1),
+    # Fog only: in-scattering is faded out within this many metres OF A LIGHT,
+    # so a light carried at the camera (flashlight, muzzle flash) does not white
+    # out the froxels in front of it by inverse square. Keyed off the LIGHT's
+    # distance, not the camera's, so the beam further down the corridor -- the
+    # look this is all for -- survives. 0 = physical behaviour.
+    (TYPE_FLOAT32,      1,      "volumeLightNearFade",              1),
+    (TYPE_FLOAT32,      1,      "_padf2",                           1),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),

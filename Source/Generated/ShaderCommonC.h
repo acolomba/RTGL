@@ -86,7 +86,7 @@ namespace RTGL1
 #define GEOM_INST_FLAG_NO_WATER_CAUSTICS (1 << 8)
 #define GEOM_INST_FLAG_LIQUID_BIT0 (1 << 9)
 #define GEOM_INST_FLAG_LIQUID_BIT1 (1 << 10)
-#define GEOM_INST_FLAG_RESERVED_3 (1 << 11)
+#define GEOM_INST_FLAG_LAVA (1 << 11)
 #define GEOM_INST_FLAG_RESERVED_4 (1 << 12)
 #define GEOM_INST_FLAG_GLASS_IF_SMOOTH (1 << 13)
 #define GEOM_INST_FLAG_MIRROR_IF_SMOOTH (1 << 14)
@@ -338,6 +338,14 @@ struct ShGlobalUniform
     float stylizedWaterReflMin;
     float stylizedLiquidTint[16];
     float stylizedLiquidCrest[16];
+    float lavaEmisBoost;
+    float lavaFlowStrength;
+    float lavaFlowSpeed;
+    float lavaFlowScale;
+    float lavaFlowPixel;
+    float lavaPulse;
+    float lavaPulseSpeed;
+    float _padlava;
     float sunRequireSky;
     float sunLeakDebug;
     float sunLeakDebugMul;
@@ -349,7 +357,13 @@ struct ShGlobalUniform
     float waterCausticRise;
     float waterCausticSlant;
     float waterCausticWallBoost;
-    float _padc1;
+    uint32_t volumeAllLights;
+    float volumeMediaColor[4];
+    float volumeMediaColorFar[4];
+    float volumeScatteringFar;
+    float volumeDensityCurve;
+    float volumeLightNearFade;
+    float _padf2;
     float viewProjCubemap[96];
     float skyCubemapRotationTransform[16];
 };
