@@ -743,6 +743,32 @@ void traceDirectIllumination( uint            seed,
 {    
     const LightSample light = sampleLight(lightSources[reservoir.selected], surf.position, pointRnd);
     shade(surf, light, calcSelectedSampleWeight(reservoir), out_diffuse, out_specular);
+
+#if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
+    // Doom64-RT: near-field fade, FOG ONLY.
+    //
+    // A light standing inside the medium lights the froxels around it by
+    // inverse square, so a light at ~0 m -- the flashlight, a muzzle flash,
+    // anything carried -- puts an enormous in-scattered term into the froxels
+    // right in front of the camera and the screen whites out. That is what a
+    // headlight in fog physically does, and it is unplayable: the flashlight
+    // becomes a switch that blinds you.
+    //
+    // So scattering is faded out within volumeLightNearFade metres OF THE LIGHT.
+    // It is deliberately keyed off the light's distance rather than the
+    // camera's, because the thing to remove is glare from a light you are
+    // holding, not the fog near the camera -- the beam's shaft further down the
+    // corridor is exactly the look this feature is for, and it survives.
+    //
+    // Directional lights are unaffected: sampleLight puts their position far
+    // away, so the fade never triggers on the moon or a lightning strike.
+    // 0 disables it and restores the physical behaviour.
+    if( globalUniform.volumeLightNearFade > 0.001 )
+    {
+        float dToLight = length( light.position - surf.position );
+        out_diffuse *= smoothstep( 0.0, globalUniform.volumeLightNearFade, dToLight );
+    }
+#endif
     
     if (getLuminance(out_diffuse + out_specular) <= 0.0)
     {

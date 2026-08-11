@@ -82,7 +82,13 @@ vec4 fializeScattering( ivec2 regularPix )
         if( !isSky )
         {
             float f = exp( -virtualdepth * density );
-            return vec4( globalUniform.volumeAmbient.rgb * ( 1.0f - f ), f );
+            // Doom64-RT: same medium tint the froxel path applies, so
+            // rt_volume_type 2 is the SAME fog colour with the lighting taken
+            // out of it -- which is what makes it a usable A/B against the lit
+            // one (tools/ab-fog.cmd flat) rather than a different effect.
+            return vec4( globalUniform.volumeAmbient.rgb * globalUniform.volumeMediaColor.rgb *
+                             ( 1.0f - f ),
+                         f );
         }
         else
         {

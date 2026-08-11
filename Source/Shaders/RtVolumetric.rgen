@@ -37,6 +37,18 @@
 #include "RaygenCommon.h"
 #include "Volumetric.h"
 
+// Doom64-RT: who wants the per-froxel all-lights estimate this frame.
+//   illumVolumeEnable -- the RASTER path (RsWorld.inl, rt_illum_volume) reads
+//                        g_illuminationVolume to shade translucent primitives.
+//   volumeAllLights   -- the FOG (rt_fog_illum) wants to be lit by more than
+//                        the single light TryGetVolumetricLight picked.
+// Both WRITE the volume; only the first makes anything read it.
+#if ILLUMINATION_VOLUME
+    #define ILLUM_VOLUME_ACTIVE                                                                            ( globalUniform.illumVolumeEnable != 0 || globalUniform.volumeAllLights != 0 )
+#else
+    #define ILLUM_VOLUME_ACTIVE false
+#endif
+
 // Approximation of Henyey-Greenstein's phase function
 float phaseFunction_Schlick( const vec3 tolight, const vec3 toviewer, float assymetry )
 {
@@ -132,7 +144,7 @@ void main()
     {
         imageStore( g_volumetric, cell, vec4( 0.0 ) );
 #if ILLUMINATION_VOLUME
-        if( globalUniform.illumVolumeEnable != 0 )
+        if( ILLUM_VOLUME_ACTIVE )
         {
             imageStore( g_illuminationVolume, cell, vec4( 0.0 ) );
         }
@@ -155,7 +167,13 @@ void main()
     vec3 radiance = vec3( 0.0 );
 
 #if ILLUMINATION_VOLUME
-    if( globalUniform.illumVolumeEnable != 0 )
+    // Doom64-RT: two separate reasons to run the all-lights estimate (see
+    // ILLUM_VOLUME_ACTIVE above). They used to be ONE flag, so asking for lit
+    // fog also changed how every sprite and particle in the game is shaded.
+    // Both flags WRITE the volume -- the 0.05 temporal blend below reads back
+    // what it stored last frame and would never converge without the store --
+    // but only illumVolumeEnable makes RsWorld.inl read it.
+    if( ILLUM_VOLUME_ACTIVE )
     {
         vec3 radiance_Prev = imageLoad( g_illuminationVolume, cell ).rgb;
         if( any( isnan( radiance_Prev ) ) || any( isinf( radiance_Prev ) ) )
@@ -200,14 +218,37 @@ void main()
     }
 
 
-    float scattering = globalUniform.volumeScattering * 0.001;
+    // Doom64-RT: the medium, as a NEAR->FAR ramp.
+    //
+    // cell.z is a straight depth fraction -- volume_getCenter mixes near..far
+    // linearly (VOLUMETRIC_DISTANCE_POW is 1) -- so "the air around you" and
+    // "the far end of the corridor" are separable here for one mix() per cell,
+    // with no extra rays and no second volume. That separation is what makes
+    // fog tunable at all: one density cannot be both thin enough to see your
+    // feet through and thick enough to swallow a corridor.
+    //
+    // The tint is applied to the WHOLE in-scattered term -- ambient and lit
+    // alike -- so a cyan fog is cyan and so is the haze around a lamp standing
+    // in it. Extinction is left monochrome: the transmittance channel is one
+    // float all the way to CmPrepareFinal, so distance fades toward this colour
+    // instead of filtering by it. { 1, 1, 1 } at both ends is the no-op, and
+    // every map that asks for nothing gets it.
+    const float depthfrac = float( cell.z ) / float( VOLUMETRIC_SIZE_Z - 1 );
+    const float ramp      = pow( depthfrac, globalUniform.volumeDensityCurve );
+
+    lighting *= mix( globalUniform.volumeMediaColor.rgb,
+                     globalUniform.volumeMediaColorFar.rgb,
+                     ramp );
+
+    float scattering =
+        mix( globalUniform.volumeScattering, globalUniform.volumeScatteringFar, ramp ) * 0.001;
     float absorbtion = 0.0;
 
 
     imageStore( g_volumetric, cell, vec4( lighting * scattering, scattering + absorbtion ) );
 
 #if ILLUMINATION_VOLUME
-    if( globalUniform.illumVolumeEnable != 0 )
+    if( ILLUM_VOLUME_ACTIVE )
     {
         imageStore( g_illuminationVolume, cell, vec4( radiance, 0.0 ) );
     }
