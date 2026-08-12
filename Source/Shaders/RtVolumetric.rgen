@@ -346,21 +346,7 @@ void main()
 
         radiance = mix( radiance_Prev, radiance, blend );
 
-        // Smoke gets its own multiplier on the SCATTERED light, and it needs
-        // one because the volume computes SINGLE scattering: a puff receives
-        // exactly one bounce while the wall behind it receives full GI, so a
-        // puff is structurally darker than a lit room however much light
-        // reaches it. Raising the light-distance cut, unclamping smokeMaxLight
-        // and lowering absorption all failed to close that gap because none of
-        // them is the missing term. Real smoke is pale because of MULTIPLE
-        // scattering; this stands in for it.
-        //
-        // Applied AFTER the temporal blend and NOT stored in the history: the
-        // history feeds the next frame's blend, so folding a gain into it would
-        // compound every frame instead of scaling the output once.
-        const float smokeMult = inSmoke ? globalUniform.smokeLightMult : 1.0;
-
-        lighting += globalUniform.volumeLightMult * smokeMult * radiance *
+        lighting += globalUniform.volumeLightMult * radiance *
                     phaseFunction_Schlick( tolight, toviewer, globalUniform.volumeAsymmetry );
     }
     else

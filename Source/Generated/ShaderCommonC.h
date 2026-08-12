@@ -387,9 +387,9 @@ struct ShGlobalUniform
     float smokeAmbient;
     float smokeTintBias;
     float smokeAbsorb;
-    float smokeLightMult;
     uint32_t _pads8;
     uint32_t _pads9;
+    uint32_t _pads10;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];

@@ -1063,17 +1063,9 @@ GLOBAL_UNIFORM_STRUCT = [
     # This is that missing fraction, and it is what lets smoke read DARK against
     # a bright background instead of only bright against a dark one.
     (TYPE_FLOAT32,      1,      "smokeAbsorb",                      1),
-    # A brightness multiplier for the light scattered INSIDE smoke only.
-    #
-    # The volume is single-scattering: a wall receives full GI and a puff
-    # receives exactly one bounce, so a puff in a lit room is always darker than
-    # its surroundings no matter how much light reaches it. Real smoke is pale
-    # because of MULTIPLE scattering, which this has no way to compute. This is
-    # the cheap stand-in for it, and it exists per froxel because volumeLightMult
-    # belongs to the fog on nine tuned maps.
-    (TYPE_FLOAT32,      1,      "smokeLightMult",                   1),
     (TYPE_UINT32,       1,      "_pads8",                           1),
     (TYPE_UINT32,       1,      "_pads9",                           1),
+    (TYPE_UINT32,       1,      "_pads10",                          1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
