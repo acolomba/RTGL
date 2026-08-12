@@ -802,6 +802,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->smokeStylize      = std::clamp( params.stylize, 0.0f, 1.0f );
         gu->smokeStylizeSteps = std::clamp( params.stylizeSteps, 1u, 64u );
         gu->smokeStylizeGrid  = std::max( 0.0f, params.stylizeGrid );
+        gu->smokeAmbient      = std::max( 0.0f, params.selfAmbient );
     }
 
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;

@@ -1030,8 +1030,17 @@ GLOBAL_UNIFORM_STRUCT = [
     # is six, and check_uniform_layout.py caught every vec4 array after it
     # sitting 8 bytes further along in GLSL than in C -- exactly the failure that
     # note below describes, found by the build instead of by a day of debugging.
+    # SMOKE'S OWN UNLIT FLOOR, and it needs one because the volume's ambient is
+    # per FRAME and global. rt_smoke_ambient was only ever applied when smoke
+    # OWNED the volume (no fog and rt_volume_type 0), which the shipping config
+    # never is -- so smoke had no self-visibility at all and was visible only
+    # while a light was actually on it. A muzzle flash lasts 2-3 frames; the
+    # trail it leaves lasts two seconds, and all of that was invisible.
+    #
+    # Per froxel, like smokeLightNearFade and smokeIllumBlend, so a cell with no
+    # smoke in it is untouched and the fog collapse still holds.
+    (TYPE_FLOAT32,      1,      "smokeAmbient",                     1),
     (TYPE_UINT32,       1,      "_pads8",                           1),
-    (TYPE_UINT32,       1,      "_pads9",                           1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

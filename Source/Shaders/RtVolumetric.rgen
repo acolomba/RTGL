@@ -377,6 +377,25 @@ void main()
         }
     }
 
+    // SMOKE'S SELF-VISIBILITY. Added before the tint multiply, so it picks up
+    // the puff's own albedo and reads as grey powder rather than as a white
+    // haze.
+    //
+    // Without this a puff is only ever as visible as whatever is lighting it,
+    // and a muzzle flash lasts two or three frames against a trail that lasts
+    // two seconds -- so the smoke appeared with the bang and then vanished,
+    // which is not what smoke does. The volume's own ambientColor cannot serve:
+    // it is one per-frame value for the whole grid, so raising it for smoke
+    // would raise it for the fog on nine maps.
+    //
+    // Scaled by the puff's density so a thin rim does not glow as much as the
+    // core -- a flat add makes the whole ellipsoid one slab of grey and throws
+    // away the falloff the stylization just went to the trouble of banding.
+    if( inSmoke && globalUniform.smokeAmbient > 0.0 )
+    {
+        lighting += vec3( globalUniform.smokeAmbient * min( smoke.a, 1.0 ) );
+    }
+
     lighting *= smoke_blendTint( fogTint, fogDens, smoke );
 
     float scattering = ( fogDens + smoke.a ) * 0.001;

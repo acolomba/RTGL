@@ -1322,6 +1322,12 @@ typedef struct RgDrawFrameSmokeParams
     // rather than screen space on purpose: screen-space blocks crawl when the
     // camera turns, which reads as noise instead of style. Default: 0.
     float            stylizeGrid;
+    // Smoke's OWN unlit floor, applied per froxel inside puffs only. The
+    // volume's ambientColor is one per-frame value for the whole grid, so it
+    // cannot be raised for smoke without raising it for fog; this is the
+    // smoke-only equivalent, and it is what makes a puff visible after the
+    // muzzle flash that lit it has gone. Scaled by puff density. Default: 0.
+    float            selfAmbient;
 } RgDrawFrameSmokeParams;
 
 // Can be linked after RgDrawFrameInfo.
