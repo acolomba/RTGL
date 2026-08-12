@@ -797,7 +797,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->smokeDebug        = params.debugMode;
         gu->smokeLightFarFade = std::max( 0.0f, params.lightFarFade );
         gu->smokeMaxLight     = std::max( 0.0f, params.maxLight );
-        gu->smokeSpp          = std::clamp( params.samplesPerCell, 1u, 16u );
+        gu->smokeSpp          = std::clamp( params.samplesPerCell, 1u, 32u );
 
         gu->smokeStylize      = std::clamp( params.stylize, 0.0f, 1.0f );
         gu->smokeStylizeSteps = std::clamp( params.stylizeSteps, 1u, 64u );

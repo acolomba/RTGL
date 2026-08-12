@@ -387,6 +387,21 @@ typedef enum RgMeshPrimitiveFlagBits
     // light thrown across a surface, and a camera-facing billboard has no
     // surface for it to lie on -- it just tints the sprite.
     RG_MESH_PRIMITIVE_NO_WATER_CAUSTICS     = 1 << 18,
+    // Doom64-RT: this primitive's own `emissive` WINS over the emissiveMult its
+    // material carries in textures.json, instead of being overwritten by it.
+    // Passing 0 makes the surface non-emissive; passing a smaller number than the
+    // material's leaves it dimly emissive, which is how a lamp pane keeps enough
+    // glow to bloom without also lighting its room a second time.
+    //
+    // Needed because emissiveMult is a property of the TEXTURE and Doom 64 uses
+    // one texture for two different fixtures: SFLATAQ is a lamp ceiling in one
+    // sector and a wall light strip in the next. When the lamp ceilings were
+    // switched to real point lights, the glow had to come off them or the room
+    // would be lit twice -- but zeroing it in textures.json also put out every
+    // wall strip in the game. TextureMeta applies the material AFTER the caller
+    // fills in RgMeshPrimitiveInfo::emissive, so the caller cannot simply pass 0;
+    // this flag is what survives that override.
+    RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE     = 1 << 19,
     // Doom64-RT: which LIQUID this water-flagged primitive is, as a 2-bit index
     // into stylizedLiquidTint[] / stylizedLiquidCrest[]. Doom 64 has four
     // liquids sharing one surface shader and differing only in colour:
