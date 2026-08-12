@@ -718,6 +718,30 @@ vec2 getLightPointRndForSample(uint seed, uint sampleIndex)
 // as a false umbra, which would be exactly the wrong answer for this debug view.
 float g_debugVisibility = 1.0;
 
+#if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
+// Doom64-RT: the near-light fade radius in force for the froxel being shaded.
+//
+// It is a file-scope value rather than the uniform read directly because
+// localised smoke needs a DIFFERENT fade from the fog, and needs it per cell:
+// the fog wants the fade (a carried light must not white out the screen) while
+// a smoke puff wants the opposite (the muzzle flash lighting the puff at the
+// barrel is the whole effect). Choosing per frame instead would retune the
+// shipped fog every time the player fired.
+//
+// GLSL requires a constant initializer on a global, so the "use the fog's
+// value" state is the sentinel -1 rather than the uniform itself. A caller that
+// never assigns it -- which is every caller except RtVolumetric.rgen's main()
+// -- therefore behaves exactly as it did before smoke existed.
+float g_volumeLightNearFade = -1.0;
+
+// Doom64-RT: the matching FAR cutoff, and smoke-only for the same reason the
+// near one is per cell. Fog wants every light in the level -- a lamp down the
+// corridor IS the effect. Smoke is a small object running the all-lights
+// estimate at one sample per froxel, so a saturated emissive across the room
+// wins the reservoir often enough to tint the whole puff. 0 = no limit.
+float g_volumeLightFarFade = 0.0;
+#endif
+
 #if LIGHT_SAMPLE_METHOD != LIGHT_SAMPLE_METHOD_NONE
 bool isDirectIlluminationValid(int bounceIndex)
 {
@@ -754,7 +778,8 @@ void traceDirectIllumination( uint            seed,
     // headlight in fog physically does, and it is unplayable: the flashlight
     // becomes a switch that blinds you.
     //
-    // So scattering is faded out within volumeLightNearFade metres OF THE LIGHT.
+    // So scattering is faded out within g_volumeLightNearFade metres OF THE
+    // LIGHT -- the uniform's value in fog, smokeLightNearFade inside a puff.
     // It is deliberately keyed off the light's distance rather than the
     // camera's, because the thing to remove is glare from a light you are
     // holding, not the fog near the camera -- the beam's shaft further down the
@@ -763,10 +788,22 @@ void traceDirectIllumination( uint            seed,
     // Directional lights are unaffected: sampleLight puts their position far
     // away, so the fade never triggers on the moon or a lightning strike.
     // 0 disables it and restores the physical behaviour.
-    if( globalUniform.volumeLightNearFade > 0.001 )
+    const float nearFade = g_volumeLightNearFade >= 0.0 ? g_volumeLightNearFade
+                                                        : globalUniform.volumeLightNearFade;
+    const float dToLight = length( light.position - surf.position );
+
+    if( nearFade > 0.001 )
     {
-        float dToLight = length( light.position - surf.position );
-        out_diffuse *= smoothstep( 0.0, globalUniform.volumeLightNearFade, dToLight );
+        out_diffuse *= smoothstep( 0.0, nearFade, dToLight );
+    }
+
+    // ...and the far cutoff, faded over the last quarter of the range so a light
+    // does not switch off as the puff drifts. Only smoke ever sets this.
+    if( g_volumeLightFarFade > 0.001 )
+    {
+        out_diffuse *= 1.0 - smoothstep( g_volumeLightFarFade * 0.75,
+                                         g_volumeLightFarFade,
+                                         dToLight );
     }
 #endif
     

@@ -1310,6 +1310,18 @@ typedef struct RgDrawFrameSmokeParams
     // 0 off. 2 paints the froxels a puff covers; 3 paints every froxel whenever
     // the list is non-empty. Diagnostic only. Default: 0.
     uint32_t         debugMode;
+    // PIXEL-ART STYLIZATION, 0..1. The volume gives a puff a smooth exponential
+    // falloff, which is physically right and reads as an airbrushed blob against
+    // art made entirely of hard-edged pixels. This posterizes that falloff into
+    // `stylizeSteps` bands. Applied inside the puff evaluation, so with no puffs
+    // it changes nothing at all. Default: 0.
+    float            stylize;
+    // Band count for `stylize`. Few is chunky; many approaches smooth. Default: 4.
+    uint32_t         stylizeSteps;
+    // Metres of WORLD-space voxel snapping for the puff field, 0 = off. World
+    // rather than screen space on purpose: screen-space blocks crawl when the
+    // camera turns, which reads as noise instead of style. Default: 0.
+    float            stylizeGrid;
 } RgDrawFrameSmokeParams;
 
 // Can be linked after RgDrawFrameInfo.

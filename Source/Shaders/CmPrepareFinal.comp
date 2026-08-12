@@ -41,12 +41,20 @@ void main()
     }
 
     vec3 hdr = texelFetch( framebufFinal_Sampler, pix, 0 ).rgb;
+
+    // Doom64-RT: the medium's transmittance at this pixel, kept so the screen
+    // emissive below can be occluded by it too. 1 = nothing in the way, which is
+    // also what the classic path gets.
+    float volumeTransmittance = 1.0;
+
     if( !classicShading( pix ) )
     {
         // apply volumetrics
         {
             vec4 volumetric = texelFetch( framebufScattering_Sampler, pix, 0 );
             hdr             = hdr * volumetric.a + volumetric.rgb;
+
+            volumeTransmittance = volumetric.a;
         }
         // auto exposure
         {
@@ -56,6 +64,18 @@ void main()
     // screen emissive
     {
         vec3 screenEmis = texelFetch( framebufScreenEmission_Sampler, pix, 0 ).rgb;
+
+        // Doom64-RT: ATTENUATED BY THE MEDIUM. This addition sat after the
+        // volumetric composite and outside its guard, so an emissive panel shone
+        // through fog and through smoke at full strength -- lights visibly
+        // leaking out of a cloud that should be hiding them. It also reads as a
+        // dark outline around anything emissive seen through smoke, because the
+        // emissive pixels stay bright while everything around them is dimmed.
+        if( globalUniform.volumeOccludeEmis != 0 )
+        {
+            screenEmis *= volumeTransmittance;
+        }
+
         hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor;
     }
 

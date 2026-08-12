@@ -123,7 +123,34 @@ vec4 volume_sampleDithered( const vec3  world,
     sp += rnd01 * ditherRadius * unitBasis /
           vec3( VOLUMETRIC_SIZE_X, VOLUMETRIC_SIZE_Y, VOLUMETRIC_SIZE_Z );
 
-    return textureLod( g_volumetric_Sampler, sp, 0.0 );
+    // Doom64-RT: the spatial filter, taken HERE and not during the integration.
+    //
+    // The obvious place is CmVolumetricProcess, and it does not work: that pass
+    // writes the very image it reads (store() -> imageStore( g_volumetric )), and
+    // it is only safe because each thread reads exactly the one (x,y) column it
+    // writes. Reading a neighbour there returns whatever another thread has
+    // already put there -- the finished prefix sum instead of raw scattering --
+    // so the volume collapses. Tried it: the smoke vanished and the screen got
+    // black bands.
+    //
+    // At SAMPLE time the volume is read-only, so extra taps carry no such
+    // hazard. Four of them in the screen plane, one froxel out, which is where
+    // the per-cell variance lives; Z is left alone because it carries the puff's
+    // depth extent, and blurring along it would undo the anisotropic shape.
+    if( globalUniform.volumeSpatialBlur < 0.001 )
+    {
+        return textureLod( g_volumetric_Sampler, sp, 0.0 );
+    }
+
+    const vec2 texel = 1.0 / vec2( VOLUMETRIC_SIZE_X, VOLUMETRIC_SIZE_Y );
+
+    const vec4 c = textureLod( g_volumetric_Sampler, sp, 0.0 );
+    const vec4 n = textureLod( g_volumetric_Sampler, sp + vec3( texel.x, 0, 0 ), 0.0 ) +
+                   textureLod( g_volumetric_Sampler, sp - vec3( texel.x, 0, 0 ), 0.0 ) +
+                   textureLod( g_volumetric_Sampler, sp + vec3( 0, texel.y, 0 ), 0.0 ) +
+                   textureLod( g_volumetric_Sampler, sp - vec3( 0, texel.y, 0 ), 0.0 );
+
+    return mix( c, ( c * 2.0 + n ) / 6.0, globalUniform.volumeSpatialBlur );
 }
 
 

@@ -1002,7 +1002,36 @@ GLOBAL_UNIFORM_STRUCT = [
     # panel shone through fog and smoke at full strength as though nothing were
     # in front of it.
     (TYPE_UINT32,       1,      "volumeOccludeEmis",                1),
+
+    # PIXEL-ART STYLIZATION, smoke only (Doom64-RT). The froxel volume produces
+    # a smooth exponential falloff, which is physically right and reads as an
+    # airbrushed blob against art that is entirely hard-edged pixels. These
+    # posterize the puff's falloff into bands and optionally snap its evaluation
+    # to a world grid, so smoke gains the stepped edge the sprites have.
+    #
+    # It lives INSIDE smoke_evalAt rather than as a screen-space filter for the
+    # reason every other smoke change does: with smokeCount 0 that function
+    # returns zero whatever these say, so the fog's arithmetic still collapses
+    # bit for bit and ab.cmd smoke-fogsafe still holds.
+    #
+    # 0 = the smooth falloff, 1 = fully banded.
+    (TYPE_FLOAT32,      1,      "smokeStylize",                     1),
+    # How many bands. Few is chunky and poster-like, many approaches smooth.
+    (TYPE_UINT32,       1,      "smokeStylizeSteps",                1),
+    # Metres of world-space voxel snapping, 0 = off. WORLD space, not screen:
+    # screen-space blocks crawl as the camera turns, which reads as noise rather
+    # than as style. World voxels stay put in the level.
+    (TYPE_FLOAT32,      1,      "smokeStylizeGrid",                 1),
+
+    # TWO pads now, not one, and the count is arithmetic rather than taste. The
+    # scalar run from smokeCount to here must stay a MULTIPLE OF FOUR, so what
+    # is ADDED has to be a multiple of four too: three new fields above + one
+    # new pad = four. The first attempt added three fields and three pads, which
+    # is six, and check_uniform_layout.py caught every vec4 array after it
+    # sitting 8 bytes further along in GLSL than in C -- exactly the failure that
+    # note below describes, found by the build instead of by a day of debugging.
     (TYPE_UINT32,       1,      "_pads8",                           1),
+    (TYPE_UINT32,       1,      "_pads9",                           1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

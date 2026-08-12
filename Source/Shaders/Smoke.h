@@ -58,7 +58,22 @@ vec4 smoke_evalAt( vec3 worldPos )
         const float rAlong = max( puff.w, 0.0001 );
         const float rPerp  = max( shape.x, 0.0001 );
 
-        const vec3 d = worldPos - puff.xyz;
+        // PIXEL-ART STYLIZATION, part one: snap the sample to a world voxel.
+        //
+        // WORLD space, not screen. Screen-space blocks are the obvious way to
+        // get "pixels" and they crawl as soon as the camera turns, which the
+        // eye reads as noise rather than as style -- the sprites this is
+        // imitating are pixel grids that stay put on the OBJECT. Snapping the
+        // evaluation position instead gives the puff hard voxel steps that are
+        // stable in the level and move with the smoke.
+        vec3 sampleAt = worldPos;
+        if( globalUniform.smokeStylizeGrid > 0.0 )
+        {
+            const float g = globalUniform.smokeStylizeGrid;
+            sampleAt      = ( floor( worldPos / g ) + 0.5 ) * g;
+        }
+
+        const vec3 d = sampleAt - puff.xyz;
 
         // CHEAP REJECT FIRST, and this is what makes a big budget affordable.
         //
@@ -92,6 +107,25 @@ vec4 smoke_evalAt( vec3 worldPos )
             // radius instead of leaving a faint halo the size of the budget.
             float w = ( 1.0 - t * t );
             w *= w;
+
+            // PIXEL-ART STYLIZATION, part two: posterize that falloff.
+            //
+            // The smooth curve above is physically right and reads as an
+            // airbrushed blob against art that is entirely hard-edged pixels.
+            // Quantizing it into a few bands gives the stepped, banded edge the
+            // sprites have, and it is the half of this effect that does the
+            // most work -- a puff reads as drawn rather than as rendered.
+            //
+            // CEIL, not round or floor. The outermost band is where the puff
+            // meets the world, and flooring it quantizes the rim to zero: the
+            // puff would shrink by a full band and its silhouette would come
+            // back soft, which is the thing being fixed. Ceiling keeps a hard
+            // outer edge exactly at the radius.
+            if( globalUniform.smokeStylize > 0.0 && globalUniform.smokeStylizeSteps > 0u )
+            {
+                const float n = float( globalUniform.smokeStylizeSteps );
+                w = mix( w, ceil( w * n ) / n, globalUniform.smokeStylize );
+            }
 
             const float d = w * globalUniform.smokeAlbedoDensity[ i ].a;
 

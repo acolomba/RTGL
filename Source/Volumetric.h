@@ -61,7 +61,7 @@ public:
                             const BlueNoise&     rnd,
                             const Framebuffers&  framebuffers,
                             float                maxHistoryLength );
-    void BarrierToReadIllumination( VkCommandBuffer cmd );
+    void BarrierToReadIllumination( VkCommandBuffer cmd, uint32_t frameIndex );
 
     void OnShaderReload( const ShaderManager* shaderManager ) override;
 
@@ -90,7 +90,14 @@ private:
 
     VolumeDef scattering[ MAX_FRAMES_IN_FLIGHT ]{};
 #if ILLUMINATION_VOLUME_
-    VolumeDef illumination{};
+    // DOUBLE BUFFERED, like scattering above, and for a reason that bit hard:
+    // RtVolumetric.rgen both writes this volume and reads last frame's value out
+    // of it. With a single image those are the same memory, so the read is only
+    // safe at the SAME cell index -- which is why the temporal blend was
+    // unreprojected, and therefore invalid the moment the camera moved, since
+    // the grid is camera-attached. Two images let the shader read the previous
+    // frame properly and reproject into it.
+    VolumeDef illumination[ MAX_FRAMES_IN_FLIGHT ]{};
 #endif
 
     VkSampler volumeSampler{ VK_NULL_HANDLE };

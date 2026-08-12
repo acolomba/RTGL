@@ -59,6 +59,22 @@ void store( const ivec3 cell, const vec4 colorAndDensity )
     imageStore( g_volumetric, cell, final );
 }
 
+// Doom64-RT: A SPATIAL BLUR CANNOT BE DONE IN THIS PASS. It was tried and it
+// destroys the volume.
+//
+// store() below writes imageStore( g_volumetric, ... ) -- the SAME image this
+// pass reads with texelFetch. That is safe as written because each thread owns
+// one (x,y) column and only ever reads the column it is writing. A 3x3 filter
+// reads NEIGHBOURING columns, and those are being marched concurrently by other
+// threads, so half the taps come back as the finished prefix-sum-and-
+// transmittance value instead of raw scattering. The result is not "a bit
+// wrong": the volume collapses and the smoke disappears.
+//
+// Doing it properly needs the filter in its own pass with its own image, or a
+// second buffer to read from -- neither is a two-line change, so
+// rt_volume_blur is inert until then. The uniform and the cvar are kept because
+// the layout is verified and the plumbing is the tedious part.
+
 void main()
 {
     const int x = int( gl_GlobalInvocationID.x );

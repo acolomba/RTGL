@@ -641,6 +641,9 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                 params.farScattering < 0.0f ? gu->volumeScattering : params.farScattering;
             gu->volumeDensityCurve   = std::max( 0.01f, params.densityCurve );
             gu->volumeLightNearFade  = std::max( 0.0f, params.lightNearFade );
+            gu->volumeSpatialBlur    = std::clamp( params.spatialBlur, 0.0f, 1.0f );
+            gu->volumeDither         = std::max( 0.0f, params.ditherRadius );
+            gu->volumeOccludeEmis    = params.occludeEmission;
 
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );
@@ -662,6 +665,143 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             Matrix::Multiply( gu->volumeViewProj, gu->view, volumeproj );
             Matrix::Inverse( gu->volumeViewProjInv, gu->volumeViewProj );
         }
+    }
+
+    // Doom64-RT: LOCALISED SMOKE. A separate block after the volumetric one, and
+    // a separate pNext struct, so a frame that never links it -- which is every
+    // frame on every map until someone fires a gun -- lands on puffCount 0 and
+    // the froxel shader collapses back to the fog's arithmetic exactly.
+    {
+        const auto& params = pnext::get< RgDrawFrameSmokeParams >( drawInfo );
+
+        const uint32_t count = params.pPuffs && params.pAlbedoDensity
+                                   ? std::min( params.puffCount,
+                                               uint32_t{ SMOKE_PUFF_MAX } )
+                                   : 0u;
+
+        gu->smokeCount = count;
+
+        for( uint32_t i = 0; i < count; i++ )
+        {
+            // xyz = centre in metres, w = radius. A radius of 0 would divide by
+            // zero in smoke_evalAt; the shader guards it, but drop it here too
+            // so a bad puff costs nothing rather than costing a branch per cell.
+            RG_SET_VEC3_A( &gu->smokePuffs[ i * 4 ], params.pPuffs[ i ].data );
+            gu->smokePuffs[ i * 4 + 3 ] = std::max( 0.0f, params.pPuffs[ i ].data[ 3 ] );
+
+            RG_SET_VEC3_A( &gu->smokeAlbedoDensity[ i * 4 ], params.pAlbedoDensity[ i ].data );
+            RG_MAX_VEC3( &gu->smokeAlbedoDensity[ i * 4 ], 0.0f );
+            gu->smokeAlbedoDensity[ i * 4 + 3 ] =
+                std::max( 0.0f, params.pAlbedoDensity[ i ].data[ 3 ] );
+
+            // Across-view radius. Falls back to the along-view one, which makes
+            // the puff a sphere and is what every caller that does not set
+            // pShape gets.
+            gu->smokeShape[ i * 4 ] =
+                params.pShape ? std::max( 0.001f, params.pShape[ i ].data[ 0 ] )
+                              : std::max( 0.001f, params.pPuffs[ i ].data[ 3 ] );
+        }
+        // Doom64-RT: proves the pNext link and the uniform copy, which is the one
+        // step the engine-side log cannot see. If stage C says "sent" and this
+        // never prints, the struct is not reaching the library.
+        //
+        // AFTER the writes, deliberately. Placed before them it read the
+        // PREVIOUS frame's uniform and reported puff0 as all zeros on the first
+        // line -- an artifact of the instrumentation that looked exactly like
+        // the bug it was meant to find.
+        {
+            static uint32_t s_dbg = 0;
+            if( count > 0 && ( s_dbg++ % 60 ) == 0 )
+            {
+                debug::Warning( "rt_smoke D/received: count={} puff0=({:.2f},{:.2f},{:.2f}) "
+                                "r={:.2f} density={:.1f} allLights={} nearFade={:.2f} "
+                                "blend={:.2f} | volumeNear={:.2f} volumeFar={:.2f} "
+                                "enableType={} scattering={:.3f} || UNIFORM: count={} "
+                                "debug={} allLights={} puff0=({:.2f},{:.2f},{:.2f},{:.2f}) "
+                                "albden0=({:.2f},{:.2f},{:.2f},{:.1f})",
+                                count,
+                                params.pPuffs[ 0 ].data[ 0 ],
+                                params.pPuffs[ 0 ].data[ 1 ],
+                                params.pPuffs[ 0 ].data[ 2 ],
+                                params.pPuffs[ 0 ].data[ 3 ],
+                                params.pAlbedoDensity[ 0 ].data[ 3 ],
+                                params.allLights,
+                                params.lightNearFade,
+                                params.illumBlend,
+                                gu->volumeCameraNear,
+                                gu->volumeCameraFar,
+                                gu->volumeEnableType,
+                                gu->volumeScattering,
+                                gu->smokeCount,
+                                gu->smokeDebug,
+                                gu->smokeAllLights,
+                                gu->smokePuffs[ 0 ],
+                                gu->smokePuffs[ 1 ],
+                                gu->smokePuffs[ 2 ],
+                                gu->smokePuffs[ 3 ],
+                                gu->smokeAlbedoDensity[ 0 ],
+                                gu->smokeAlbedoDensity[ 1 ],
+                                gu->smokeAlbedoDensity[ 2 ],
+                                gu->smokeAlbedoDensity[ 3 ] );
+
+                // The froxel centres are built around gu->cameraPosition, which
+                // comes from the INVERSE VIEW MATRIX -- not from
+                // RgCameraInfo::position. If those two spaces differ, a puff in
+                // engine metres can never be within a radius of any centre, and
+                // the sphere test fails while every other read succeeds. That is
+                // exactly the symptom: probe 3 green, probe 2 blank.
+                const float dx = gu->smokePuffs[ 0 ] - gu->cameraPosition[ 0 ];
+                const float dy = gu->smokePuffs[ 1 ] - gu->cameraPosition[ 1 ];
+                const float dz = gu->smokePuffs[ 2 ] - gu->cameraPosition[ 2 ];
+                // ONE-SHOT. This is the canary for the stale-object trap: if a
+                // .obj keeps an older struct layout, these offsets stop matching
+                // the SPIR-V ones quoted beside them and every field past the old
+                // size silently reads zero. See tools/build-rtgl.cmd.
+                static bool s_layoutLogged = false;
+                if( !s_layoutLogged )
+                {
+                    s_layoutLogged = true;
+                debug::Warning( "rt_smoke F/layout: sizeof(ShGlobalUniform)={} "
+                                "offsetof smokeCount={} smokeDebug={} smokePuffs={} "
+                                "smokeAlbedoDensity={}  (SPIR-V says 1520 / 1536 / 1552 / 2064)",
+                                sizeof( ShGlobalUniform ),
+                                offsetof( ShGlobalUniform, smokeCount ),
+                                offsetof( ShGlobalUniform, smokeDebug ),
+                                offsetof( ShGlobalUniform, smokePuffs ),
+                                offsetof( ShGlobalUniform, smokeAlbedoDensity ) );
+                }
+
+                debug::Warning( "rt_smoke E/space: cameraPosition=({:.2f},{:.2f},{:.2f}) "
+                                "puff0=({:.2f},{:.2f},{:.2f}) "
+                                "|puff-camPos|={:.2f}m  (should match the engine's dist)",
+                                gu->cameraPosition[ 0 ],
+                                gu->cameraPosition[ 1 ],
+                                gu->cameraPosition[ 2 ],
+                                gu->smokePuffs[ 0 ],
+                                gu->smokePuffs[ 1 ],
+                                gu->smokePuffs[ 2 ],
+                                std::sqrt( dx * dx + dy * dy + dz * dz ) );
+            }
+        }
+
+        // Only meaningful inside a puff -- RtVolumetric.rgen picks between these
+        // and the fog's values PER FROXEL, so writing them costs a fog frame
+        // nothing.
+        gu->smokeLightNearFade = std::max( 0.0f, params.lightNearFade );
+        gu->smokeIllumBlend    = std::clamp( params.illumBlend, 0.0f, 1.0f );
+#if ILLUMINATION_VOLUME
+        gu->smokeAllLights = count > 0 ? params.allLights : 0;
+#else
+        gu->smokeAllLights = 0;
+#endif
+        gu->smokeDebug        = params.debugMode;
+        gu->smokeLightFarFade = std::max( 0.0f, params.lightFarFade );
+        gu->smokeMaxLight     = std::max( 0.0f, params.maxLight );
+        gu->smokeSpp          = std::clamp( params.samplesPerCell, 1u, 16u );
+
+        gu->smokeStylize      = std::clamp( params.stylize, 0.0f, 1.0f );
+        gu->smokeStylizeSteps = std::clamp( params.stylizeSteps, 1u, 64u );
+        gu->smokeStylizeGrid  = std::max( 0.0f, params.stylizeGrid );
     }
 
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;
@@ -1015,7 +1155,7 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
     }
 
     imageComposition->PrepareForRaster( cmd, frameIndex, uniform.get() );
-    volumetric->BarrierToReadIllumination( cmd );
+    volumetric->BarrierToReadIllumination( cmd, frameIndex );
 
     if( !drawInfo.disableRasterization )
     {

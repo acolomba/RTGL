@@ -381,7 +381,11 @@ struct ShGlobalUniform
     uint32_t smokeSpp;
     float volumeDither;
     uint32_t volumeOccludeEmis;
+    float smokeStylize;
+    uint32_t smokeStylizeSteps;
+    float smokeStylizeGrid;
     uint32_t _pads8;
+    uint32_t _pads9;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];

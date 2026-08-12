@@ -69,7 +69,11 @@ vec4 fializeScattering( ivec2 regularPix )
         float      oop;
         const vec3 offset = sampleHemisphere( rnd.x, rnd.y, oop );
 
-        return volume_sampleDithered( position, rnd.z, -offset, 2.0f );
+        // Dither radius in FROXELS. Stock 2.0 hides the grid in a
+        // low-contrast medium; against dense smoke it reaches across geometry
+        // silhouettes into columns that belong to a different surface, which is
+        // what draws dark outlines around things seen through the smoke.
+        return volume_sampleDithered( position, rnd.z, -offset, globalUniform.volumeDither );
     }
     else if( globalUniform.volumeEnableType == VOLUME_ENABLE_SIMPLE )
     {

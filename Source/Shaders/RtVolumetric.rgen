@@ -36,6 +36,7 @@
 #define LIGHT_SAMPLE_METHOD     ( LIGHT_SAMPLE_METHOD_VOLUME )
 #include "RaygenCommon.h"
 #include "Volumetric.h"
+#include "Smoke.h"
 
 // Doom64-RT: who wants the per-froxel all-lights estimate this frame.
 //   illumVolumeEnable -- the RASTER path (RsWorld.inl, rt_illum_volume) reads
@@ -155,6 +156,9 @@ void main()
     vec3       center   = volume_getCenter( cell );
     const vec3 toviewer = normalize( globalUniform.cameraPosition.xyz - center );
 
+    // Doom64-RT: the UNJITTERED cell centre, kept for the smoke density below.
+    const vec3 centerStable = center;
+
     {
         vec3  s      = volume_getCenter( cell + ivec3( 0, 0, 1 ) );
         vec3  radius = ( center - s ) * 0.5;
@@ -162,6 +166,49 @@ void main()
         float rnd    = rndBlueNoise8( seed, 0 ).x * 2 - 1;
         center += radius * rnd;
     }
+
+    // Doom64-RT: the localised smoke at this froxel, evaluated BEFORE the
+    // lighting block because both trap fixes below key off it. See Smoke.h;
+    // vec4( 0 ) on every frame with no puffs, which is nearly all of them.
+    //
+    // Deliberately the UNJITTERED centre. The blue-noise jitter above moves the
+    // sample by up to half a slice ALONG THE VIEW, which is fine for fog -- it
+    // dithers the depth quantisation of a medium that barely changes between
+    // slices. A puff is only one to three slices thick, so the same jitter
+    // randomly puts a cell inside or outside it every frame, and that shows up
+    // as boiling salt-and-pepper over the whole puff. Sampling density at the
+    // stable centre trades that for honest depth banding, which the eye reads as
+    // shape rather than as noise. The LIGHTING still uses the jittered position.
+    const vec4  smoke   = smoke_evalAt( centerStable );
+    const bool  inSmoke = smoke.a > 0.0;
+
+    // TRAP 1, the near-light fade. RaygenCommon.h fades in-scattering out
+    // within volumeLightNearFade metres OF A LIGHT, because a light carried at
+    // the camera otherwise whites out the froxels in front of it (rt-fog.md
+    // S4). A muzzle flash lighting the smoke at the barrel is the ENTIRE point
+    // of the smoke, and at the fog's 2 m the puff is fully faded -- so smoke
+    // cells take their own value.
+    //
+    // Chosen PER CELL, never per frame: a per-frame override would retune the
+    // shipped fog every time the player pulled the trigger.
+    g_volumeLightNearFade =
+        inSmoke ? globalUniform.smokeLightNearFade : globalUniform.volumeLightNearFade;
+
+    // Smoke only. A fog cell keeps receiving every light in the level.
+    g_volumeLightFarFade = inSmoke ? globalUniform.smokeLightFarFade : 0.0;
+
+    // TRAP 3, and the one that cost a playtest. volumeAllLights switches the
+    // WHOLE volume off traceDirectIllumination_SpecificLight -- and that
+    // function is the only place the sun's sky-probe test lives, i.e. the only
+    // thing that makes a map's light shafts. Turning it on per FRAME because a
+    // puff exists therefore deletes every shaft in the level for as long as the
+    // player is shooting, which is exactly what it looked like.
+    //
+    // So smoke asks for the all-lights estimate per CELL. A froxel with no smoke
+    // in it keeps the single-light path, shafts and all; a froxel inside a puff
+    // gets the full estimate, which is what lets its own muzzle flash light it.
+    const bool allLightsCell =
+        ILLUM_VOLUME_ACTIVE || ( inSmoke && globalUniform.smokeAllLights != 0 );
 
     vec3 lighting = globalUniform.volumeAmbient.rgb;
     vec3 radiance = vec3( 0.0 );
@@ -173,9 +220,34 @@ void main()
     // Both flags WRITE the volume -- the 0.05 temporal blend below reads back
     // what it stored last frame and would never converge without the store --
     // but only illumVolumeEnable makes RsWorld.inl read it.
-    if( ILLUM_VOLUME_ACTIVE )
+    if( allLightsCell )
     {
-        vec3 radiance_Prev = imageLoad( g_illuminationVolume, cell ).rgb;
+        // REPROJECTED history. This used to be imageLoad( ..., cell ) -- the
+        // same cell INDEX as last frame -- and the froxel grid is attached to
+        // the camera, so cell (x,y,z) is a different piece of world the instant
+        // you turn or walk. The history was simply wrong while moving, which is
+        // why the blend had to stay high (little averaging, much noise) and why
+        // moving with a flashlight was the worst case in the game.
+        //
+        // Now the cell's WORLD position is projected into the previous frame's
+        // volume and sampled there. Reading the sampler rather than the storage
+        // image matters: the sampler is bound to the PREVIOUS frame's image, so
+        // this cannot read memory the current pass is still writing.
+        vec3       radiance_Prev = vec3( 0 );
+        const vec3 spPrev        = volume_toSamplePosition_T(
+            centerStable, globalUniform.volumeViewProj_Prev, globalUniform.cameraPositionPrev.xyz );
+
+        // Off-screen last frame, or behind the near plane: there is no history to
+        // reuse. Taking the new estimate outright is right here -- clamping to
+        // black instead would draw a dark halo along every disocclusion edge.
+        const bool histValid = all( greaterThanEqual( spPrev, vec3( 0.0 ) ) ) &&
+                               all( lessThanEqual( spPrev, vec3( 1.0 ) ) );
+
+        if( histValid )
+        {
+            radiance_Prev = textureLod( g_illuminationVolume_Sampler, spPrev, 0.0 ).rgb;
+        }
+
         if( any( isnan( radiance_Prev ) ) || any( isinf( radiance_Prev ) ) )
         {
             radiance_Prev = vec3( 0 );
@@ -201,8 +273,51 @@ void main()
 
         vec3 tolight = vec3( 0, 1, 0 );
 
-        radiance += processDirectIllumination( seed, s, 0, tolight ) * 4 * M_PI;
-        radiance = mix( radiance_Prev, radiance, 0.05 );
+        // MULTIPLE SAMPLES, but only where there is smoke.
+        //
+        // Everything else added for the noise -- the spatial filter, the
+        // reprojected history -- smooths an estimate made from ONE sample. This
+        // is the only knob that improves the estimate itself. It is affordable
+        // because a puff covers a few per cent of the grid: paying 4x in those
+        // cells is a rounding error against 900k cells at 1x, where raising the
+        // global rate would not be.
+        //
+        // Each sample needs its own seed or they all pick the same light and
+        // average to exactly the one-sample answer. The first sample's direction
+        // is kept for the phase function; averaging directions would bend the
+        // scattering lobe toward nothing in particular.
+        const uint sppN = inSmoke ? max( globalUniform.smokeSpp, 1u ) : 1u;
+
+        vec3 estimate = vec3( 0.0 );
+        for( uint si = 0; si < sppN; si++ )
+        {
+            uint sd = getRandomSeed( ivec2( cell.x + cell.z + int( si ) * 7,
+                                            cell.y + 19 * cell.z + int( si ) * 13 ),
+                                     globalUniform.frameId + si * 977 );
+
+            vec3 tl_i = vec3( 0, 1, 0 );
+            estimate += processDirectIllumination( sd, s, 0, tl_i ) * 4 * M_PI;
+
+            if( si == 0 )
+            {
+                tolight = tl_i;
+            }
+        }
+
+        radiance += estimate / float( sppN );
+        // TRAP 2, the temporal blend. 0.05 is right for fog, which changes
+        // only as fast as the player walks. A muzzle flash lasts 2-3 frames:
+        // at 0.05 the volume needs ~0.7 s to respond and as long again to let
+        // go, so the smoke would light up AFTER the flash and then linger.
+        // Per cell for the same reason as trap 1 -- fog cells keep the 0.05.
+        // With a valid reprojected history the blend can be much lower, which is
+        // the entire point of the change: more frames of averaging for the same
+        // responsiveness. Without one, take the new estimate whole.
+        const float blend = !histValid ? 1.0
+                            : inSmoke  ? globalUniform.smokeIllumBlend
+                                       : 0.05;
+
+        radiance = mix( radiance_Prev, radiance, blend );
 
         lighting += globalUniform.volumeLightMult * radiance *
                     phaseFunction_Schlick( tolight, toviewer, globalUniform.volumeAsymmetry );
@@ -236,19 +351,121 @@ void main()
     const float depthfrac = float( cell.z ) / float( VOLUMETRIC_SIZE_Z - 1 );
     const float ramp      = pow( depthfrac, globalUniform.volumeDensityCurve );
 
-    lighting *= mix( globalUniform.volumeMediaColor.rgb,
-                     globalUniform.volumeMediaColorFar.rgb,
-                     ramp );
+    // Doom64-RT: the fog's medium and the smoke's, combined by density. With no
+    // smoke this is the fog's two lines BIT for bit, not merely algebraically:
+    // smoke_blendTint returns early and `fogDens + 0.0` is exactly fogDens. See
+    // the collapse note in Smoke.h; tools/ab-smoke.cmd fogsafe is the check.
+    const vec3  fogTint = mix( globalUniform.volumeMediaColor.rgb,
+                               globalUniform.volumeMediaColorFar.rgb,
+                               ramp );
+    const float fogDens =
+        mix( globalUniform.volumeScattering, globalUniform.volumeScatteringFar, ramp );
 
-    float scattering =
-        mix( globalUniform.volumeScattering, globalUniform.volumeScatteringFar, ramp ) * 0.001;
+    // WHITEOUT GUARD, smoke only. A carried light at ~0 m -- the flashlight, the
+    // plasma rifle's glow -- lights the froxels around it by inverse square, and
+    // a dense puff sitting in front of the camera therefore saturates to white.
+    // rt_fog_light_near exists for exactly that, and smoke turns it off on
+    // purpose so a muzzle flash can light its own puff; this bounds the RESULT
+    // instead, which keeps the flash while refusing to blow out the screen.
+    // Fog is untouched: it has the fade.
+    if( inSmoke && globalUniform.smokeMaxLight > 0.0 )
+    {
+        const float lum = getLuminance( lighting );
+        if( lum > globalUniform.smokeMaxLight )
+        {
+            lighting *= globalUniform.smokeMaxLight / lum;
+        }
+    }
+
+    lighting *= smoke_blendTint( fogTint, fogDens, smoke );
+
+    float scattering = ( fogDens + smoke.a ) * 0.001;
     float absorbtion = 0.0;
+
+    // Doom64-RT: the shader-side probe. Deliberately AFTER the real medium, so
+    // it overwrites rather than perturbs, and deliberately unmissable -- the
+    // point is to answer one question with a glance.
+    //
+    //   2 -- magenta wherever a puff covers a froxel. If this paints nothing,
+    //        the uniform is being read but no cell passes the sphere test, so
+    //        the puff is somewhere other than where it is believed to be.
+    //   3 -- green over the WHOLE screen whenever the list is non-empty, with no
+    //        position test at all. If 3 is blank while the engine log says
+    //        puffs were sent, the shader is not seeing the uniform.
+    if( globalUniform.smokeDebug == 2 && inSmoke )
+    {
+        lighting   = vec3( 1.0, 0.0, 1.0 );
+        scattering = 0.5;
+    }
+    else if( globalUniform.smokeDebug == 3 && globalUniform.smokeCount > 0 )
+    {
+        lighting   = vec3( 0.0, 1.0, 0.0 );
+        scattering = 0.05;
+    }
+    else if( globalUniform.smokeDebug == 8 &&
+             globalUniform
+                     .smokeAlbedoDensity[ clamp( int( globalUniform.smokeIllumBlend * 100.0 ),
+                                                 0,
+                                                 SMOKE_PUFF_MAX - 1 ) ]
+                     .a > 0.0 )
+    {
+        // WHITE if the LAST element of the first array reads non-zero. That
+        // element sits at exactly 2048 bytes into the uniform -- the boundary
+        // the swap experiment bracketed.
+        lighting   = vec3( 1.0, 1.0, 1.0 );
+        scattering = 0.05;
+    }
+    else if( globalUniform.smokeDebug == 7 && globalUniform.smokeAlbedoDensity[ 0 ].a > 0.0 )
+    {
+        // CYAN if the DENSITY of puff 0 reads non-zero. This is the only field
+        // smoke_evalAt uses that the position probe does not -- and a zero here
+        // makes smoke.a zero for every cell, which blanks probe 2 and the real
+        // medium alike while every position test still passes.
+        lighting   = vec3( 0.0, 1.0, 1.0 );
+        scattering = 0.05;
+    }
+    else if( globalUniform.smokeDebug == 5 && globalUniform.smokePuffs[ 0 ].w > 0.0 )
+    {
+        // YELLOW if the RADIUS field of puff 0 reads non-zero. Tests the
+        // smokePuffs array read itself, independently of any distance maths.
+        lighting   = vec3( 1.0, 1.0, 0.0 );
+        scattering = 0.05;
+    }
+    else if( globalUniform.smokeDebug == 6 &&
+             length( center - globalUniform.smokePuffs[ 0 ].xyz ) <
+                 max( 0.01, globalUniform.smokeLightNearFade ) )
+    {
+        // RED within 5 METRES of puff 0 -- the same test the medium does, with
+        // the radius replaced by something far larger than any froxel spacing.
+        // If this paints and mode 2 does not, the positions are right and the
+        // radius is too small for the grid; if it does not paint either, the
+        // position data itself is wrong in the shader.
+        lighting   = vec3( 1.0, 0.0, 0.0 );
+        scattering = 0.3;
+    }
+    else if( globalUniform.smokeDebug == 4 )
+    {
+        // Reads smokeDebug and NOTHING else -- no count, no positions. Blank
+        // here means the shader cannot see this uniform group at all, or the
+        // volumetric output is not reaching the screen; and those are the only
+        // two hypotheses left once the library reports the values as correct.
+        // 0.1 per cell over 64 cells is an optical depth of ~6: the screen goes
+        // solid blue. Deliberately far past "visible" -- this probe exists to
+        // answer yes or no, not to look like anything.
+        lighting   = vec3( 0.0, 0.4, 1.0 );
+        scattering = 0.1;
+    }
 
 
     imageStore( g_volumetric, cell, vec4( lighting * scattering, scattering + absorbtion ) );
 
 #if ILLUMINATION_VOLUME
-    if( ILLUM_VOLUME_ACTIVE )
+    // Store whenever the estimate RAN, not whenever the frame flag is set: the
+    // 0.05/smokeIllumBlend blend reads this back, so a cell that computes and
+    // does not store would read a stale image forever and never converge. With
+    // illumVolumeEnable on, every cell runs it and the image stays complete for
+    // RsWorld.inl, which is the only thing that reads it.
+    if( allLightsCell )
     {
         imageStore( g_illuminationVolume, cell, vec4( radiance, 0.0 ) );
     }

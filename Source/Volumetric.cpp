@@ -63,9 +63,12 @@ RTGL1::Volumetric::~Volumetric()
         MemoryAllocator::FreeDedicated( device, i.memory );
     }
 #if ILLUMINATION_VOLUME
-    vkDestroyImage( device, illumination.image, nullptr );
-    vkDestroyImageView( device, illumination.view, nullptr );
-    MemoryAllocator::FreeDedicated( device, illumination.memory );
+    for( auto& i : illumination )
+    {
+        vkDestroyImage( device, i.image, nullptr );
+        vkDestroyImageView( device, i.view, nullptr );
+        MemoryAllocator::FreeDedicated( device, i.memory );
+    }
 #endif
     vkDestroyPipelineLayout( device, processPipelineLayout, nullptr );
     vkDestroyPipelineLayout( device, accumPipelineLayout, nullptr );
@@ -199,7 +202,7 @@ void RTGL1::Volumetric::ProcessScattering( VkCommandBuffer      cmd,
     }
 }
 
-void RTGL1::Volumetric::BarrierToReadIllumination( VkCommandBuffer cmd )
+void RTGL1::Volumetric::BarrierToReadIllumination( VkCommandBuffer cmd, uint32_t frameIndex )
 {
 #if ILLUMINATION_VOLUME
     VkImageMemoryBarrier2 b = {
@@ -214,7 +217,7 @@ void RTGL1::Volumetric::BarrierToReadIllumination( VkCommandBuffer cmd )
         .newLayout           = VK_IMAGE_LAYOUT_GENERAL,
         .srcQueueFamilyIndex = 0,
         .dstQueueFamilyIndex = 0,
-        .image               = illumination.image,
+        .image               = illumination[ frameIndex ].image,
         .subresourceRange    = { .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
                                  .baseMipLevel   = 0,
                                  .levelCount     = 1,
@@ -270,7 +273,8 @@ void RTGL1::Volumetric::CreateImages( CommandBufferManager& cmdManager, MemoryAl
         { &scattering[ 0 ], SCATTERING_VOLUME_FORMAT, "Scattering Volume" },
         { &scattering[ 1 ], SCATTERING_VOLUME_FORMAT, "Scattering Volume" },
 #if ILLUMINATION_VOLUME
-        { &illumination, ILLUMINATION_VOLUME_FORMAT, "Illumination Volume" },
+        { &illumination[ 0 ], ILLUMINATION_VOLUME_FORMAT, "Illumination Volume" },
+        { &illumination[ 1 ], ILLUMINATION_VOLUME_FORMAT, "Illumination Volume" },
 #endif
     };
 
@@ -467,14 +471,20 @@ void RTGL1::Volumetric::UpdateDescriptors()
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
 #if ILLUMINATION_VOLUME
+            // Storage = THIS frame's image, sampler = the PREVIOUS frame's, the
+            // same split scattering uses above. With both pointing at one image
+            // the shader was reading memory it was concurrently writing, which
+            // is only safe at the identical cell index -- and that is precisely
+            // what made the temporal blend unreprojectable.
             {
                 .sampler     = VK_NULL_HANDLE,
-                .imageView   = illumination.view,
+                .imageView   = illumination[ i ].view,
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
             {
-                .sampler     = volumeSampler,
-                .imageView   = illumination.view,
+                .sampler = volumeSampler,
+                .imageView =
+                    illumination[ Utils::GetPreviousByModulo( i, MAX_FRAMES_IN_FLIGHT ) ].view,
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
 #endif

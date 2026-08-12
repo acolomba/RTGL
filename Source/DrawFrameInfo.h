@@ -64,6 +64,7 @@ namespace detail
     template<> constexpr auto TypeToStructureType< RgStartFrameRenderResolutionParams   > = RG_STRUCTURE_TYPE_START_FRAME_RENDER_RESOLUTION_PARAMS ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameIlluminationParams        > = RG_STRUCTURE_TYPE_DRAW_FRAME_ILLUMINATION_PARAMS       ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameVolumetricParams          > = RG_STRUCTURE_TYPE_DRAW_FRAME_VOLUMETRIC_PARAMS         ;
+    template<> constexpr auto TypeToStructureType< RgDrawFrameSmokeParams               > = RG_STRUCTURE_TYPE_DRAW_FRAME_SMOKE_PARAMS              ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameTonemappingParams         > = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS        ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameBloomParams               > = RG_STRUCTURE_TYPE_DRAW_FRAME_BLOOM_PARAMS              ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameReflectRefractParams      > = RG_STRUCTURE_TYPE_DRAW_FRAME_REFLECT_REFRACT_PARAMS    ;
@@ -107,6 +108,7 @@ namespace detail
     static_assert( CheckMembers< RgStartFrameRenderResolutionParams >() );
     static_assert( CheckMembers< RgDrawFrameIlluminationParams >() );
     static_assert( CheckMembers< RgDrawFrameVolumetricParams >() );
+    static_assert( CheckMembers< RgDrawFrameSmokeParams >() );
     static_assert( CheckMembers< RgDrawFrameTonemappingParams >() );
     static_assert( CheckMembers< RgDrawFrameBloomParams >() );
     static_assert( CheckMembers< RgDrawFrameReflectRefractParams >() );
@@ -161,6 +163,7 @@ namespace detail
     template<> struct LinkRootHelper< RgStartFrameFluidParams            >{ using Root = RgStartFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameIlluminationParams      >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameVolumetricParams        >{ using Root = RgDrawFrameInfo; };
+    template<> struct LinkRootHelper< RgDrawFrameSmokeParams             >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameTonemappingParams       >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameBloomParams             >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameReflectRefractParams    >{ using Root = RgDrawFrameInfo; };
@@ -333,7 +336,35 @@ namespace detail
             .mediaColorFar           = { 1.0f, 1.0f, 1.0f },
             .farScattering           = 0.2f,
             .densityCurve            = 1.0f,
+            .occludeEmission         = false,
+            .ditherRadius            = 2.0f,
+            .spatialBlur             = 0.0f,
             .lightNearFade           = 0.0f,
+        };
+    };
+
+    // Doom64-RT: the no-smoke default. puffCount 0 is what every caller that
+    // does not link this struct gets, and it collapses the shader arithmetic
+    // back to the fog's exactly -- see Smoke.h.
+    template<>
+    struct DefaultParams< RgDrawFrameSmokeParams >
+    {
+        constexpr static auto sType = detail::TypeToStructureType< RgDrawFrameSmokeParams >;
+
+        constexpr static RgDrawFrameSmokeParams value = {
+            .sType          = sType,
+            .pNext          = nullptr,
+            .puffCount      = 0,
+            .pPuffs         = nullptr,
+            .pAlbedoDensity = nullptr,
+            .pShape         = nullptr,
+            .lightNearFade  = 0.0f,
+            .illumBlend     = 0.05f,
+            .allLights      = false,
+            .lightFarFade   = 0.0f,
+            .samplesPerCell = 1,
+            .maxLight       = 0.0f,
+            .debugMode      = 0,
         };
     };
 
