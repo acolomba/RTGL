@@ -1339,6 +1339,12 @@ typedef struct RgDrawFrameSmokeParams
     // darkens what is behind the puff without adding light, so smoke can read
     // against a background brighter than itself. Default: 0.
     float            absorb;
+    // Multiplier on the light SCATTERED inside smoke. The volume computes
+    // single scattering, so a puff receives one bounce where the wall behind
+    // it receives full GI -- structurally darker in a lit room however much
+    // light reaches it. Real smoke is pale because of multiple scattering,
+    // which this stands in for. 1 = unchanged. Default: 1.
+    float            lightMult;
 } RgDrawFrameSmokeParams;
 
 // Can be linked after RgDrawFrameInfo.
