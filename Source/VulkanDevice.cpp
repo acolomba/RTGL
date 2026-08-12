@@ -710,8 +710,19 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         // line -- an artifact of the instrumentation that looked exactly like
         // the bug it was meant to find.
         {
+            // GATED ON params.debugMode, which is rt_smoke_debug. It was not, and
+            // that made these three unstoppable: the only condition was "smoke
+            // exists", so the normal launcher printed D/received and E/space every
+            // 60 frames for the whole game and rt_smoke_debug 0 did nothing about
+            // it -- the cvar the player would reach for lives in the engine, and
+            // this instrumentation is in the library. Reported from play.
+            //
+            // The F/layout canary below is gated too. It is one-shot and genuinely
+            // useful (it catches the stale-.obj trap), but a one-shot line nobody
+            // asked for is still a line nobody asked for, and build-rtgl.cmd now
+            // clears objects anyway.
             static uint32_t s_dbg = 0;
-            if( count > 0 && ( s_dbg++ % 60 ) == 0 )
+            if( params.debugMode > 0 && count > 0 && ( s_dbg++ % 60 ) == 0 )
             {
                 debug::Warning( "rt_smoke D/received: count={} puff0=({:.2f},{:.2f},{:.2f}) "
                                 "r={:.2f} density={:.1f} allLights={} nearFade={:.2f} "
