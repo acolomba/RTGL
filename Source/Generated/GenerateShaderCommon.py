@@ -1040,7 +1040,32 @@ GLOBAL_UNIFORM_STRUCT = [
     # Per froxel, like smokeLightNearFade and smokeIllumBlend, so a cell with no
     # smoke in it is untouched and the fog collapse still holds.
     (TYPE_FLOAT32,      1,      "smokeAmbient",                     1),
+    # How hard a smoke cell asserts its OWN albedo against the medium it is
+    # mixed into. smoke_blendTint is a density-weighted average, which is
+    # correct and has a bad consequence: a thin puff standing in a lit room is
+    # mostly the ROOM's medium colour, so powder smoke turns beige in a beige
+    # room and vanishes. 0 = the honest weighted average, 1 = the puff keeps its
+    # own colour regardless of how thin it is.
+    (TYPE_FLOAT32,      1,      "smokeTintBias",                    1),
+
+    # ABSORPTION, smoke only, and the reason smoke is invisible in a bright room.
+    #
+    # The froxel stores rgb = in-scattered light and a = EXTINCTION, which is
+    # scattering + absorbtion -- and absorbtion has been hardcoded 0 since the
+    # volume was written, so the medium is purely scattering. A purely
+    # scattering medium ADDS as much light as it takes away: in a dark room the
+    # addition is what you see, and in a room lit evenly from above the two
+    # cancel and the puff has no contrast against the wall in either direction.
+    # That is exactly the report -- a barrel's fat burst still reads because its
+    # density is 8x higher, while the gun's thin wisp disappears entirely.
+    #
+    # Real powder smoke is sooty: its single-scattering albedo is well under 1.
+    # This is that missing fraction, and it is what lets smoke read DARK against
+    # a bright background instead of only bright against a dark one.
+    (TYPE_FLOAT32,      1,      "smokeAbsorb",                      1),
     (TYPE_UINT32,       1,      "_pads8",                           1),
+    (TYPE_UINT32,       1,      "_pads9",                           1),
+    (TYPE_UINT32,       1,      "_pads10",                          1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

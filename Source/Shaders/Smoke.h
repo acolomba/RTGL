@@ -159,8 +159,31 @@ vec3 smoke_blendTint( vec3 fogTint, float fogDensity, vec4 smoke )
     }
 
     const float total = fogDensity + smoke.a;
+    if( total <= 0.0 )
+    {
+        return fogTint;
+    }
 
-    return total > 0.0 ? ( fogDensity * fogTint + smoke.rgb ) / total : fogTint;
+    const vec3 weighted = ( fogDensity * fogTint + smoke.rgb ) / total;
+
+    // THE WEIGHTED AVERAGE IS HONEST AND LOSES THE SMOKE. smoke.rgb is the
+    // albedo premultiplied by density, so a THIN puff contributes little and a
+    // cell containing it comes out mostly the medium's colour -- which means
+    // powder smoke goes beige in a beige room, blue in a blue one, and stops
+    // reading as smoke at all. It was reported as "the gun smoke takes the room
+    // colour and I can only see it with the flashlight", while a barrel's fat
+    // burst, which carries enough density to win the average, stayed grey.
+    //
+    // The bias lets a smoke cell assert its own albedo beyond its density
+    // share. smoke.rgb / smoke.a recovers the un-premultiplied colour, i.e.
+    // what the puff would look like if it owned the cell outright.
+    if( globalUniform.smokeTintBias > 0.0 && smoke.a > 0.0 )
+    {
+        const vec3 own = smoke.rgb / smoke.a;
+        return mix( weighted, own, globalUniform.smokeTintBias );
+    }
+
+    return weighted;
 }
 
 #endif // SMOKE_H_

@@ -399,7 +399,22 @@ void main()
     lighting *= smoke_blendTint( fogTint, fogDens, smoke );
 
     float scattering = ( fogDens + smoke.a ) * 0.001;
-    float absorbtion = 0.0;
+    // ABSORPTION, smoke only. The froxel's alpha is extinction
+    // (scattering + absorbtion) while its rgb is what the medium ADDS, so a
+    // purely scattering medium gives back as much light as it removes. In a
+    // dark room the addition is the whole effect; under an even ceiling wash
+    // the two cancel and a thin puff has no contrast in either direction, which
+    // is why gun smoke vanished in a lit beige room while a barrel's much
+    // denser burst still read.
+    //
+    // Sooty smoke absorbs. Adding it here darkens what is behind the puff
+    // WITHOUT adding light, which is the only way smoke can show against a
+    // background brighter than itself. Fog keeps its pure scattering: this is
+    // gated on the smoke density, so a cell without smoke stores exactly what
+    // it stored before.
+    float absorbtion = globalUniform.smokeAbsorb > 0.0
+                           ? smoke.a * globalUniform.smokeAbsorb * 0.001
+                           : 0.0;
 
     // Doom64-RT: the shader-side probe. Deliberately AFTER the real medium, so
     // it overwrites rather than perturbs, and deliberately unmissable -- the

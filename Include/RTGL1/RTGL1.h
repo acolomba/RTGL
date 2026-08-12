@@ -1328,6 +1328,17 @@ typedef struct RgDrawFrameSmokeParams
     // smoke-only equivalent, and it is what makes a puff visible after the
     // muzzle flash that lit it has gone. Scaled by puff density. Default: 0.
     float            selfAmbient;
+    // How hard a smoke cell asserts its own albedo against the medium it is
+    // blended into, 0..1. The blend is density-weighted, so a thin puff comes
+    // out mostly the room's colour and stops reading as smoke; this biases it
+    // back. 0 = the plain weighted average. Default: 0.
+    float            tintBias;
+    // Absorption as a fraction of the puff's density, smoke only. The medium is
+    // otherwise purely scattering, which adds as much light as it removes and
+    // leaves a thin puff with no contrast under even lighting. Absorption
+    // darkens what is behind the puff without adding light, so smoke can read
+    // against a background brighter than itself. Default: 0.
+    float            absorb;
 } RgDrawFrameSmokeParams;
 
 // Can be linked after RgDrawFrameInfo.
