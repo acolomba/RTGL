@@ -377,23 +377,38 @@ void main()
         }
     }
 
-    // SMOKE'S SELF-VISIBILITY. Added before the tint multiply, so it picks up
-    // the puff's own albedo and reads as grey powder rather than as a white
-    // haze.
+    // THE AMBIENT BELONGS TO THE MEDIUM IT IS IN, and getting that wrong is why
+    // smoke glowed in a pitch-black room long after its muzzle flash had gone.
     //
-    // Without this a puff is only ever as visible as whatever is lighting it,
-    // and a muzzle flash lasts two or three frames against a trail that lasts
-    // two seconds -- so the smoke appeared with the bang and then vanished,
-    // which is not what smoke does. The volume's own ambientColor cannot serve:
-    // it is one per-frame value for the whole grid, so raising it for smoke
-    // would raise it for the fog on nine maps.
+    // `lighting` is seeded at the top with volumeAmbient -- a uniform fudge
+    // standing in for the GI the thin global medium would receive -- and the
+    // store at the end multiplies it by the TOTAL density, fogDens + smoke.a.
+    // So a dense puff amplifies the room's ambient floor by its own density: at
+    // density 14 a puff in a black room lit by nothing at all still shone,
+    // brighter than the walls, and no temporal or lighting knob could touch it
+    // because nothing about it decays. Measured: with volumeAmbient forced to 0
+    // the puff disappears entirely, which is what identified this line.
     //
-    // Scaled by the puff's density so a thin rim does not glow as much as the
-    // core -- a flat add makes the whole ellipsoid one slab of grey and throws
-    // away the falloff the stylization just went to the trouble of banding.
-    if( inSmoke && globalUniform.smokeAmbient > 0.0 )
+    // So the two media each bring their own, weighted by how much of the cell
+    // they occupy. Multiplied out by (fogDens + smoke.a) below this yields
+    // exactly fogDens*volumeAmbient + smoke.a*smokeAmbient -- the fog keeps the
+    // floor it was tuned with, and the smoke's is its own business.
+    //
+    // The early-out is not an optimisation: with smoke.a 0 the general form is
+    // ( fogDens * A ) / fogDens, which is A on paper and can land an ulp away in
+    // floating point. smoke-fogsafe asserts a PIXEL-identical frame, so the
+    // no-smoke path has to be exact rather than close. Same reasoning as
+    // smoke_blendTint's early return.
+    if( smoke.a > 0.0 )
     {
-        lighting += vec3( globalUniform.smokeAmbient * min( smoke.a, 1.0 ) );
+        const float total = fogDens + smoke.a;
+        if( total > 0.0 )
+        {
+            lighting -= globalUniform.volumeAmbient.rgb;
+            lighting += ( fogDens * globalUniform.volumeAmbient.rgb +
+                          smoke.a * vec3( globalUniform.smokeAmbient ) ) /
+                        total;
+        }
     }
 
     lighting *= smoke_blendTint( fogTint, fogDens, smoke );
