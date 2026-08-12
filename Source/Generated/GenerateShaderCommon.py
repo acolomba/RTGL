@@ -455,6 +455,21 @@ CONST = {
     "COMPUTE_VOLUMETRIC_GROUP_SIZE_Y"       : 16,
     "COMPUTE_SCATTER_ACCUM_GROUP_SIZE_X"    : 16,
 
+    # Doom64-RT: capacity of the localised-smoke puff list. The puffs ride in
+    # the global uniform rather than a storage buffer, so this is a hard limit
+    # and must match RG_MAX_SMOKE_PUFFS in Include/RTGL1/RTGL1.h.
+    #
+    # 32 -> 128 when ambient sources arrived. Muzzle smoke alone fits in 32; a
+    # room full of torches does not, and the pool's overflow rule is oldest-out,
+    # so an undersized buffer does not degrade -- it deletes whichever smoke is
+    # oldest, which is the player's.
+    #
+    # THE COST IS 48 BYTES A PUFF (three vec4 arrays), so this takes the whole
+    # ShGlobalUniform from 3552 to 8160 bytes. That is still under the 16384 the
+    # Vulkan spec GUARANTEES for maxUniformBufferRange, which is the number that
+    # matters -- a bigger cap would need the storage-buffer rewrite instead.
+    "SMOKE_PUFF_MAX"                        : 128,
+
     "VOLUME_ENABLE_NONE"                    : 0,
     "VOLUME_ENABLE_SIMPLE"                  : 1,
     "VOLUME_ENABLE_VOLUMETRIC"              : 2,
@@ -911,6 +926,95 @@ GLOBAL_UNIFORM_STRUCT = [
     # look this is all for -- survives. 0 = physical behaviour.
     (TYPE_FLOAT32,      1,      "volumeLightNearFade",              1),
     (TYPE_FLOAT32,      1,      "_padf2",                           1),
+
+    # --- Localised smoke (Doom64-RT) -----------------------------------------
+    # A separate group, appended AFTER the whole volume block rather than
+    # interleaved with it, so a mistake here cannot silently shift
+    # volumeMediaColor's offset and retune the shipped fog.
+    #
+    # One full scalar group of four, then two vec4 arrays, so viewProjCubemap
+    # below keeps its 16-byte alignment.
+    #
+    # smokeCount 0 is the no-smoke state: the loop in Smoke.h does not execute
+    # and the medium arithmetic collapses back to the fog's exactly.
+    (TYPE_UINT32,       1,      "smokeCount",                       1),
+    # Near-light fade, and all-lights temporal blend, used ONLY in froxels that
+    # contain smoke -- chosen per cell, so fog cells keep volumeLightNearFade
+    # and the stock 0.05. A muzzle flash lighting the smoke at the barrel is the
+    # whole effect, and the fog's 2 m fade plus a 0.05 blend would erase it and
+    # then smear what was left over ~0.7 s.
+    (TYPE_FLOAT32,      1,      "smokeLightNearFade",               1),
+    (TYPE_FLOAT32,      1,      "smokeIllumBlend",                  1),
+    # Whether a froxel CONTAINING smoke runs the all-lights estimate. Separate
+    # from volumeAllLights on purpose: that one switches the WHOLE volume off the
+    # single-light path, and the single-light path is the only place the sun's
+    # sky-probe test lives -- so flipping it per frame deletes a map's light
+    # shafts for as long as a puff exists. This is read per cell instead.
+    (TYPE_UINT32,       1,      "smokeAllLights",                   1),
+
+    # Shader-side probe (rt_smoke_debug 2/3). 2 paints the froxels a puff
+    # actually covers; 3 paints EVERY froxel whenever the puff list is non-empty.
+    # The pair separates "the shader cannot read the uniform" from "it reads it
+    # and no cell passes the sphere test", which no amount of engine-side logging
+    # can distinguish.
+    (TYPE_UINT32,       1,      "smokeDebug",                       1),
+    # Metres beyond which a light stops lighting SMOKE. Only smoke cells consult
+    # it, so fog and the global medium keep receiving every light as before.
+    (TYPE_FLOAT32,      1,      "smokeLightFarFade",                1),
+    # Spatial blur applied to the froxel volume before it is integrated, 0..1 as
+    # a blend against the raw grid. The volume is lit at ONE sample per cell and
+    # is the only buffer in the renderer with no spatial filter of any kind, so
+    # its variance reaches the screen untouched. Volumetric lighting is
+    # low-frequency by nature -- blurring it costs almost nothing visually.
+    (TYPE_FLOAT32,      1,      "volumeSpatialBlur",                1),
+    # ONE pad, not two. The scalar run from smokeCount to here must be a
+    # MULTIPLE OF FOUR: C packs scalars contiguously, std140 aligns the vec4
+    # arrays that follow to 16 bytes, and any other count makes the two layouts
+    # disagree from that point on. Adding volumeSpatialBlur without removing a
+    # pad took the run to nine, shifted every array by 12 bytes in GLSL only,
+    # and produced smoke that vanished and black bands on screen.
+    # Ceiling on the in-scattered radiance inside SMOKE. A carried light -- the
+    # flashlight, the plasma rifle's glow -- sits at ~0 m, so it lights the
+    # froxels around it by inverse square and a dense puff in front of the camera
+    # goes pure white. That is the same physics rt_fog_light_near exists for, and
+    # smoke deliberately disables that fade so a muzzle flash can light its own
+    # puff. This is the backstop: it bounds the result instead of the cause.
+    (TYPE_FLOAT32,      1,      "smokeMaxLight",                    1),
+
+    # Samples per froxel INSIDE SMOKE. The volume is estimated at one NEE sample
+    # and one shadow ray per cell, and that is the source of the variance every
+    # filter here is trying to hide. Raising it globally would be unaffordable --
+    # 900k cells -- but a puff occupies a few per cent of them, so paying for
+    # more samples only where smoke is costs almost nothing and attacks the noise
+    # where it is made rather than smoothing it afterwards.
+    #
+    # A full group of four: the scalar run before the vec4 arrays must stay
+    # divisible by four or C and std140 disagree. See tools/check_uniform_layout.py.
+    (TYPE_UINT32,       1,      "smokeSpp",                         1),
+    # How far, in FROXELS, the per-pixel volume sample is jittered. Stock is 2,
+    # which hides the grid in a low-contrast medium -- but with dense smoke the
+    # jitter reaches across geometry silhouettes into columns belonging to other
+    # surfaces, and that draws dark outlines around everything seen through the
+    # smoke.
+    (TYPE_FLOAT32,      1,      "volumeDither",                     1),
+    # Whether SCREEN EMISSION is attenuated by the volumetric medium. It was
+    # added after the volumetric composite and outside its guard, so an emissive
+    # panel shone through fog and smoke at full strength as though nothing were
+    # in front of it.
+    (TYPE_UINT32,       1,      "volumeOccludeEmis",                1),
+    (TYPE_UINT32,       1,      "_pads8",                           1),
+
+    # xyz = centre in world space (metres, the same space as a light's position
+    # and as volume_getCenter's output), w = radius in metres.
+    (TYPE_FLOAT32,      4,      "smokePuffs",           CONST[ "SMOKE_PUFF_MAX" ]),
+    # rgb = scattering albedo, a = density at the core, already scaled by the
+    # volume's slice thickness engine-side so it reads as optical depth per
+    # METRE and does not change meaning when the volume's reach does.
+    (TYPE_FLOAT32,      4,      "smokeAlbedoDensity",   CONST[ "SMOKE_PUFF_MAX" ]),
+    # x = the puff's radius ACROSS THE VIEW, in metres, which is the only radius
+    # you actually see. smokePuffs.w is its radius ALONG the view, held at half a
+    # froxel slice so the grid can resolve it at all. yzw spare.
+    (TYPE_FLOAT32,      4,      "smokeShape",           CONST[ "SMOKE_PUFF_MAX" ]),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),

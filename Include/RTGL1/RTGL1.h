@@ -69,6 +69,11 @@ typedef uint32_t RgBool32;
 #define RG_FALSE        0
 #define RG_TRUE         1
 
+// Doom64-RT: capacity of RgDrawFrameSmokeParams. The puffs ride in the global
+// uniform rather than a storage buffer, so this is a hard limit and must match
+// SMOKE_PUFF_MAX in Source/Generated/GenerateShaderCommon.py.
+#define RG_MAX_SMOKE_PUFFS 128
+
 typedef enum RgResult
 {
     RG_RESULT_SUCCESS,
@@ -185,6 +190,7 @@ typedef enum RgStructureType
     RG_STRUCTURE_TYPE_START_FRAME_RENDER_RESOLUTION_PARAMS  = 33,
     RG_STRUCTURE_TYPE_SPAWN_FLUID_INFO                      = 34,
     RG_STRUCTURE_TYPE_START_FRAME_FLUID_PARAMS              = 35,
+    RG_STRUCTURE_TYPE_DRAW_FRAME_SMOKE_PARAMS               = 36,
 } RgStructureType;
 
 typedef enum RgTextureSwizzling
@@ -1202,12 +1208,109 @@ typedef struct RgDrawFrameVolumetricParams
     // Shape of the near->far interpolation. 1 = linear, > 1 holds the near
     // value longer and thickens late, < 1 thickens immediately. Default: 1.
     float           densityCurve;
+    // Attenuate SCREEN EMISSION by the medium's transmittance. Without it an
+    // emissive surface shines through fog and smoke at full strength. Default:
+    // false (stock).
+    RgBool32        occludeEmission;
+    // Per-pixel volume sample jitter, in FROXELS. Stock 2. Lower values reduce
+    // the dark outlines dense media draw around geometry silhouettes, at the
+    // cost of showing more of the grid. Default: 2.
+    float           ditherRadius;
+    // 0..1 blend of a 3x3 spatial blur applied to the froxel volume before it
+    // is integrated along Z. The volume is estimated at one sample per cell and
+    // has no spatial filter at all, so at 0 its variance goes to the screen raw.
+    // Default: 0 (stock behaviour).
+    float           spatialBlur;
     // Fade volumetric in-scattering out within this many metres OF A LIGHT.
     // A light at the camera lights the froxels in front of it by inverse
     // square and whites out the screen -- physically what a headlight in fog
     // does, and unplayable. 0 = no fade (physical). Default: 0.
     float           lightNearFade;
 } RgDrawFrameVolumetricParams;
+
+// Doom64-RT: LOCALISED SMOKE.
+//
+// The volumetric medium above is one density for the whole level, and the
+// froxel grid is camera-fitted, so there is no way to say "there is smoke
+// HERE". This struct adds a small list of world-space spheres whose density is
+// ADDED to that medium inside RtVolumetric.rgen; everything downstream is
+// untouched, because CmVolumetricProcess.comp is a straight front-to-back
+// prefix sum over whatever the raygen wrote and gives the puffs correct
+// occlusion and transmittance for free.
+//
+// It is deliberately a SEPARATE struct rather than more fields on
+// RgDrawFrameVolumetricParams: the fog is shipped and tuned, and a struct that
+// does not change size cannot break a caller that does not know about smoke.
+// A frame that never links this gets puffCount 0, which collapses the shader
+// arithmetic back to exactly the fog's.
+//
+// Can be linked after RgDrawFrameInfo.
+typedef struct RgDrawFrameSmokeParams
+{
+    RgStructureType  sType;
+    void*            pNext;
+    // Number of entries in the two arrays below. Clamped to
+    // RG_MAX_SMOKE_PUFFS. Default: 0 (no smoke, no cost).
+    uint32_t         puffCount;
+    // xyz = centre in world space (the same space as RgLightInfo positions and
+    // as the froxel centres, i.e. metres), w = radius in metres.
+    const RgFloat4D* pPuffs;
+    // rgb = scattering albedo of this puff, a = density at its core, already
+    // scaled by the volume's slice thickness so it reads as optical depth per
+    // metre rather than per cell. Parallel to pPuffs.
+    const RgFloat4D* pAlbedoDensity;
+    // x = the puff's radius ACROSS the view in metres; yzw unused. Parallel to
+    // pPuffs, whose .w is the radius ALONG the view.
+    //
+    // The two differ because the froxel grid's two axes differ by a factor of
+    // forty: at 1.5 m one cell is 1.7 cm across the screen but 47 cm deep. A
+    // SPHERE therefore cannot be thin -- to be resolved in depth at all it needs
+    // a radius of half a slice, and that same radius is what you then see. Making
+    // the puff an ellipsoid stretched along the view axis buys a filament that is
+    // genuinely centimetres wide on screen while still landing on a cell centre,
+    // and the stretch is invisible because it points down the axis you are
+    // looking along. Null = spherical, using pPuffs.w for both.
+    const RgFloat4D* pShape;
+    // The near-light fade (RgDrawFrameVolumetricParams::lightNearFade) applied
+    // to froxels that CONTAIN smoke, instead of the fog's value. A muzzle flash
+    // lighting the smoke at the barrel is the entire point of the effect, and
+    // the fog's 2 m fade would erase it. Chosen per froxel, so fog cells keep
+    // the fog's value exactly. Default: 0 (no fade inside smoke).
+    float            lightNearFade;
+    // Temporal blend factor for the all-lights estimate in froxels that contain
+    // smoke, instead of the stock 0.05. A muzzle flash lasts 2-3 frames; at
+    // 0.05 the volume needs ~0.7 s to respond and as long to let go, so the
+    // smoke would light up after the flash and then linger. Higher is more
+    // responsive and noisier. Default: 0.05 (the stock value).
+    float            illumBlend;
+    // Run the full all-lights direct estimate in froxels that CONTAIN smoke, so
+    // a puff is lit by the muzzle flash that made it.
+    //
+    // Deliberately NOT RgDrawFrameVolumetricParams::illuminateFromAllLights:
+    // that one switches the whole volume off the single-light path, and the
+    // single-light path is the only place the sun's sky-probe test lives -- so
+    // setting it because a puff exists deletes every light shaft in the level
+    // for as long as the player is shooting. This is read per froxel.
+    // Default: false.
+    RgBool32         allLights;
+    // Metres beyond which a light stops lighting SMOKE. Smoke runs the all-lights
+    // estimate while the rest of the volume runs the single-light path, so a puff
+    // picks up every emissive in the room; at one sample per froxel a saturated
+    // one far away arrives as a colour cast over the whole puff rather than as a
+    // tint. Faded smoothly over the last quarter of the range. 0 = no limit.
+    float            lightFarFade;
+    // Direct-lighting samples per froxel INSIDE smoke; 1 = stock. Each costs one
+    // NEE sample and one shadow ray, but only in cells a puff covers, which is a
+    // few per cent of the grid. Default: 1.
+    uint32_t         samplesPerCell;
+    // Ceiling on in-scattered radiance inside smoke. A light carried at ~0 m
+    // floods the froxels around it by inverse square and a dense puff in front
+    // of the camera turns pure white. 0 = no clamp. Default: 0.
+    float            maxLight;
+    // 0 off. 2 paints the froxels a puff covers; 3 paints every froxel whenever
+    // the list is non-empty. Diagnostic only. Default: 0.
+    uint32_t         debugMode;
+} RgDrawFrameSmokeParams;
 
 // Can be linked after RgDrawFrameInfo.
 typedef struct RgDrawFrameBloomParams
