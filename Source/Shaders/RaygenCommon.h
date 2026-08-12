@@ -799,7 +799,20 @@ void traceDirectIllumination( uint            seed,
 
     // ...and the far cutoff, faded over the last quarter of the range so a light
     // does not switch off as the puff drifts. Only smoke ever sets this.
-    if( g_volumeLightFarFade > 0.001 )
+    //
+    // NOT ON A DIRECTIONAL LIGHT, and this is the bug that made smoke black in a
+    // moon shaft. The near fade above is safe from it by luck -- its comment even
+    // says so, "sampleLight puts their position far away, so the fade never
+    // triggers on the moon" -- but the FAR fade reads the same dToLight, and a
+    // position placed far away by construction is exactly what that test culls.
+    // The moon was therefore multiplied to ZERO in every smoke cell while fog,
+    // which never sets this value, kept its shafts. Reported as smoke staying
+    // black inside a visibly lit moonbeam.
+    //
+    // A directional light has no position to be far from: its distance term is
+    // meaningless, so it must be exempt rather than clamped.
+    if( g_volumeLightFarFade > 0.001 &&
+        reservoir.selected != LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET )
     {
         out_diffuse *= 1.0 - smoothstep( g_volumeLightFarFade * 0.75,
                                          g_volumeLightFarFade,
