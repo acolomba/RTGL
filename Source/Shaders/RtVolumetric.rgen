@@ -295,6 +295,33 @@ void main()
                                             cell.y + 19 * cell.z + int( si ) * 13 ),
                                      globalUniform.frameId + si * 977 );
 
+            // A MEDIUM HAS NO NORMAL, and the fake one above is why smoke was
+            // lit by the flashlight and by nothing else.
+            //
+            // processDirectIllumination is a SURFACE integrator: it weights every
+            // light by dot( N, L ). The normal handed to it is `toviewer`, so a
+            // light sitting at the camera -- the flashlight -- scores dot ~ 1 and
+            // a light from ABOVE scores dot ~ 0. Ceiling lamps and the moon were
+            // therefore multiplied to nothing, which is exactly what was
+            // reported: smoke black in a lit room and black in a moon shaft,
+            // while the flashlight lit it perfectly.
+            //
+            // The `* 4 * M_PI` below says someone meant this to be isotropic. It
+            // only becomes isotropic if the normal is UNIFORM over the sphere:
+            // the average of max( 0, dot( N, L ) ) over uniform N is 1/4, which
+            // is what that factor cancels. With a fixed normal there is nothing
+            // for it to cancel and the cosine survives as a bias.
+            //
+            // So inside smoke the normal is redrawn per sample. rt_smoke_spp
+            // gives four of them and the temporal blend averages more, which is
+            // what makes this affordable. FOG KEEPS THE FIXED NORMAL: it is on
+            // nine tuned maps and its shafts come from the single-light path
+            // anyway, so this is a smoke-only correction like every other one.
+            if( inSmoke )
+            {
+                s.normal = sampleSphere( rnd16( sd, 3 ), rnd16( sd, 5 ) );
+            }
+
             vec3 tl_i = vec3( 0, 1, 0 );
             estimate += processDirectIllumination( sd, s, 0, tl_i ) * 4 * M_PI;
 
