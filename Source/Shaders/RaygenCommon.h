@@ -136,7 +136,23 @@ uint getReflectionRefractionCullMask(uint surfInstCustomIndex, uint geometryInst
 
 uint getShadowCullMask(uint surfInstCustomIndex)
 {
-    const uint world = globalUniform.rayCullMaskWorld_Shadow;
+    uint world = globalUniform.rayCullMaskWorld_Shadow;
+
+    // Doom64-RT: a surface flagged IGNORE_SHADOW_PROXY does not see shadow-only
+    // geometry at all -- set on alpha-tested instances, i.e. sprites.
+    //
+    // A sprite's shadow proxies are planes through its own axis, so a proxy that
+    // is not edge-on to the light shadows the half of its own billboard behind
+    // it; and with a light along the sprite's normal (the flashlight, which sits
+    // at the camera the billboard is facing) the perpendicular proxy projects to
+    // a line straight down the sprite's middle. Removing the proxies from the
+    // sprite's own shadow test removes both, and costs only that one actor's
+    // proxy no longer darkens another actor -- which Doom's flat-lit sprites do
+    // not show anyway.
+    if ((surfInstCustomIndex & INSTANCE_CUSTOM_INDEX_FLAG_IGNORE_SHADOW_PROXY) != 0)
+    {
+        world &= ~INSTANCE_MASK_RESERVED_0;
+    }
 
     if ((surfInstCustomIndex & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON) != 0)
     {
@@ -491,8 +507,44 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
     normalizeReservoir(regularReservoir, 1);
 
 
+    // Doom64-RT: sunSplit -- take the directional light OUT of the lottery.
+    //
+    // Below, the sun's reservoir is merged into the regular one stochastically
+    // (updateCombinedReservoir with a random number), so ONE light wins per
+    // pixel. That is correct importance sampling and it has a specific
+    // consequence for a weak-but-huge light: with the moon at intensity 90
+    // against a level's own lamps and emissives, the moon wins on a minority of
+    // pixels, so its shadow is resolved on a sparse random subset of the image
+    // and the denoiser flattens what is left. Symptom: sprites cast no moon
+    // shadow while the same sprites shadow perfectly from a muzzle flash, which
+    // wins selection nearly always because it dominates the pixels it touches
+    // (screen/moon_shadow_limit.png, 2026-08-13).
+    //
+    // rt_shadow_samples cannot fix that -- it averages visibility for the light
+    // ALREADY CHOSEN, so it only sharpens the moon where the moon was picked.
+    //
+    // With sunSplit on, the sun is excluded here and shaded separately and
+    // deterministically in processDirectIllumination: every pixel facing it gets
+    // exactly one sun shadow ray. Unbiased, because the light is removed from
+    // the candidate set rather than counted twice, and cheaper than raising
+    // directSamples, which multiplies rays for EVERY light to fix one.
+    //
+    // DIRECT and INITIAL only. INITIAL is not optional: it writes the reservoir
+    // image that DIRECT's sample 0 loads, so leaving the sun in there would put
+    // it back into the lottery through the stored reservoir. Indirect and
+    // volumetric keep the stock behaviour, so bounce light and fog shafts are
+    // bit-identical either way.
+    bool includeDirectional = globalUniform.directionalLightExists != 0;
+#if (LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT) || \
+    (LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_INITIAL)
+    if (globalUniform.sunSplit > 0.5)
+    {
+        includeDirectional = false;
+    }
+#endif
+
     Reservoir dirLightReservoir = emptyReservoir();
-    if (globalUniform.directionalLightExists != 0)
+    if (includeDirectional)
     {
         uint xi = LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET;
         float oneOverSourcePdf_xi = 1;
@@ -940,6 +992,35 @@ void traceDirectIllumination( uint            seed,
 
 
 #if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT
+// Doom64-RT: the sun's own single-light reservoir, for sunSplit.
+//
+// Deliberately built exactly as calcInitialReservoir builds dirLightReservoir --
+// one candidate, oneOverSourcePdf 1, normalized to 1 -- so the weight
+// calcSelectedSampleWeight() hands to shade() is the same one the stochastic
+// path would have used had the sun won. That is what makes this a split rather
+// than a second, differently-scaled copy of the light: sun-lit surfaces are the
+// SAME brightness with sunSplit on or off, only less noisy.
+//
+// It returns a reservoir rather than shading here so the caller can pass it
+// straight to traceDirectIllumination, which owns every piece of sun-specific
+// logic -- sunRequireSky, the red/green leak debug, g_debugVisibility, the
+// volumetric fades. Duplicating any of that here is how those get out of step.
+Reservoir calcSunOnlyReservoir(const Surface surf, const vec2 pointRnd)
+{
+    Reservoir r = emptyReservoir();
+
+    const uint  xi         = LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET;
+    LightSample lightSample = sampleLight(lightSources[xi], surf.position, pointRnd);
+    const float targetPdf   = targetPdfForLightSample(lightSample, surf);
+
+    // rndRis 0: a single candidate is always accepted, so no random draw is
+    // needed and none is spent.
+    updateReservoir(r, xi, targetPdf, 1.0, 0.0);
+    normalizeReservoir(r, 1);
+
+    return r;
+}
+
 Reservoir processDirectIllumination(uint seed, const ivec2 pix, const Surface surf, out float out_distance, out vec3 out_diffuse, out vec3 out_specular)
 {
     out_diffuse = out_specular = vec3(0.0);
@@ -1014,16 +1095,66 @@ Reservoir processDirectIllumination(uint seed, const ivec2 pix, const Surface su
         }
     }
 
+    // Divide by N, not validCount: an invalid reservoir is a legitimate zero
+    // contribution for that sample, not a sample that did not happen. Dividing
+    // by validCount would bias the estimate brighter wherever some samples miss.
+    if (validCount > 0)
+    {
+        accumDiffuse  /= float(N);
+        accumSpecular /= float(N);
+    }
+    else
+    {
+        accumDiffuse = accumSpecular = vec3(0.0);
+    }
+
+    // Doom64-RT: sunSplit -- the directional light, shaded deterministically.
+    //
+    // ONE shadow ray per pixel that faces the sun, added to the ReSTIR estimate
+    // over every other light rather than competing with it. See the long note in
+    // calcInitialReservoir for why the stochastic merge loses a weak sun's
+    // shadows.
+    //
+    // This runs even when validCount == 0, and that is not an edge case: a room
+    // lit only by the moon has no regular lights to build a valid reservoir
+    // from, and the early-out that used to sit here would have returned black
+    // for exactly the surfaces this feature exists to light. That would have
+    // read as "sunSplit makes outdoor areas darker", which is the kind of
+    // regression that gets a fix reverted rather than debugged.
+    if (globalUniform.sunSplit > 0.5 && globalUniform.directionalLightExists != 0)
+    {
+        const vec2      sunRnd = getLightPointRndForSample(seed, 0);
+        const Reservoir sunRes = calcSunOnlyReservoir(surf, sunRnd);
+
+        if (isReservoirValid(sunRes))
+        {
+            float sunDist;
+            vec3  sunDiffuse;
+            vec3  sunSpecular;
+            traceDirectIllumination(seed, surf, sunRes, sunRnd, 0,
+                                    sunDist, sunDiffuse, sunSpecular);
+
+            accumDiffuse  += sunDiffuse;
+            accumSpecular += sunSpecular;
+
+            // Only claim the distance if nothing else did. out_distance feeds the
+            // specular hit-distance guide, and a directional light's "position"
+            // is a construction far outside the map -- handing that to the
+            // denoiser as a hit distance would be a lie about where the highlight
+            // lives (see rt_rr_spechitdist).
+            if (validCount == 0)
+            {
+                out_distance = MAX_RAY_LENGTH;
+            }
+
+            validCount++;
+        }
+    }
+
     if (validCount == 0)
     {
         return emptyReservoir();
     }
-
-    // Divide by N, not validCount: an invalid reservoir is a legitimate zero
-    // contribution for that sample, not a sample that did not happen. Dividing
-    // by validCount would bias the estimate brighter wherever some samples miss.
-    accumDiffuse  /= float(N);
-    accumSpecular /= float(N);
 
     out_diffuse  = accumDiffuse;
     out_specular = accumSpecular;

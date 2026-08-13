@@ -1047,9 +1047,22 @@ auto RTGL1::ASManager::MakeVkTLAS( const BuiltAS&                 builtAS,
     }
 
 
+    // Doom64-RT: alpha-tested geometry does not RECEIVE shadow-only shadows.
+    // Sprites are the alpha-tested things in this game, and a sprite's own
+    // shadow proxies are planes through its axis -- so without this, every
+    // sprite is striped by its own proxy (see the flag's note in
+    // GenerateShaderCommon.py). Chosen on PT_ALPHA_TESTED rather than a
+    // dedicated primitive flag because that bit is already in the filter flags
+    // here, and the collateral is only that a fence or grate is not darkened by
+    // a monster's proxy either -- which is invisible in practice.
+    const uint32_t ignoreShadowProxy =
+        ( builtAS.flags & VertexCollectorFilterTypeFlagBits::PT_ALPHA_TESTED )
+            ? uint32_t( INSTANCE_CUSTOM_INDEX_FLAG_IGNORE_SHADOW_PROXY )
+            : 0u;
+
     auto instance = VkAccelerationStructureInstanceKHR{
         .transform                              = rgToVkTransform( instanceTransform ),
-        .instanceCustomIndex                    = 0,
+        .instanceCustomIndex                    = ignoreShadowProxy,
         .mask                                   = 0,
         .instanceShaderBindingTableRecordOffset = 0,
         .flags                                  = 0,
@@ -1091,6 +1104,15 @@ auto RTGL1::ASManager::MakeVkTLAS( const BuiltAS&                 builtAS,
         else if( filter & FT::PV_WORLD_1 )
         {
             instance.mask = INSTANCE_MASK_WORLD_1;
+        }
+        // Doom64-RT: shadow-only. No rayCullMaskWorld test here, unlike WORLD_0
+        // and WORLD_2 above: RESERVED_0 is deliberately absent from that mask --
+        // that absence is what makes this geometry invisible to primary,
+        // reflection, refraction and indirect rays -- so testing it would drop
+        // every proxy before it reached the AS.
+        else if( filter & FT::PV_SHADOW_ONLY )
+        {
+            instance.mask = INSTANCE_MASK_RESERVED_0;
         }
         else if( filter & FT::PV_WORLD_2 )
         {

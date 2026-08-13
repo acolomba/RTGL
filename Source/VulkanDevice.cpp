@@ -356,6 +356,8 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->sunSkyProbeMaxDist = params.sunSkyProbeMaxDist < 0.001f
                                      ? float( MAX_RAY_LENGTH )
                                      : params.sunSkyProbeMaxDist;
+        // Doom64-RT: shade the directional light outside ReSTIR's lottery.
+        gu->sunSplit           = params.sunSplit > 0.5f ? 1.0f : 0.0f;
 
         switch( params.skyType )
         {
@@ -553,7 +555,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         // skip shadows for:
         // WORLD_1 - 'no shadows' geometry
         // WORLD_2 - 'sky' geometry
-        gu->rayCullMaskWorld_Shadow = INSTANCE_MASK_WORLD_0;
+        //
+        // Doom64-RT: RESERVED_0 is 'shadow only' -- geometry that exists ONLY
+        // here. It is absent from rayCullMaskWorld above, so no other ray can
+        // see it; this line is the single place it is switched on.
+        gu->rayCullMaskWorld_Shadow = INSTANCE_MASK_WORLD_0 | INSTANCE_MASK_RESERVED_0;
     }
 
     gu->waterNormalTextureIndex = textureManager->GetWaterNormalTextureIndex();

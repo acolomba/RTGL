@@ -280,6 +280,19 @@ CONST = {
     "INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON"           : BIT( 0 ),
     "INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON_VIEWER"    : BIT( 1 ),
     "INSTANCE_CUSTOM_INDEX_FLAG_SKY"                    : BIT( 2 ),
+    # Doom64-RT: this surface must IGNORE shadow-only geometry when it shadow
+    # tests (INSTANCE_MASK_RESERVED_0). Set on every alpha-tested instance,
+    # which is what sprites are.
+    #
+    # Why it has to exist: a sprite's shadow proxies are planes through the
+    # actor's own axis, so any proxy that is not edge-on to the light shadows
+    # the half of its OWN billboard that lies behind it. With the flashlight --
+    # a light at the camera, i.e. along the sprite's normal -- the perpendicular
+    # proxy is edge-on to it and projects to a line straight down the middle of
+    # the sprite it belongs to. That is a black stripe on every enemy in the
+    # beam, and no amount of plane count or spacing removes it: it is what
+    # centred proxy geometry does.
+    "INSTANCE_CUSTOM_INDEX_FLAG_IGNORE_SHADOW_PROXY"    : BIT( 3 ),
 
     "INSTANCE_MASK_WORLD_0"                 : BIT( 0 ),
     "INSTANCE_MASK_WORLD_1"                 : BIT( 1 ),
@@ -1063,7 +1076,14 @@ GLOBAL_UNIFORM_STRUCT = [
     # This is that missing fraction, and it is what lets smoke read DARK against
     # a bright background instead of only bright against a dark one.
     (TYPE_FLOAT32,      1,      "smokeAbsorb",                      1),
-    (TYPE_UINT32,       1,      "_pads8",                           1),
+    # Doom64-RT: take the DIRECTIONAL light out of ReSTIR's per-pixel lottery and
+    # shade it deterministically instead (RaygenCommon.h, calcSunOnlyReservoir).
+    # A weak-but-huge light loses that lottery on most pixels, so its shadows are
+    # resolved on a sparse random subset and the denoiser flattens them -- the
+    # moon casting no sprite shadows while a muzzle flash casts perfect ones.
+    # Taken from the _pads8 slot, a float where a uint was, so the scalar run
+    # length and therefore std140 are unchanged.
+    (TYPE_FLOAT32,      1,      "sunSplit",                         1),
     (TYPE_UINT32,       1,      "_pads9",                           1),
     (TYPE_UINT32,       1,      "_pads10",                          1),
 

@@ -482,6 +482,8 @@ namespace detail
             .sunLeakDebug                          = 0.0f,
             .sunLeakDebugMul                       = 1.0f,
             .sunSkyProbeMaxDist                    = 10000.0f,
+            // 0 = stock: the sun competes in ReSTIR's per-pixel light draw.
+            .sunSplit                              = 0.0f,
         };
     };
 

@@ -418,6 +418,21 @@ typedef enum RgMeshPrimitiveFlagBits
     // 16, so a lava flat physically cannot bloom no matter what is painted in
     // it. It also gives the flow animation somewhere to live.
     RG_MESH_PRIMITIVE_LAVA                  = 1 << 21,
+    // Doom64-RT: SHADOW-ONLY geometry. In the acceleration structure and blocks
+    // shadow rays, but is invisible to primary, reflection, refraction and
+    // indirect rays -- the exact complement of RG_MESH_PRIMITIVE_NO_SHADOW.
+    //
+    // What it is for: a sprite is a camera-facing billboard with no thickness,
+    // so when a light lies in the billboard's plane its shadow collapses to a
+    // line, and because the quad turns to face the viewer the shadow's SHAPE
+    // changes as the camera rotates -- which nothing physical does. The caller
+    // fixes that by submitting invisible proxy quads at world-fixed angles and
+    // letting them do the occluding.
+    //
+    // Lands on INSTANCE_MASK_RESERVED_0, which is absent from rayCullMaskWorld
+    // (WORLD_0|1|2) and therefore from every other ray's cull mask by
+    // construction; only rayCullMaskWorld_Shadow adds it back.
+    RG_MESH_PRIMITIVE_SHADOW_ONLY           = 1 << 22,
 } RgMeshPrimitiveFlagBits;
 typedef uint32_t RgMeshPrimitiveFlags;
 
@@ -962,6 +977,14 @@ typedef struct RgDrawFrameSkyParams
     // Max length of the sky probe ray, in meters. Only traced when the normal
     // shadow ray already missed.
     float           sunSkyProbeMaxDist;
+    // Doom64-RT: 1 = shade the directional light SEPARATELY from ReSTIR.
+    // Normally the sun is merged into the per-pixel light reservoir
+    // stochastically, so one light wins per pixel; a weak-but-huge sun loses
+    // that draw on most pixels and its shadows come back sparse and get
+    // denoised away. With this, every pixel facing the sun gets its own shadow
+    // ray. Unbiased -- the light is removed from the candidate set, not counted
+    // twice -- and costs one ray, unlike raising directSamples.
+    float           sunSplit;
 } RgDrawFrameSkyParams;
 
 // Can be linked after RgDrawFrameInfo.

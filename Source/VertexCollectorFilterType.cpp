@@ -105,6 +105,13 @@ FL RTGL1::VertexCollectorFilterTypeFlags_GetForGeometry( const RgMeshInfo&      
     {
         flags |= FL( FT::PV_FIRST_PERSON_VIEWER );
     }
+    // Doom64-RT: shadow-only, tested BEFORE the others so a proxy cannot be
+    // reclassified by a flag it also happens to carry (it is submitted with the
+    // sprite's own flags, alpha-test included).
+    else if( primitive.flags & RG_MESH_PRIMITIVE_SHADOW_ONLY )
+    {
+        flags |= FL( FT::PV_SHADOW_ONLY );
+    }
     else if( primitive.flags & RG_MESH_PRIMITIVE_SKY_VISIBILITY )
     {
         flags |= FL( FT::PV_WORLD_2 );

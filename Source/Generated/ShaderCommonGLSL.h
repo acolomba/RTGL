@@ -47,6 +47,7 @@
 #define INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON (1 << 0)
 #define INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON_VIEWER (1 << 1)
 #define INSTANCE_CUSTOM_INDEX_FLAG_SKY (1 << 2)
+#define INSTANCE_CUSTOM_INDEX_FLAG_IGNORE_SHADOW_PROXY (1 << 3)
 #define INSTANCE_MASK_WORLD_0 (1 << 0)
 #define INSTANCE_MASK_WORLD_1 (1 << 1)
 #define INSTANCE_MASK_WORLD_2 (1 << 2)
@@ -382,7 +383,7 @@ struct ShGlobalUniform
     float smokeAmbient;
     float smokeTintBias;
     float smokeAbsorb;
-    uint _pads8;
+    float sunSplit;
     uint _pads9;
     uint _pads10;
     vec4 smokePuffs[128];
