@@ -73,7 +73,18 @@ vec4 fializeScattering( ivec2 regularPix )
         // low-contrast medium; against dense smoke it reaches across geometry
         // silhouettes into columns that belong to a different surface, which is
         // what draws dark outlines around things seen through the smoke.
-        return volume_sampleDithered( position, rnd.z, -offset, globalUniform.volumeDither );
+        //
+        // TWO radii, because `-offset` is one-sided in depth and symmetric
+        // across the screen. sampleHemisphere returns z = sqrt(1-u1) > 0, so the
+        // negated depth term only ever pulls the sample TOWARD the camera --
+        // which is what keeps it from reading past the surface, and which also
+        // makes it a bias against a prefix-summed volume rather than a dither.
+        // volumeDitherZ is that axis on its own leash; see volume_sampleDithered.
+        return volume_sampleDithered( position,
+                                      rnd.z,
+                                      -offset,
+                                      globalUniform.volumeDither,
+                                      globalUniform.volumeDitherZ );
     }
     else if( globalUniform.volumeEnableType == VOLUME_ENABLE_SIMPLE )
     {

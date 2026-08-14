@@ -550,6 +550,30 @@ ShHitInfo getHitInfoBounce(
     h.roughness = mix( h.roughness, 1.0, clamp( globalUniform.materialRoughnessTowardMatte, 0.0, 1.0 ) );
     h.roughness = max( h.roughness, max( globalUniform.minRoughness, MIN_GGX_ROUGHNESS ) );
 
+    // Doom64-RT: fail-safes over hand-labelled metalness.
+    //
+    // A metal has no diffuse lobe -- it only shows a blurred image of whatever is
+    // around it. In a dark interior that is nothing, so a surface wrongly called
+    // metal goes black, and the rougher it is the worse it gets: the same small
+    // energy is spread over more of the hemisphere. Raising minRoughness cannot
+    // help, because that is the direction that makes it worse.
+    //
+    //   metallicRoughCut  roughness at which metalness starts fading out, over a
+    //                     metallicRoughBand-wide band. Very rough "metal" is
+    //                     usually oxide, paint or scale -- all dielectrics -- so
+    //                     this is physical as well as a safety net. 0 disables.
+    //   metallicMax       hard ceiling on metalness, so every metal keeps at
+    //                     least (1 - metallicMax) of its diffuse response and can
+    //                     never reach pure black. 1 disables.
+    if( globalUniform.metallicRoughCut > 0.0 )
+    {
+        const float band = max( globalUniform.metallicRoughBand, 0.001 );
+        h.metallic *= 1.0 - smoothstep( globalUniform.metallicRoughCut,
+                                        globalUniform.metallicRoughCut + band,
+                                        h.roughness );
+    }
+    h.metallic = min( h.metallic, globalUniform.metallicMax );
+
 
 
     // EMISSIVE

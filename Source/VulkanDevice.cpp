@@ -408,6 +408,12 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->emissionMapBoost       = std::max( params.emissionMapBoost, 0.0f );
         gu->emissionMaxScreenColor = std::max( params.emissionMaxScreenColor, 0.0f );
         gu->minRoughness           = std::clamp( params.minRoughness, 0.0f, 1.0f );
+        // Doom64-RT metalness fail-safes. Defaults (1, 0, small) are inert, so a
+        // caller that never sets them behaves exactly as before.
+        gu->metallicMax       = std::clamp( params.metallicMax, 0.0f, 1.0f );
+        gu->metallicRoughCut  = std::clamp( params.metallicRoughCut, 0.0f, 1.0f );
+        gu->metallicRoughBand = std::clamp( params.metallicRoughBand, 0.0f, 1.0f );
+        gu->metallicPad0      = 0.0f;
         gu->parallaxMaxDepth       = std::max( params.heightMapDepth, 0.0f );
     }
 
@@ -427,6 +433,12 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             gu->emissionMaxScreenColor = 0.0f;
         }
         if( devmode && devmode->materialStripMetallic )
+        {
+            stripFlags |= 4u;
+        }
+        // Doom64-RT: the same strip, but requested by the application rather than
+        // by the Dev window, so gzdoom can put it behind a cvar (rt_metallic 0).
+        if( pnext::get< RgDrawFrameTexturesParams >( drawInfo ).forceNonMetallic )
         {
             stripFlags |= 4u;
         }
@@ -649,6 +661,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             gu->volumeLightNearFade  = std::max( 0.0f, params.lightNearFade );
             gu->volumeSpatialBlur    = std::clamp( params.spatialBlur, 0.0f, 1.0f );
             gu->volumeDither         = std::max( 0.0f, params.ditherRadius );
+            gu->volumeDitherZ        = std::max( 0.0f, params.ditherRadiusZ );
             gu->volumeOccludeEmis    = params.occludeEmission;
 
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
@@ -840,6 +853,33 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->shadowSamples      = std::clamp( illum.shadowSamples, 1u, 8u );
         gu->debugRestirM       = !!illum.debugRestirM;
         gu->debugVisibility    = std::min( illum.debugVisibility, 2u );
+
+        // Doom64-RT: make debugVisibility 1 self-sufficient, because it was NOT, and that
+        // silently invalidated two investigations.
+        //
+        // RtRaygenDirect.rgen writes the visibility term into the UNFILTERED DIRECT
+        // buffer -- the direct DIFFUSE channel and nothing else. The normal composition
+        // then adds indirect, emission and specular on top and modulates by albedo, so in
+        // any room whose light is mostly emissive GI the debug view comes out looking like
+        // the ordinary image with a few lights dimmed. It cannot show a shadow it did find,
+        // let alone prove one absent.
+        //
+        // That is exactly the room this was being used in: under a Doom 64 lamp pane the
+        // painted glow carries ~84% of the floor's light (rt_ceiling_bulb_emis, measured on
+        // MAP94), all of it shadowless. "rt_debug_visibility says nothing casts a shadow
+        // from the bulb bands" was read off this view on 2026-08-08 and treated as fact for
+        // six days; it was never evidence either way.
+        //
+        // The fix is not a new view -- DEBUG_SHOW_FLAG_UNFILTERED_DIFFUSE already shows that
+        // buffer raw, bypassing the denoiser, and the cvar descriptions already tell you to
+        // pair the two by hand in the Dev window. An instrument whose answer depends on
+        // remembering to tick a box elsewhere is a trap, so mode 1 now turns it on itself.
+        // Mode 2 deliberately does not: it is *meant* to be read against normal shading, to
+        // locate an umbra against the geometry casting it.
+        if( gu->debugVisibility == 1 )
+        {
+            gu->debugShowFlags |= DEBUG_SHOW_FLAG_UNFILTERED_DIFFUSE;
+        }
         gu->restirTemporalJitter = std::clamp( illum.restirTemporalJitter, 0.0f, 8.0f );
         gu->rrSpecHitDist      = !!illum.rrSpecularHitDistance;
 

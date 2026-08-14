@@ -1018,6 +1018,23 @@ typedef struct RgDrawFrameTexturesParams
     // The deepest point that the 0.0 value of height map defines.
     // Default 0.02
     float           heightMapDepth;
+    // Doom64-RT: force metallic = 0 on every surface, ignoring both the ORM map's
+    // blue channel and metallicDefault. Same effect as the devmode "strip
+    // metallic" toggle, but reachable by the application so it can sit behind a
+    // cvar. Metals have no diffuse lobe, so a rough dark metal is the noisiest
+    // and darkest thing in a 1-spp interior -- this is the escape hatch.
+    // Default: 0 (metals as authored)
+    RgBool32        forceNonMetallic;
+    // Doom64-RT: ceiling on metalness, so every metal keeps at least
+    // (1 - metallicMax) of its diffuse response and can never go fully black in
+    // an unlit room. Default: 1 (inert)
+    float           metallicMax;
+    // Roughness at which metalness fades out, over a metallicRoughBand-wide band.
+    // Very rough "metal" is usually oxide, paint or scale, all of which are
+    // dielectrics -- so this is both physical and a safety net against a wrong
+    // label. Default: 0 (disabled)
+    float           metallicRoughCut;
+    float           metallicRoughBand;
 } RgDrawFrameTexturesParams;
 
 // Can be linked after RgDrawFrameInfo.
@@ -1250,10 +1267,21 @@ typedef struct RgDrawFrameVolumetricParams
     // emissive surface shines through fog and smoke at full strength. Default:
     // false (stock).
     RgBool32        occludeEmission;
-    // Per-pixel volume sample jitter, in FROXELS. Stock 2. Lower values reduce
-    // the dark outlines dense media draw around geometry silhouettes, at the
-    // cost of showing more of the grid. Default: 2.
+    // Per-pixel volume sample jitter ACROSS THE SCREEN, in FROXELS. Stock 2.
+    // Lower values reduce the dark outlines dense media draw around geometry
+    // silhouettes, at the cost of showing more of the grid. Default: 2.
     float           ditherRadius;
+    // The same jitter ALONG THE VIEW, in FROXELS, and a separate number because
+    // the depth axis is not the same problem. The jitter is drawn from a
+    // hemisphere and negated, so its depth component is always toward the
+    // camera -- never past the surface, which is what keeps it from reading a
+    // froxel column belonging to geometry behind it. That makes it a BIAS, not
+    // a dither: the volume is a prefix sum from the camera outward, so a
+    // consistently shallower sample loses the far end of every column, at a
+    // mean of 0.33 * radius * (volumetricFar / VOLUMETRIC_SIZE_Z) metres.
+    // Depth only has to break slice banding, so keep this sub-froxel.
+    // Default: 1.
+    float           ditherRadiusZ;
     // 0..1 blend of a 3x3 spatial blur applied to the froxel volume before it
     // is integrated along Z. The volume is estimated at one sample per cell and
     // has no spatial filter at all, so at 0 its variance goes to the screen raw.

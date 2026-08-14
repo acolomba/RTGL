@@ -115,12 +115,36 @@ vec4 volume_sample_Prev( const ivec3 curcell )
 vec4 volume_sampleDithered( const vec3  world,
                             const float rnd01,
                             const vec3  unitBasis,
-                            float       ditherRadius )
+                            float       ditherRadius,
+                            float       ditherRadiusZ )
 {
     vec3 sp = volume_toSamplePosition_T(
         world, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
 
-    sp += rnd01 * ditherRadius * unitBasis /
+    // Doom64-RT: THE DEPTH AXIS GETS ITS OWN RADIUS, and it is not a taste
+    // setting -- the two axes are not the same kind of error.
+    //
+    // unitBasis is -sampleHemisphere(), whose z is sqrt(1-u1) and therefore
+    // always positive; negated, the depth term is always <= 0. So this never
+    // samples DEEPER than the surface, which is deliberate: a deeper tap would
+    // read a froxel column belonging to geometry behind the surface, and that is
+    // the dark outline dense smoke draws around everything seen through it.
+    //
+    // The consequence is that depth is a BIAS, not a dither. g_volumetric holds a
+    // prefix sum from the camera outward (CmVolumetricProcess.comp), so a
+    // consistently shallower sample returns consistently less accumulated
+    // in-scattering -- it does not blur the far end of a column, it deletes it.
+    // Mean shortfall is E[rnd01] * radius * E[sqrt(1-u)] = 0.33 * radius
+    // froxels; at rt_volume_dither 5 with rt_volume_far 60's 0.94 m slices that
+    // is 1.56 m, and it is what cut the moon's shafts off in mid-air before they
+    // reached the floor (docs/moon-and-sky-leaks.md S5.5).
+    //
+    // x and y are r*cos(phi), r*sin(phi) -- symmetric about zero, so they blur
+    // the shaft's edge without moving it, and they keep the large radius the
+    // smoke work chose. Depth only has to break SLICE BANDING, a half-froxel
+    // artefact, so a sub-froxel radius covers it with a bias small enough to
+    // ignore.
+    sp += rnd01 * vec3( ditherRadius, ditherRadius, ditherRadiusZ ) * unitBasis /
           vec3( VOLUMETRIC_SIZE_X, VOLUMETRIC_SIZE_Y, VOLUMETRIC_SIZE_Z );
 
     // Doom64-RT: the spatial filter, taken HERE and not during the integration.

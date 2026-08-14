@@ -338,6 +338,7 @@ namespace detail
             .densityCurve            = 1.0f,
             .occludeEmission         = false,
             .ditherRadius            = 2.0f,
+            .ditherRadiusZ           = 1.0f,
             .spatialBlur             = 0.0f,
             .lightNearFade           = 0.0f,
         };

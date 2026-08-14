@@ -653,6 +653,13 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "gradientMultSpecular",             1),
 
     (TYPE_FLOAT32,      1,      "minRoughness",                     1),
+    # Doom64-RT metalness fail-safes. Four scalars on purpose: the C and GLSL
+    # halves of this struct pack by different rules, so a scalar run that is not
+    # a multiple of four silently moves every vec4 after it in GLSL only.
+    (TYPE_FLOAT32,      1,      "metallicMax",                      1),
+    (TYPE_FLOAT32,      1,      "metallicRoughCut",                 1),
+    (TYPE_FLOAT32,      1,      "metallicRoughBand",                1),
+    (TYPE_FLOAT32,      1,      "metallicPad0",                     1),
     (TYPE_FLOAT32,      1,      "volumeCameraNear",                 1),
     (TYPE_FLOAT32,      1,      "volumeCameraFar",                  1),
     (TYPE_UINT32,       1,      "antiFireflyEnabled",               1),
@@ -1084,7 +1091,33 @@ GLOBAL_UNIFORM_STRUCT = [
     # Taken from the _pads8 slot, a float where a uint was, so the scalar run
     # length and therefore std140 are unchanged.
     (TYPE_FLOAT32,      1,      "sunSplit",                         1),
-    (TYPE_UINT32,       1,      "_pads9",                           1),
+    # Doom64-RT: the DEPTH half of the per-pixel volume jitter, in FROXELS,
+    # split out from volumeDither because the two axes are not the same problem.
+    #
+    # The jitter is drawn from a HEMISPHERE and negated (CmScatterAccum.comp), so
+    # its z component is always <= 0: the volume is never sampled deeper than the
+    # surface, only shallower. That is deliberate -- it is what stops the jitter
+    # reading a froxel column belonging to geometry BEHIND the surface, which is
+    # the dark-outline-through-smoke artefact -- but it makes the depth term a
+    # BIAS rather than a dither. g_volumetric is a prefix sum from the camera
+    # outward, so a consistently shallower sample returns consistently less
+    # accumulated in-scattering, and the far end of every column is simply
+    # missing.
+    #
+    # Mean shortfall is 0.33 * radius * (volumeCameraFar / VOLUMETRIC_SIZE_Z)
+    # metres -- E[rnd01] = 0.5 times E[sqrt(1-u)] = 2/3. At the shipping pins
+    # (dither 5, far 60) that was 1.56 m of deleted light shaft, five times the
+    # stock 0.31 m, because rt_volume_dither 5 and rt_volume_far 60 multiply.
+    #
+    # x/y keep volumeDither: those components are r*cos(phi), r*sin(phi),
+    # symmetric about zero, so they blur the shaft's edge without moving it.
+    # Depth only has to break SLICE BANDING, a half-froxel artefact, so it wants
+    # a sub-froxel radius and nothing more.
+    #
+    # Taken from the _pads9 slot -- a float where a uint was, the same trick
+    # sunSplit above used -- so the scalar run length and therefore std140 are
+    # unchanged and check_uniform_layout.py stays quiet.
+    (TYPE_FLOAT32,      1,      "volumeDitherZ",                    1),
     (TYPE_UINT32,       1,      "_pads10",                          1),
 
     # xyz = centre in world space (metres, the same space as a light's position

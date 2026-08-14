@@ -290,6 +290,10 @@ struct ShGlobalUniform
     float gradientMultIndirect;
     float gradientMultSpecular;
     float minRoughness;
+    float metallicMax;
+    float metallicRoughCut;
+    float metallicRoughBand;
+    float metallicPad0;
     float volumeCameraNear;
     float volumeCameraFar;
     uint32_t antiFireflyEnabled;
@@ -389,7 +393,7 @@ struct ShGlobalUniform
     float smokeTintBias;
     float smokeAbsorb;
     float sunSplit;
-    uint32_t _pads9;
+    float volumeDitherZ;
     uint32_t _pads10;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
