@@ -79,7 +79,13 @@ typedef uint32_t RgBool32;
 // limit and must match VOLUME_SHAFT_LIGHT_MAX in
 // Source/Generated/GenerateShaderCommon.py. Kept a multiple of four: the
 // uniform packs them as uvec4, and the shader unpacks by [i >> 2][i & 3].
-#define RG_MAX_SHAFT_LIGHTS 32
+//
+// 32 -> 64 when it turned out that a list this short could not REACH: a room
+// full of ceiling fixtures fills every slot within a few metres of the camera
+// and nothing further away is sent at all. Cost is one uint32 each in the
+// uniform, and n evaluations per froxel in the shader's first pass -- ALU only,
+// no rays, which is not what this feature costs.
+#define RG_MAX_SHAFT_LIGHTS 64
 
 typedef enum RgResult
 {

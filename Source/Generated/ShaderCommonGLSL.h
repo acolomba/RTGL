@@ -179,7 +179,7 @@
 #define COMPUTE_VOLUMETRIC_GROUP_SIZE_Y (16)
 #define COMPUTE_SCATTER_ACCUM_GROUP_SIZE_X (16)
 #define SMOKE_PUFF_MAX (128)
-#define VOLUME_SHAFT_LIGHT_MAX (32)
+#define VOLUME_SHAFT_LIGHT_MAX (64)
 #define VOLUME_ENABLE_NONE (0)
 #define VOLUME_ENABLE_SIMPLE (1)
 #define VOLUME_ENABLE_VOLUMETRIC (2)
@@ -402,7 +402,7 @@ struct ShGlobalUniform
     vec4 smokePuffs[128];
     vec4 smokeAlbedoDensity[128];
     vec4 smokeShape[128];
-    uvec4 volumeShaftLights[8];
+    uvec4 volumeShaftLights[16];
     mat4 viewProjCubemap[6];
     mat4 skyCubemapRotationTransform;
 };

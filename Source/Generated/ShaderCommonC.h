@@ -186,7 +186,7 @@ namespace RTGL1
 #define COMPUTE_VOLUMETRIC_GROUP_SIZE_Y (16)
 #define COMPUTE_SCATTER_ACCUM_GROUP_SIZE_X (16)
 #define SMOKE_PUFF_MAX (128)
-#define VOLUME_SHAFT_LIGHT_MAX (32)
+#define VOLUME_SHAFT_LIGHT_MAX (64)
 #define VOLUME_ENABLE_NONE (0)
 #define VOLUME_ENABLE_SIMPLE (1)
 #define VOLUME_ENABLE_VOLUMETRIC (2)
@@ -407,7 +407,7 @@ struct ShGlobalUniform
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];
-    uint32_t volumeShaftLights[32];
+    uint32_t volumeShaftLights[64];
     float viewProjCubemap[96];
     float skyCubemapRotationTransform[16];
 };

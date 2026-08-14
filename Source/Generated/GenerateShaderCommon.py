@@ -492,7 +492,7 @@ CONST = {
     # and the shader stops after volumeShaftMaxTraced shadow rays, so this only
     # bounds how many candidates the per-cell radiance cull gets to choose from.
     # A MULTIPLE OF FOUR, because the shader unpacks by [ i >> 2 ][ i & 3 ].
-    "VOLUME_SHAFT_LIGHT_MAX"                : 32,
+    "VOLUME_SHAFT_LIGHT_MAX"                : 64,
 
     "VOLUME_ENABLE_NONE"                    : 0,
     "VOLUME_ENABLE_SIMPLE"                  : 1,
