@@ -837,6 +837,65 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->smokeAbsorb       = std::max( 0.0f, params.absorb );
     }
 
+    // Doom64-RT: LIGHT SHAFTS FROM ORDINARY LAMPS. See
+    // RgDrawFrameLightShaftParams -- the froxel pass scatters exactly one light
+    // (the sun), so beams only ever happen outdoors. This turns a short caller-
+    // supplied list of uniqueIDs into shader light indices; RtVolumetric.rgen
+    // adds their scattering on top of the single-light term.
+    //
+    // AFTER the smoke block on purpose, for the same reason smoke is after the
+    // volumetric one: a frame that never links the struct lands on count 0 and
+    // the volume behaves exactly as it did.
+    {
+        const auto& params = pnext::get< RgDrawFrameLightShaftParams >( drawInfo );
+
+        const uint32_t wanted =
+            params.pLightUniqueIds
+                ? std::min( params.count, uint32_t{ VOLUME_SHAFT_LIGHT_MAX } )
+                : 0u;
+
+        // Resolved COMPACTLY, not in place. A fixture the caller listed may have
+        // been culled before its light was uploaded -- the lamp walks run before
+        // the frame's own budget is known -- and leaving a LIGHT_INDEX_NONE hole
+        // in the middle of the array would spend the shader's nearest-first
+        // budget on nothing. The list arrives sorted by distance, so dropping
+        // the misses keeps that order.
+        uint32_t resolved = 0;
+        for( uint32_t i = 0; i < wanted; i++ )
+        {
+            const uint64_t id  = params.pLightUniqueIds[ i ];
+            const uint32_t idx = lightManager->GetLightIndexForShaders(
+                currentFrameState.GetFrameIndex(), &id );
+
+            if( idx != LIGHT_INDEX_NONE )
+            {
+                gu->volumeShaftLights[ resolved++ ] = idx;
+            }
+        }
+
+        for( uint32_t i = resolved; i < uint32_t{ VOLUME_SHAFT_LIGHT_MAX }; i++ )
+        {
+            gu->volumeShaftLights[ i ] = LIGHT_INDEX_NONE;
+        }
+
+        gu->volumeShaftCount       = resolved;
+        gu->volumeShaftMult        = std::max( 0.0f, params.multiplier );
+        gu->volumeShaftNearFade    = std::max( 0.0f, params.nearFade );
+        gu->volumeShaftMinRadiance = std::max( 0.0f, params.minRadiance );
+        // At least one, or a non-empty list would be walked and never traced --
+        // a silent "the cvar does nothing" of exactly the kind this project has
+        // paid for before. Clamped to the list size for the same reason.
+        gu->volumeShaftMaxTraced =
+            std::clamp( params.maxTraced, 1u, uint32_t{ VOLUME_SHAFT_LIGHT_MAX } );
+        // Below -1 means "share the volume's". Resolved HERE rather than in the
+        // shader so the two cannot drift, and so the sentinel never reaches a
+        // phase function that would take k out of range.
+        gu->volumeShaftAsym  = params.asymmetry < -1.0f
+                                   ? gu->volumeAsymmetry
+                                   : std::clamp( params.asymmetry, -1.0f, 1.0f );
+        gu->volumeShaftDebug = std::min( params.debugMode, 3u );
+    }
+
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;
 
     {

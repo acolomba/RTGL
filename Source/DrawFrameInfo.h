@@ -65,6 +65,7 @@ namespace detail
     template<> constexpr auto TypeToStructureType< RgDrawFrameIlluminationParams        > = RG_STRUCTURE_TYPE_DRAW_FRAME_ILLUMINATION_PARAMS       ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameVolumetricParams          > = RG_STRUCTURE_TYPE_DRAW_FRAME_VOLUMETRIC_PARAMS         ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameSmokeParams               > = RG_STRUCTURE_TYPE_DRAW_FRAME_SMOKE_PARAMS              ;
+    template<> constexpr auto TypeToStructureType< RgDrawFrameLightShaftParams          > = RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS        ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameTonemappingParams         > = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS        ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameBloomParams               > = RG_STRUCTURE_TYPE_DRAW_FRAME_BLOOM_PARAMS              ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameReflectRefractParams      > = RG_STRUCTURE_TYPE_DRAW_FRAME_REFLECT_REFRACT_PARAMS    ;
@@ -109,6 +110,7 @@ namespace detail
     static_assert( CheckMembers< RgDrawFrameIlluminationParams >() );
     static_assert( CheckMembers< RgDrawFrameVolumetricParams >() );
     static_assert( CheckMembers< RgDrawFrameSmokeParams >() );
+    static_assert( CheckMembers< RgDrawFrameLightShaftParams >() );
     static_assert( CheckMembers< RgDrawFrameTonemappingParams >() );
     static_assert( CheckMembers< RgDrawFrameBloomParams >() );
     static_assert( CheckMembers< RgDrawFrameReflectRefractParams >() );
@@ -164,6 +166,7 @@ namespace detail
     template<> struct LinkRootHelper< RgDrawFrameIlluminationParams      >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameVolumetricParams        >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameSmokeParams             >{ using Root = RgDrawFrameInfo; };
+    template<> struct LinkRootHelper< RgDrawFrameLightShaftParams        >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameTonemappingParams       >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameBloomParams             >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameReflectRefractParams    >{ using Root = RgDrawFrameInfo; };
@@ -366,6 +369,28 @@ namespace detail
             .samplesPerCell = 1,
             .maxLight       = 0.0f,
             .debugMode      = 0,
+        };
+    };
+
+    // Doom64-RT: the no-shafts default. count 0 makes the shaft loop in
+    // RtVolumetric.rgen not execute at all, so a caller that does not link this
+    // struct gets the stock single-light volume it always had.
+    template<>
+    struct DefaultParams< RgDrawFrameLightShaftParams >
+    {
+        constexpr static auto sType = detail::TypeToStructureType< RgDrawFrameLightShaftParams >;
+
+        constexpr static RgDrawFrameLightShaftParams value = {
+            .sType           = sType,
+            .pNext           = nullptr,
+            .count           = 0,
+            .pLightUniqueIds = nullptr,
+            .multiplier      = 1.0f,
+            .nearFade        = 0.0f,
+            .minRadiance     = 0.0f,
+            .maxTraced       = 4,
+            .asymmetry       = -2.0f,
+            .debugMode       = 0,
         };
     };
 

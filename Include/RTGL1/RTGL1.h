@@ -74,6 +74,13 @@ typedef uint32_t RgBool32;
 // SMOKE_PUFF_MAX in Source/Generated/GenerateShaderCommon.py.
 #define RG_MAX_SMOKE_PUFFS 128
 
+// Doom64-RT: capacity of RgDrawFrameLightShaftParams. Same reasoning as the
+// puffs above -- the indices ride in the global uniform, so this is a hard
+// limit and must match VOLUME_SHAFT_LIGHT_MAX in
+// Source/Generated/GenerateShaderCommon.py. Kept a multiple of four: the
+// uniform packs them as uvec4, and the shader unpacks by [i >> 2][i & 3].
+#define RG_MAX_SHAFT_LIGHTS 32
+
 typedef enum RgResult
 {
     RG_RESULT_SUCCESS,
@@ -191,6 +198,7 @@ typedef enum RgStructureType
     RG_STRUCTURE_TYPE_SPAWN_FLUID_INFO                      = 34,
     RG_STRUCTURE_TYPE_START_FRAME_FLUID_PARAMS              = 35,
     RG_STRUCTURE_TYPE_DRAW_FRAME_SMOKE_PARAMS               = 36,
+    RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS         = 37,
 } RgStructureType;
 
 typedef enum RgTextureSwizzling
@@ -1406,6 +1414,86 @@ typedef struct RgDrawFrameSmokeParams
     // against a background brighter than itself. Default: 0.
     float            absorb;
 } RgDrawFrameSmokeParams;
+
+// Doom64-RT: LIGHT SHAFTS FROM ORDINARY LAMPS.
+//
+// The froxel pass scatters exactly ONE light -- whatever
+// LightManager::TryGetVolumetricLight picked, which in practice is the sun.
+// That is why this renderer can only produce visible beams outdoors: every
+// ceiling lamp, grate and doorway inside a level is a light with no air around
+// it. RgDrawFrameVolumetricParams::illuminateFromAllLights exists and does the
+// opposite of what is wanted here -- it replaces the single-light path with a
+// stochastic all-lights estimate, which drops the sun's sky probe (and so every
+// shaft the map already has), shades the medium with a fake normal that scores
+// dot ~ 0 for a light directly overhead, and costs a temporal history to
+// denoise.
+//
+// So this is a small EXPLICIT list instead: the caller decides which fixtures
+// deserve air around them and hands over their uniqueIDs, and the shader adds
+// their scattering on top of the single-light term. Selection is a policy
+// question about a particular game's art, and it belongs on the caller's side.
+//
+// The list is per frame and is expected to be culled and sorted by the caller
+// (nearest first): everything past `count` is simply not scattered.
+//
+// Cost is per FROXEL, not per pixel -- one shadow ray per qualifying light per
+// cell, over a 64-slice grid. `maxTraced` and `minRadiance` are the budget, and
+// they are what keeps this affordable: in a typical cell only one or two lamps
+// are close enough to contribute at all.
+//
+// Separate struct rather than more fields on RgDrawFrameVolumetricParams, for
+// the same reason RgDrawFrameSmokeParams is: the fog is shipped and tuned, and
+// a struct that does not change size cannot break a caller that does not know
+// about shafts. A frame that never links this gets count 0, and the volume
+// behaves exactly as it did.
+//
+// Can be linked after RgDrawFrameInfo.
+typedef struct RgDrawFrameLightShaftParams
+{
+    RgStructureType sType;
+    void*           pNext;
+    // Number of entries in pLightUniqueIds. Clamped to RG_MAX_SHAFT_LIGHTS.
+    // Default: 0 -- no shafts, no cost, the stock single-light volume.
+    uint32_t        count;
+    // uniqueIDs of lights uploaded this frame (RgLightInfo::uniqueID). An ID
+    // that is not found among this frame's lights is skipped silently: a
+    // fixture may legitimately have been culled after the caller listed it.
+    const uint64_t* pLightUniqueIds;
+    // Multiplier on the scattering these lights contribute, applied on top of
+    // RgDrawFrameVolumetricParams::lightMultiplier. Its own knob because a
+    // lamp's shaft wants to be tunable without moving the sun's.
+    // Default: 1.
+    float           multiplier;
+    // Fade in-scattering out within this many metres OF A LIGHT, exactly as
+    // RgDrawFrameVolumetricParams::lightNearFade does for the fog's own pass.
+    // Point lights sitting IN the medium are the whole feature here, so this
+    // matters more than it does there: without it the froxels touching a bulb
+    // saturate and the shaft reads as a white ball. 0 = physical. Default: 0.
+    float           nearFade;
+    // Skip a light whose unshadowed in-scattered radiance at this froxel is
+    // below this, BEFORE tracing its shadow ray. This is the cull that makes
+    // the loop cheap -- it is a few ALU per light against one ray -- and it is
+    // in the same units as the radiance the shader accumulates, so it is best
+    // found by A/B rather than derived. Default: 0.
+    float           minRadiance;
+    // Hard cap on shadow rays per froxel, independent of `count`. The list is
+    // walked nearest-first, so this spends the budget on the lights that
+    // actually reach the cell. Default: 4.
+    uint32_t        maxTraced;
+    // Henyey-Greenstein asymmetry [-1..1] for THESE lights only. The sun's
+    // shafts are tuned at RgDrawFrameVolumetricParams::assymetry and its strong
+    // forward bias is what carries them; a lamp overhead is seen from every
+    // angle at once and generally wants less. Below -1 means "use the
+    // volumetric params' value". Default: -2 (share it).
+    float           asymmetry;
+    // 0 off. 1 paints a froxel red wherever a shaft light survives the radiance
+    // cull, before any shadow ray; 2 the same but only where it is also
+    // unshadowed; 3 paints every froxel green whenever the list is non-empty,
+    // with no position or visibility test at all. 1-vs-2 separates "no light
+    // reaches here" from "an occluder blocks it"; 3 answers "is the uniform
+    // being read", which no amount of caller-side logging can. Default: 0.
+    uint32_t        debugMode;
+} RgDrawFrameLightShaftParams;
 
 // Can be linked after RgDrawFrameInfo.
 typedef struct RgDrawFrameBloomParams

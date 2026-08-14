@@ -483,6 +483,17 @@ CONST = {
     # matters -- a bigger cap would need the storage-buffer rewrite instead.
     "SMOKE_PUFF_MAX"                        : 128,
 
+    # Doom64-RT: capacity of the light-shaft list, and must match
+    # RG_MAX_SHAFT_LIGHTS in Include/RTGL1/RTGL1.h. Same storage argument as the
+    # puffs -- these ride in the global uniform -- but far cheaper: one uint32
+    # each, packed four to a uvec4, so 32 lights cost 128 bytes.
+    #
+    # The number is a BUDGET, not a capacity problem. Cost here is per FROXEL,
+    # and the shader stops after volumeShaftMaxTraced shadow rays, so this only
+    # bounds how many candidates the per-cell radiance cull gets to choose from.
+    # A MULTIPLE OF FOUR, because the shader unpacks by [ i >> 2 ][ i & 3 ].
+    "VOLUME_SHAFT_LIGHT_MAX"                : 32,
+
     "VOLUME_ENABLE_NONE"                    : 0,
     "VOLUME_ENABLE_SIMPLE"                  : 1,
     "VOLUME_ENABLE_VOLUMETRIC"              : 2,
@@ -1118,7 +1129,56 @@ GLOBAL_UNIFORM_STRUCT = [
     # sunSplit above used -- so the scalar run length and therefore std140 are
     # unchanged and check_uniform_layout.py stays quiet.
     (TYPE_FLOAT32,      1,      "volumeDitherZ",                    1),
-    (TYPE_UINT32,       1,      "_pads10",                          1),
+
+    # --- Light shafts from ordinary lamps (Doom64-RT) -------------------------
+    # NINE fields where there was ONE pad, and the count is arithmetic, not
+    # taste: the scalar run from smokeCount down to here must stay a MULTIPLE OF
+    # FOUR or C and std140 disagree from the first vec4 array onward. Removing
+    # _pads10 and adding nine is a net +8. tools/check_uniform_layout.py is the
+    # gate, and build-rtgl.cmd refuses to build when it complains.
+    #
+    # How many entries of volumeShaftLights below are live. 0 is the stock
+    # volume: the loop in RtVolumetric.rgen does not execute and nothing about
+    # the single-light path changes.
+    (TYPE_UINT32,       1,      "volumeShaftCount",                 1),
+    # Multiplier on what these lights scatter, on top of volumeLightMult. Its
+    # own knob so a lamp's shaft can be tuned without moving the sun's.
+    (TYPE_FLOAT32,      1,      "volumeShaftMult",                  1),
+    # Near-light fade in metres, the same mechanism as volumeLightNearFade and
+    # needed more here: these are point lights sitting INSIDE the medium, so the
+    # froxels touching a bulb saturate by inverse square and the shaft reads as
+    # a white ball instead of a beam.
+    (TYPE_FLOAT32,      1,      "volumeShaftNearFade",              1),
+    # Radiance below which a light is skipped BEFORE its shadow ray is traced.
+    # This is the cull that makes the loop affordable -- a few ALU against one
+    # ray per cell -- and in a typical froxel only one or two lamps survive it.
+    (TYPE_FLOAT32,      1,      "volumeShaftMinRadiance",           1),
+    # Hard cap on shadow rays per froxel, independent of volumeShaftCount. The
+    # list arrives nearest-first, so the budget is spent on the lights that
+    # actually reach the cell.
+    (TYPE_UINT32,       1,      "volumeShaftMaxTraced",             1),
+    # The phase function's asymmetry for THESE lights only. The moon's shafts
+    # are tuned at volumeAsymmetry, and its ~11x forward bias is what carries
+    # them; a lamp overhead is seen from every angle at once and wants a
+    # different one. Sharing the knob would mean retuning nine fogged maps and
+    # the moon every time a corridor lamp looked wrong -- the same coupling
+    # rt_solo_small_intensity and rt_ceiling_bulb_gain exist to avoid on the
+    # engine side. Below -1 means "use volumeAsymmetry".
+    (TYPE_FLOAT32,      1,      "volumeShaftAsym",                  1),
+    # Shader-side probe, and it exists because this project has twice concluded
+    # a knob was wrong when the value was never reaching the shader at all.
+    #   1 -- paint a froxel RED wherever any shaft light survives the radiance
+    #        cull, before any shadow ray. Says the list arrived and the indices
+    #        resolve, with no dependence on visibility or on magnitude.
+    #   2 -- as 1, but only where the light was also UNSHADOWED. The pair
+    #        separates "no light reaches this cell" from "the occluder blocks
+    #        it", which the final image cannot.
+    #   3 -- paint every froxel GREEN whenever the list is non-empty, with no
+    #        position or visibility test at all. Blank here means the uniform is
+    #        not being read.
+    (TYPE_UINT32,       1,      "volumeShaftDebug",                 1),
+    (TYPE_UINT32,       1,      "_padsh0",                          1),
+    (TYPE_UINT32,       1,      "_padsh1",                          1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
@@ -1131,6 +1191,13 @@ GLOBAL_UNIFORM_STRUCT = [
     # you actually see. smokePuffs.w is its radius ALONG the view, held at half a
     # froxel slice so the grid can resolve it at all. yzw spare.
     (TYPE_FLOAT32,      4,      "smokeShape",           CONST[ "SMOKE_PUFF_MAX" ]),
+
+    # Doom64-RT: shader indices of the lights that get air around them, packed
+    # four to a uvec4 -- std140 pads a bare uint array to 16 bytes an element,
+    # so an array of scalars would cost four times this for nothing. Unpacked in
+    # the shader as volumeShaftLights[ i >> 2 ][ i & 3 ]. LIGHT_INDEX_NONE marks
+    # an entry the engine listed but whose light was not uploaded this frame.
+    (TYPE_UINT32,       4,      "volumeShaftLights",    CONST[ "VOLUME_SHAFT_LIGHT_MAX" ] // 4),
 
     # for std140
     (TYPE_FLOAT32,     44,      "viewProjCubemap",              6),

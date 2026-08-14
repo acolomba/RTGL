@@ -137,6 +137,110 @@ vec3 traceDirectIllumination_SpecificLight( const vec3 from, inout vec3 out_ligh
     return vec3( 0 );
 }
 
+// Doom64-RT: LIGHT SHAFTS FROM ORDINARY LAMPS.
+//
+// traceDirectIllumination_SpecificLight above scatters exactly ONE light, which
+// on every map here is the sun -- so this renderer could only ever make a beam
+// outdoors, and every ceiling lamp, grate and doorway inside a level was a light
+// with no air around it.
+//
+// This adds a short, EXPLICIT list on top of it (RgDrawFrameLightShaftParams).
+// Deliberately not the all-lights estimate the ILLUMINATION_VOLUME branch runs:
+// that one REPLACES the single-light path -- taking the sun's sky probe and so
+// every shaft the map already has with it -- shades the medium with a fake
+// normal that scores dot ~ 0 for a light directly overhead (which is exactly
+// what a ceiling lamp is), and needs a temporal history to denoise. All three
+// are wrong for this.
+//
+// DETERMINISTIC, and that is the point. One stochastically chosen light per
+// froxel would be cheaper and would need the reprojected history the all-lights
+// branch has; walking a short list with a radiance cull in front of the shadow
+// ray costs a few ALU per candidate and produces no variance at all. In a
+// typical cell only one or two lamps are near enough to survive the cull, so the
+// ray budget is almost never reached.
+//
+// `out_anyLit` reports whether ANY listed light survived the cull, and
+// `out_anyVisible` whether one was also unshadowed -- the two halves the debug
+// modes paint, and the pair that separates "nothing reaches this cell" from
+// "something does and is occluded".
+vec3 traceShaftLights( const vec3  from,
+                       const vec3  toviewer,
+                       out bool    out_anyLit,
+                       out bool    out_anyVisible )
+{
+    out_anyLit     = false;
+    out_anyVisible = false;
+
+    const uint n = min( globalUniform.volumeShaftCount, uint( VOLUME_SHAFT_LIGHT_MAX ) );
+    if( n == 0 )
+    {
+        return vec3( 0 );
+    }
+
+    vec3 sum    = vec3( 0 );
+    uint traced = 0;
+
+    for( uint i = 0; i < n; i++ )
+    {
+        // The list arrives NEAREST FIRST from the engine, so stopping here
+        // spends the ray budget on the lights that actually reach this cell
+        // rather than on whichever happened to be listed first.
+        if( traced >= globalUniform.volumeShaftMaxTraced )
+        {
+            break;
+        }
+
+        const uint li = globalUniform.volumeShaftLights[ i >> 2 ][ i & 3 ];
+        if( li == LIGHT_INDEX_NONE )
+        {
+            continue;
+        }
+
+        const LightSample light = sampleLight( lightSources[ li ], from, vec2( 0 ) );
+
+        vec3 radiance = light.dw * light.color;
+
+        // The near-light fade, and it matters more here than it does for fog.
+        // These are point lights sitting INSIDE the medium: the froxels touching
+        // a bulb take an inverse-square term with nothing bounding it, so the
+        // fixture reads as a white ball with a beam somewhere behind it. Keyed
+        // off distance to the LIGHT, like traceDirectIllumination's, so the
+        // shaft further down the room -- the whole look -- survives untouched.
+        const float dToLight = length( light.position - from );
+        if( globalUniform.volumeShaftNearFade > 0.001 )
+        {
+            radiance *= smoothstep( 0.0, globalUniform.volumeShaftNearFade, dToLight );
+        }
+
+        // THE CULL THAT PAYS FOR THIS, and it is deliberately in front of the
+        // ray rather than after it: a few ALU against one shadow ray per cell
+        // per light, over a 64-slice grid.
+        if( getLuminance( radiance ) <= globalUniform.volumeShaftMinRadiance )
+        {
+            continue;
+        }
+
+        out_anyLit = true;
+
+        traced++;
+        if( traceShadowRay( 0, from, light.position, true ) )
+        {
+            continue;
+        }
+
+        out_anyVisible = true;
+
+        // Same convention as the single-light path: it computes
+        // normalize( from - light.position ) and hands the phase function the
+        // NEGATIVE of it, i.e. froxel -> light.
+        const vec3 tolight = safeNormalize2( light.position - from, vec3( 0, 0, 1 ) );
+
+        sum += radiance * phaseFunction_Schlick( tolight, toviewer, globalUniform.volumeShaftAsym );
+    }
+
+    return sum * globalUniform.volumeShaftMult;
+}
+
 void main()
 {
     const ivec3 cell = ivec3( gl_LaunchIDEXT.xyz );
@@ -359,6 +463,24 @@ void main()
                     phaseFunction_Schlick( -lightdir, toviewer, globalUniform.volumeAsymmetry );
     }
 
+    // Doom64-RT: the lamp shafts, ADDED to whatever the single-light path just
+    // produced rather than replacing it -- the moon and a corridor lamp are
+    // both meant to be in the air at once.
+    //
+    // NOT in an all-lights cell, and the reason is double counting rather than
+    // cost: processDirectIllumination above already integrates every light in
+    // the level, these among them. In the shipping configuration that means
+    // shafts are live everywhere except inside a smoke puff (and on the nine
+    // fogged maps, which run the all-lights estimate for the whole volume). A
+    // puff is a few per cent of the grid and is already lit by every lamp
+    // around it, so the seam is not visible.
+    bool shaftLit     = false;
+    bool shaftVisible = false;
+    if( !allLightsCell )
+    {
+        lighting += globalUniform.volumeLightMult *
+                    traceShaftLights( center, toviewer, shaftLit, shaftVisible );
+    }
 
     // Doom64-RT: the medium, as a NEAR->FAR ramp.
     //
@@ -532,6 +654,38 @@ void main()
         scattering = 0.1;
     }
 
+
+    // Doom64-RT: the shaft probe. A separate chain from the smoke one above and
+    // AFTER it, so turning this on overrides rather than perturbs -- the point
+    // is to answer one question with a glance.
+    //
+    // The reason it exists at all: "a knob that does nothing" is always TWO
+    // hypotheses -- the value is too small to see, or it never reached the
+    // shader -- and only an absurd, unmissable view separates them. Mode 3 reads
+    // nothing but the count, so a blank screen there means the uniform is not
+    // arriving and no amount of retuning the intensity will help.
+    if( globalUniform.volumeShaftDebug != 0 )
+    {
+        if( globalUniform.volumeShaftDebug == 3 && globalUniform.volumeShaftCount > 0 )
+        {
+            lighting   = vec3( 0.0, 1.0, 0.0 );
+            scattering = 0.05;
+        }
+        else if( globalUniform.volumeShaftDebug == 1 && shaftLit )
+        {
+            // Survived the radiance cull. Says the list arrived and its indices
+            // resolve to real lights, with no dependence on visibility.
+            lighting   = vec3( 1.0, 0.0, 0.0 );
+            scattering = 0.3;
+        }
+        else if( globalUniform.volumeShaftDebug == 2 && shaftVisible )
+        {
+            // ...and was UNSHADOWED. 1 painting where 2 does not is an occluder,
+            // which is the one thing the final image cannot tell you.
+            lighting   = vec3( 1.0, 0.0, 0.0 );
+            scattering = 0.3;
+        }
+    }
 
     imageStore( g_volumetric, cell, vec4( lighting * scattering, scattering + absorbtion ) );
 
