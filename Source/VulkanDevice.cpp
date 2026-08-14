@@ -894,6 +894,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                                    ? gu->volumeAsymmetry
                                    : std::clamp( params.asymmetry, -1.0f, 1.0f );
         gu->volumeShaftDebug = std::min( params.debugMode, 3u );
+        // Clamped at 2: that is already "no falloff at all", and past it a lamp
+        // would get BRIGHTER with distance, which is not a look, it is a bug
+        // waiting to be reported as one.
+        gu->volumeShaftFalloff = std::clamp( params.falloffCompensation, 0.0f, 2.0f );
+        gu->volumeShaftRelCull = std::clamp( params.relativeCull, 0.0f, 1.0f );
     }
 
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;

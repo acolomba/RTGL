@@ -163,6 +163,46 @@ vec3 traceDirectIllumination_SpecificLight( const vec3 from, inout vec3 out_ligh
 // `out_anyVisible` whether one was also unshadowed -- the two halves the debug
 // modes paint, and the pair that separates "nothing reaches this cell" from
 // "something does and is occluded".
+// The in-scattered radiance one listed light puts into one froxel, before any
+// shadow ray. Shared by both passes below so the cull and the shading cannot
+// disagree about what a light is worth -- they did not in the first version
+// only because there was one pass, and that pass was the bug.
+vec3 shaftRadiance( const uint li, const vec3 from )
+{
+    const LightSample light = sampleLight( lightSources[ li ], from, vec2( 0 ) );
+
+    vec3 radiance = light.dw * light.color;
+
+    const float dToLight = length( light.position - from );
+
+    // The near-light fade, and it matters more here than it does for fog. These
+    // are point lights sitting INSIDE the medium: the froxels touching a bulb
+    // take an inverse-square term with nothing bounding it, so the fixture reads
+    // as a white ball with a beam somewhere behind it. Keyed off distance to the
+    // LIGHT, like traceDirectIllumination's, so the shaft further down the room
+    // -- the whole look -- survives untouched.
+    if( globalUniform.volumeShaftNearFade > 0.001 )
+    {
+        radiance *= smoothstep( 0.0, globalUniform.volumeShaftNearFade, dToLight );
+    }
+
+    // ...and the far end, which is why a lamp's shaft was a puddle around the
+    // bulb. sampleSphereLight's dw is a solid angle, so this is inverse square:
+    // 36x dimmer at 6 m than at 1 m. The shafts this renderer already had come
+    // from the SUN, which is DIRECTIONAL and falls off not at all -- that is the
+    // whole reason they read across a level and a lamp's does not. See
+    // volumeShaftFalloff: k = 2 hands the whole 1/d^2 back.
+    //
+    // max( d, 1 ) so nothing inside a metre is boosted: that region belongs to
+    // the near fade above, and the two must not fight.
+    if( globalUniform.volumeShaftFalloff > 0.001 )
+    {
+        radiance *= pow( max( dToLight, 1.0 ), globalUniform.volumeShaftFalloff );
+    }
+
+    return radiance;
+}
+
 vec3 traceShaftLights( const vec3  from,
                        const vec3  toviewer,
                        out bool    out_anyLit,
@@ -177,14 +217,39 @@ vec3 traceShaftLights( const vec3  from,
         return vec3( 0 );
     }
 
+    // PASS 1: what is the brightest thing reaching THIS froxel. No rays -- this
+    // is ALU only, and ALU is not what this feature costs.
+    //
+    // It exists because the first version had one pass and spent the ray budget
+    // in LIST ORDER, and the list is sorted by distance to the CAMERA. So a
+    // froxel ten metres down a corridor was tested against the three lamps
+    // behind the player and never against its own, which is not there at all --
+    // whatever its brightness. Reported from play as "the shaft is gone if I go
+    // a few metres from the light", and it was two faults at once: this, and the
+    // inverse-square falloff volumeShaftFalloff now answers.
+    float maxLum = 0.0;
+    for( uint i = 0; i < n; i++ )
+    {
+        const uint li = globalUniform.volumeShaftLights[ i >> 2 ][ i & 3 ];
+        if( li != LIGHT_INDEX_NONE )
+        {
+            maxLum = max( maxLum, getLuminance( shaftRadiance( li, from ) ) );
+        }
+    }
+
+    // The bar a light has to clear to be worth a ray HERE. Relative, because the
+    // absolute floor cannot answer "is this light worth a ray compared to the
+    // others reaching this cell" -- and that is the only question the budget
+    // makes it necessary to answer.
+    const float bar =
+        max( globalUniform.volumeShaftMinRadiance, maxLum * globalUniform.volumeShaftRelCull );
+
+    // PASS 2: the rays, spent on what actually reaches this cell.
     vec3 sum    = vec3( 0 );
     uint traced = 0;
 
     for( uint i = 0; i < n; i++ )
     {
-        // The list arrives NEAREST FIRST from the engine, so stopping here
-        // spends the ray budget on the lights that actually reach this cell
-        // rather than on whichever happened to be listed first.
         if( traced >= globalUniform.volumeShaftMaxTraced )
         {
             break;
@@ -196,26 +261,10 @@ vec3 traceShaftLights( const vec3  from,
             continue;
         }
 
-        const LightSample light = sampleLight( lightSources[ li ], from, vec2( 0 ) );
+        const vec3  radiance = shaftRadiance( li, from );
+        const float lum      = getLuminance( radiance );
 
-        vec3 radiance = light.dw * light.color;
-
-        // The near-light fade, and it matters more here than it does for fog.
-        // These are point lights sitting INSIDE the medium: the froxels touching
-        // a bulb take an inverse-square term with nothing bounding it, so the
-        // fixture reads as a white ball with a beam somewhere behind it. Keyed
-        // off distance to the LIGHT, like traceDirectIllumination's, so the
-        // shaft further down the room -- the whole look -- survives untouched.
-        const float dToLight = length( light.position - from );
-        if( globalUniform.volumeShaftNearFade > 0.001 )
-        {
-            radiance *= smoothstep( 0.0, globalUniform.volumeShaftNearFade, dToLight );
-        }
-
-        // THE CULL THAT PAYS FOR THIS, and it is deliberately in front of the
-        // ray rather than after it: a few ALU against one shadow ray per cell
-        // per light, over a 64-slice grid.
-        if( getLuminance( radiance ) <= globalUniform.volumeShaftMinRadiance )
+        if( lum <= bar || lum <= 0.0 )
         {
             continue;
         }
@@ -223,6 +272,14 @@ vec3 traceShaftLights( const vec3  from,
         out_anyLit = true;
 
         traced++;
+
+        // sampleLight is called a third time only for the handful that get here,
+        // and only for its position. Storing the whole LightSample from pass 1
+        // would need a dynamically indexed local array, which lands in scratch
+        // memory and costs occupancy in a raygen -- far more than re-evaluating
+        // a few sphere lights.
+        const LightSample light = sampleLight( lightSources[ li ], from, vec2( 0 ) );
+
         if( traceShadowRay( 0, from, light.position, true ) )
         {
             continue;

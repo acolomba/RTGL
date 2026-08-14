@@ -397,8 +397,8 @@ struct ShGlobalUniform
     uint volumeShaftMaxTraced;
     float volumeShaftAsym;
     uint volumeShaftDebug;
-    uint _padsh0;
-    uint _padsh1;
+    float volumeShaftFalloff;
+    float volumeShaftRelCull;
     vec4 smokePuffs[128];
     vec4 smokeAlbedoDensity[128];
     vec4 smokeShape[128];

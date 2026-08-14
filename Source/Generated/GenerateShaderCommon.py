@@ -1177,8 +1177,34 @@ GLOBAL_UNIFORM_STRUCT = [
     #        position or visibility test at all. Blank here means the uniform is
     #        not being read.
     (TYPE_UINT32,       1,      "volumeShaftDebug",                 1),
-    (TYPE_UINT32,       1,      "_padsh0",                          1),
-    (TYPE_UINT32,       1,      "_padsh1",                          1),
+    # HOW FAST A SHAFT DIES WITH DISTANCE FROM ITS LAMP, and the reason lamp
+    # shafts read as a puddle of light around the bulb rather than as a beam.
+    #
+    # sampleSphereLight sets dw = calcSolidAngleForSphere(radius, d), i.e. the
+    # scattering is INVERSE SQUARE -- 36x dimmer at 6 m than at 1 m. That is
+    # correct for a bare point light and it is not what a light shaft looks
+    # like: the shafts this renderer already had come from the SUN, which is
+    # directional and does not fall off at all, which is exactly why they read
+    # across a whole level and a lamp's does not.
+    #
+    # This is the exponent given back: radiance *= pow( max( d, 1 ), k ).
+    #   0 = physical inverse square (what a bare bulb does)
+    #   1 = 1/d
+    #   2 = no falloff beyond a metre, i.e. sun-like
+    # The max(d,1) means nothing inside a metre is ever boosted, so this cannot
+    # fight volumeShaftNearFade, which owns that region.
+    (TYPE_FLOAT32,      1,      "volumeShaftFalloff",               1),
+    # RELATIVE cull, as a fraction of the brightest candidate AT THIS FROXEL.
+    #
+    # volumeShaftMinRadiance is an absolute floor and cannot answer the question
+    # that matters here, which is not "is this light bright" but "is this light
+    # worth a ray COMPARED TO the others reaching this cell". Without it the ray
+    # budget is spent in list order -- and the list is sorted by distance to the
+    # CAMERA, so froxels far down a corridor were tested against the lamps behind
+    # the player and never against their own.
+    #
+    # 0 disables it and restores pure list order.
+    (TYPE_FLOAT32,      1,      "volumeShaftRelCull",               1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

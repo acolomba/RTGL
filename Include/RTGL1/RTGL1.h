@@ -1493,6 +1493,27 @@ typedef struct RgDrawFrameLightShaftParams
     // reaches here" from "an occluder blocks it"; 3 answers "is the uniform
     // being read", which no amount of caller-side logging can. Default: 0.
     uint32_t        debugMode;
+    // How much of the inverse-square falloff to hand back, as an exponent:
+    // radiance *= pow( max( distanceToLight, 1 ), this ). 0 = physical, 1 = 1/d,
+    // 2 = no falloff beyond a metre.
+    //
+    // It exists because a sphere light's weight is a solid angle, so a lamp's
+    // scattering is inverse square and dies 36x over from 1 m to 6 m -- it reads
+    // as a puddle of light around the bulb rather than as a beam. The shafts a
+    // renderer like this already has come from the SUN, which is directional and
+    // does not fall off at all; that difference, not the brightness, is why one
+    // reads across a level and the other does not. Default: 0 (physical).
+    float           falloffCompensation;
+    // Skip a light whose radiance at this froxel is below this FRACTION of the
+    // brightest candidate at the same froxel, in addition to minRadiance.
+    //
+    // `maxTraced` is a per-froxel budget and something has to decide who spends
+    // it. An absolute floor cannot: the question is not "is this light bright"
+    // but "is it worth a ray compared to the others reaching this cell". Without
+    // a relative bar the budget goes in list order, and a caller that sorts by
+    // distance to the CAMERA will starve every froxel that is not next to it.
+    // 0 disables it. Default: 0.05.
+    float           relativeCull;
 } RgDrawFrameLightShaftParams;
 
 // Can be linked after RgDrawFrameInfo.

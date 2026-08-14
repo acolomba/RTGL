@@ -389,8 +389,10 @@ namespace detail
             .nearFade        = 0.0f,
             .minRadiance     = 0.0f,
             .maxTraced       = 4,
-            .asymmetry       = -2.0f,
-            .debugMode       = 0,
+            .asymmetry           = -2.0f,
+            .debugMode           = 0,
+            .falloffCompensation = 0.0f,
+            .relativeCull        = 0.05f,
         };
     };
 
