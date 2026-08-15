@@ -90,7 +90,7 @@
 #define GEOM_INST_FLAG_MEDIA_TYPE_ACID (1 << 18)
 #define GEOM_INST_FLAG_EXACT_NORMALS (1 << 19)
 #define GEOM_INST_FLAG_IGNORE_REFRACT_AFTER (1 << 20)
-#define GEOM_INST_FLAG_RESERVED_5 (1 << 21)
+#define GEOM_INST_FLAG_SPRITE (1 << 21)
 #define GEOM_INST_FLAG_RESERVED_6 (1 << 22)
 #define GEOM_INST_FLAG_THIN_MEDIA (1 << 23)
 #define GEOM_INST_FLAG_REFRACT (1 << 24)
@@ -289,7 +289,11 @@ struct ShGlobalUniform
     float metallicMax;
     float metallicRoughCut;
     float metallicRoughBand;
-    float metallicPad0;
+    float spritePbr;
+    float spriteMetallicMax;
+    float spriteRoughMin;
+    float spriteNormalStrength;
+    float worldPbr;
     float volumeCameraNear;
     float volumeCameraFar;
     uint antiFireflyEnabled;

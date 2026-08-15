@@ -447,6 +447,9 @@ typedef enum RgMeshPrimitiveFlagBits
     // (WORLD_0|1|2) and therefore from every other ray's cull mask by
     // construction; only rayCullMaskWorld_Shadow adds it back.
     RG_MESH_PRIMITIVE_SHADOW_ONLY           = 1 << 22,
+    // Doom64-RT: this primitive is a camera-facing BILLBOARD. Set it and the
+    // sprite material dials below apply instead of the world ones.
+    RG_MESH_PRIMITIVE_SPRITE                = 1 << 23,
 } RgMeshPrimitiveFlagBits;
 typedef uint32_t RgMeshPrimitiveFlags;
 
@@ -1049,6 +1052,32 @@ typedef struct RgDrawFrameTexturesParams
     // label. Default: 0 (disabled)
     float           metallicRoughCut;
     float           metallicRoughBand;
+    // Doom64-RT: THE SPRITE SET, applied only where RG_MESH_PRIMITIVE_SPRITE is
+    // set. A billboard is one quad carrying one normal, so its indirect specular
+    // reflection vector is the SAME for every texel: the whole sprite samples the
+    // room in a single direction and gains one flat colour across its body -- a
+    // warm wall off to the side turns a soldier beige. Walls never do this, so
+    // clamping both with one set of numbers cannot work.
+    // spritePbr: 0 = ignore the authored _orm and _n on sprites entirely
+    //            (metallic 0, roughness 1, geometric normal). The master OFF
+    //            switch for the whole sprite material pass. Default: 1
+    float           spritePbr;
+    // Ceiling on a sprite's metalness. Default: 1 (inert)
+    float           spriteMetallicMax;
+    // FLOOR on a sprite's roughness -- the direct lever on the wash above, since
+    // a broader lobe spreads that single reflection instead of mirroring it.
+    // Default: 0 (inert)
+    float           spriteRoughMin;
+    // How much of a sprite's normal map to apply. Sprite normals are DERIVED
+    // from the silhouette rather than authored, so this exists to dial back a
+    // guess. Default: 1
+    float           spriteNormalStrength;
+    // Doom64-RT: the same mix for WALLS AND FLATS. 1 = materials exactly as
+    // authored, 0 = plain dielectric. Sprites have their own dial because their
+    // failure mode is their own; this one exists so the world can be dialled
+    // back for the same reason -- less specular means less for the denoiser to
+    // resolve. Default: 1 (inert)
+    float           worldPbr;
 } RgDrawFrameTexturesParams;
 
 // Can be linked after RgDrawFrameInfo.

@@ -440,10 +440,28 @@ ShHitInfo getHitInfoBounce(
     // HEIGHT / NORMAL MAP (ignored for indirect)
     // materialStripFlags: bit0=N, bit1=emis, bit2=metallic, bit3=H, bit4=roughness
 
-    const bool stripNormals    = ( globalUniform.materialStripFlags & 1u ) != 0;
+    // Doom64-RT: a BILLBOARD is one quad with one normal, so its indirect
+    // specular reflection vector is identical for every texel and the whole
+    // sprite takes one flat colour from the room. That failure has no wall
+    // equivalent, so sprites carry their own dials -- and spritePbr 0 is the
+    // master off switch for the entire sprite material pass, dropping the
+    // authored _orm and the derived _n in one go.
+    const bool isSprite  = ( tr.geometryInstanceFlags & GEOM_INST_FLAG_SPRITE ) != 0;
+    // spritePbr is a MIX, not a switch: 1 = the material exactly as authored,
+    // 0 = the plain dielectric a sprite had before any labelling. Everything
+    // between dials the whole sprite pass toward neutral, which does two things
+    // at once -- it lowers how hard sprites react to light, and it COMPRESSES
+    // the spread between classes, because every class converges on the same
+    // neutral as the mix falls. A checkerboard of 0.2 metal beside 0.9 rough
+    // flesh stops being a contrast problem when both are 80% of the way to the
+    // same place.
+    const float spriteMix = clamp( globalUniform.spritePbr, 0.0, 1.0 );
+    const bool  spriteOff = isSprite && spriteMix < 0.001;
+
+    const bool stripNormals    = ( globalUniform.materialStripFlags & 1u ) != 0 || spriteOff;
     const bool stripEmissives  = ( globalUniform.materialStripFlags & 2u ) != 0;
     const bool stripMetallic   = ( globalUniform.materialStripFlags & 4u ) != 0;
-    const bool stripHeight     = ( globalUniform.materialStripFlags & 8u ) != 0;
+    const bool stripHeight     = ( globalUniform.materialStripFlags & 8u ) != 0 || spriteOff;
     const bool stripRoughness  = ( globalUniform.materialStripFlags & 16u ) != 0;
 
 #if defined( HITINFO_INL_PRIM ) || defined( HITINFO_INL_RFL )
@@ -485,7 +503,10 @@ ShHitInfo getHitInfoBounce(
 
         const vec3 newNormal = safeNormalize2( tangent * nrm.x + bitangent * nrm.y + h.normal, //
                                                h.normal );
-        h.normal = safeNormalize2( mix( h.normal, newNormal, globalUniform.normalMapStrength ), //
+        const float nmStren =
+            globalUniform.normalMapStrength *
+            ( isSprite ? globalUniform.spriteNormalStrength * spriteMix : 1.0 );
+        h.normal = safeNormalize2( mix( h.normal, newNormal, nmStren ), //
                                    h.normal );
 
         const vec3 toViewer = safeNormalize2( rayOrigin - h.hitPosition, vec3( 0 ) );
@@ -573,6 +594,41 @@ ShHitInfo getHitInfoBounce(
                                         h.roughness );
     }
     h.metallic = min( h.metallic, globalUniform.metallicMax );
+
+    // WALLS AND FLATS take the same treatment from their own dial. Kept
+    // separate from the sprite one because the two fail differently: a wall has
+    // per-texel normals and never shows the flat-quad wash, so its reason to be
+    // dialled back is noise and taste rather than a rendering artefact.
+    if( !isSprite )
+    {
+        const float worldMix = clamp( globalUniform.worldPbr, 0.0, 1.0 );
+        h.metallic  = mix( 0.0, h.metallic,  worldMix );
+        h.roughness = mix( 1.0, h.roughness, worldMix );
+    }
+
+    // The sprite set, on top of the world clamps rather than instead of them.
+    if( isSprite )
+    {
+        if( spriteOff )
+        {
+            h.metallic  = 0.0;
+            h.roughness = 1.0;
+        }
+        else
+        {
+            float m = min( h.metallic, globalUniform.spriteMetallicMax );
+            // A FLOOR, and the direct lever on the beige wash: a broader lobe
+            // spreads that single room reflection instead of mirroring it.
+            float r = max( h.roughness, globalUniform.spriteRoughMin );
+
+            // NEUTRAL IS metallic 0 / roughness 1 because that is exactly what
+            // a sprite rendered as before any of this existed -- an entry with
+            // no _orm and no roughnessDefault. So spriteMix 0 is not an
+            // approximation of the old look, it IS the old look.
+            h.metallic  = mix( 0.0, m, spriteMix );
+            h.roughness = mix( 1.0, r, spriteMix );
+        }
+    }
 
 
 

@@ -201,6 +201,11 @@ uint32_t RTGL1::GeomInfoManager::GetPrimitiveFlags( const RgMeshInfo*          m
         f |= GEOM_INST_FLAG_REFRACT;
     }
 
+    if( info.flags & RG_MESH_PRIMITIVE_SPRITE )
+    {
+        f |= GEOM_INST_FLAG_SPRITE;
+    }
+
     if( info.flags & RG_MESH_PRIMITIVE_GLASS_IF_SMOOTH )
     {
         f |= GEOM_INST_FLAG_GLASS_IF_SMOOTH;

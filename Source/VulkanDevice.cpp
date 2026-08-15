@@ -411,9 +411,13 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         // Doom64-RT metalness fail-safes. Defaults (1, 0, small) are inert, so a
         // caller that never sets them behaves exactly as before.
         gu->metallicMax       = std::clamp( params.metallicMax, 0.0f, 1.0f );
+        gu->spritePbr            = std::clamp( params.spritePbr, 0.0f, 1.0f );
+        gu->spriteMetallicMax    = std::clamp( params.spriteMetallicMax, 0.0f, 1.0f );
+        gu->spriteRoughMin       = std::clamp( params.spriteRoughMin, 0.0f, 1.0f );
+        gu->spriteNormalStrength = std::clamp( params.spriteNormalStrength, 0.0f, 4.0f );
+        gu->worldPbr             = std::clamp( params.worldPbr, 0.0f, 1.0f );
         gu->metallicRoughCut  = std::clamp( params.metallicRoughCut, 0.0f, 1.0f );
         gu->metallicRoughBand = std::clamp( params.metallicRoughBand, 0.0f, 1.0f );
-        gu->metallicPad0      = 0.0f;
         gu->parallaxMaxDepth       = std::max( params.heightMapDepth, 0.0f );
     }
 

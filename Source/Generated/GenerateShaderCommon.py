@@ -348,7 +348,7 @@ CONST = {
     "GEOM_INST_FLAG_MEDIA_TYPE_ACID"        : BIT( 18 ),
     "GEOM_INST_FLAG_EXACT_NORMALS"          : BIT( 19 ),
     "GEOM_INST_FLAG_IGNORE_REFRACT_AFTER"   : BIT( 20 ),
-    "GEOM_INST_FLAG_RESERVED_5"             : BIT( 21 ),
+    "GEOM_INST_FLAG_SPRITE"                 : BIT( 21 ),
     "GEOM_INST_FLAG_RESERVED_6"             : BIT( 22 ),
     "GEOM_INST_FLAG_THIN_MEDIA"             : BIT( 23 ),
     "GEOM_INST_FLAG_REFRACT"                : BIT( 24 ),
@@ -670,7 +670,20 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "metallicMax",                      1),
     (TYPE_FLOAT32,      1,      "metallicRoughCut",                 1),
     (TYPE_FLOAT32,      1,      "metallicRoughBand",                1),
-    (TYPE_FLOAT32,      1,      "metallicPad0",                     1),
+    # Doom64-RT: the SPRITE set. A billboard is one quad with one normal, so its
+    # indirect specular reflection vector is identical for every texel -- the
+    # whole sprite samples the room in one direction and takes the same colour
+    # everywhere. That is a failure walls cannot have, so it needs its own dials.
+    # Exactly FOUR scalars: the run has to stay a multiple of 4 or the C and GLSL
+    # packings diverge (tools/check_uniform_layout.py guards this).
+    (TYPE_FLOAT32,      1,      "spritePbr",                        1),
+    (TYPE_FLOAT32,      1,      "spriteMetallicMax",                1),
+    (TYPE_FLOAT32,      1,      "spriteRoughMin",                   1),
+    (TYPE_FLOAT32,      1,      "spriteNormalStrength",             1),
+    # Doom64-RT: the same mix for WALLS AND FLATS. Taken from the metallicPad0
+    # slot -- a float where a float was -- so std140 is untouched and the scalar
+    # run keeps its length.
+    (TYPE_FLOAT32,      1,      "worldPbr",                         1),
     (TYPE_FLOAT32,      1,      "volumeCameraNear",                 1),
     (TYPE_FLOAT32,      1,      "volumeCameraFar",                  1),
     (TYPE_UINT32,       1,      "antiFireflyEnabled",               1),
