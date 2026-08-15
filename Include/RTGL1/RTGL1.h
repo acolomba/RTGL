@@ -1335,6 +1335,33 @@ typedef struct RgDrawFrameVolumetricParams
     // square and whites out the screen -- physically what a headlight in fog
     // does, and unplayable. 0 = no fade (physical). Default: 0.
     float           lightNearFade;
+    // Weight each froxel by how much of it lies IN FRONT OF the geometry the
+    // camera can see, so the volume stops lighting air behind a wall.
+    //
+    // The volume is a prefix sum stored at cell CENTRES and read TRILINEARLY at
+    // the surface's distance, so a wall collects part of the cell BEHIND it --
+    // where the froxel legitimately sees the next room's lamp. And the sample's
+    // z is CLAMPED to [0,1], so a surface nearer than slice 0's centre
+    // (cameraNear + 0.0078 * volumetricFar) collects slice 0 whole, which is why
+    // the artefact peaks with the camera against a wall. Every shadow ray
+    // involved is already correct; the wall just falls inside a cell shaded for
+    // its far side, so no per-light test can reach it.
+    // 0 = off (stock). Default: 0.
+    float           depthGate;
+    // Metres of slack beyond the surface before a cell is weighted down.
+    // 0 centres the ramp on the surface itself. Default: 0.
+    float           depthGateBias;
+    // Width of that ramp in FROXEL SLICES. 1 makes a cell the surface bisects
+    // contribute about half, which is what a straddling cell physically
+    // deserves; larger is softer and leaks more, 0 is a hard cut that shows the
+    // grid. Default: 1.
+    float           depthGateFeather;
+    // Depth taps across the froxel column's screen footprint; the MAXIMUM wins.
+    // 1 = centre only, 5 = centre + corners. A column spans many pixels which
+    // can see very different depths, so the max is what keeps air visible past a
+    // thin foreground edge alive -- the centre tap alone cuts a hard edge along
+    // every silhouette. Default: 5.
+    uint32_t        depthGateTaps;
 } RgDrawFrameVolumetricParams;
 
 // Doom64-RT: LOCALISED SMOKE.

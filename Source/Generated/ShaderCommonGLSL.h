@@ -403,6 +403,10 @@ struct ShGlobalUniform
     uint volumeShaftDebug;
     float volumeShaftFalloff;
     float volumeShaftRelCull;
+    float volumeDepthGate;
+    float volumeDepthGateBias;
+    float volumeDepthGateFeather;
+    uint volumeDepthGateTaps;
     vec4 smokePuffs[128];
     vec4 smokeAlbedoDensity[128];
     vec4 smokeShape[128];

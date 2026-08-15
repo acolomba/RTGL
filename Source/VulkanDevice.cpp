@@ -668,6 +668,21 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             gu->volumeDitherZ        = std::max( 0.0f, params.ditherRadiusZ );
             gu->volumeOccludeEmis    = params.occludeEmission;
 
+            // Doom64-RT: the froxel depth gate. See volume_depthGate() in
+            // RtVolumetric.rgen -- this stops the volume lighting air the camera
+            // cannot see, which is what the trilinear read of a prefix sum
+            // otherwise smears through every wall.
+            gu->volumeDepthGate     = params.depthGate > 0.5f ? 1.0f : 0.0f;
+            gu->volumeDepthGateBias = params.depthGateBias;
+            // Clamped ABOVE zero: a feather of exactly 0 is a hard binary cut
+            // and paints the froxel grid onto every surface, which is the
+            // artefact this feature is supposed to remove rather than draw.
+            gu->volumeDepthGateFeather = std::max( 0.01f, params.depthGateFeather );
+            // 1 or 5, nothing between: the shader's tap array is fixed-size and
+            // a value it does not recognise must not silently mean "centre
+            // only", which would look like the gate being too aggressive.
+            gu->volumeDepthGateTaps = params.depthGateTaps >= 5 ? 5u : 1u;
+
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );
             RG_MAX_VEC3( gu->volumeUnderwaterColor, 0.0f );

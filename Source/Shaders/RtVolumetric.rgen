@@ -298,6 +298,98 @@ vec3 traceShaftLights( const vec3  from,
     return sum * globalUniform.volumeShaftMult;
 }
 
+// Doom64-RT: THE DEPTH GATE -- how much of this froxel is in front of the
+// geometry the camera can actually see.
+//
+// THE PROBLEM IT SOLVES, and it is not a visibility bug. g_volumetric is a
+// prefix sum from the camera outward (CmVolumetricProcess.comp) stored at cell
+// CENTRES, and volume_sampleDithered reads it TRILINEARLY at the surface's
+// distance. So a wall pixel collects
+//
+//     sum( up to slice k ) + frac * ( own contribution of slice k+1 )
+//
+// and slice k+1 is BEHIND the wall, in the next room, where the froxel
+// legitimately sees a lamp and is legitimately bright. Worse,
+// volume_toSamplePosition_T CLAMPS z to [0,1] and slice 0's centre sits at
+// volumeCameraNear + 0.0078 * reach -- about 0.47 m at a 60 m reach -- so a
+// surface nearer than that collects slice 0 WHOLESALE. Which is exactly why the
+// leak is at its worst with the camera pressed against the wall.
+//
+// EVERY SHADOW RAY INVOLVED IS CORRECT. traceShaftLights already traces one per
+// light per froxel, the wall is in INSTANCE_MASK_WORLD_0, back-face culling is
+// off for volume rays, and the froxels in FRONT of the wall are properly dark.
+// The leak survives rt_cpu_cullmode 2, i.e. the whole map in the acceleration
+// structure -- measured, so a missing occluder is ruled out. The wall simply
+// falls inside a cell that was shaded for the far side of it, and no per-LIGHT
+// test can ever fix that. The gate has to be per-CELL.
+//
+// Returns 1 fully in front, 0 fully behind, and the fraction in between for a
+// cell the surface passes through -- which is what a straddling cell physically
+// deserves, and is also what stops this drawing a dark band at every wall
+// (the opposite artefact, and the one docs/moon-and-sky-leaks.md 5.5 spent a
+// round trip on).
+float volume_depthGate( const ivec3 cell, const vec3 cellCenter )
+{
+    if( globalUniform.volumeDepthGate < 0.5 )
+    {
+        return 1.0;
+    }
+
+    const vec2 fb   = vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+    const vec2 gsz  = vec2( VOLUMETRIC_SIZE_X, VOLUMETRIC_SIZE_Y );
+    const vec2 lo   = ( vec2( cell.xy ) + 0.125 ) / gsz * fb;
+    const vec2 hi   = ( vec2( cell.xy ) + 0.875 ) / gsz * fb;
+    const vec2 mid  = ( lo + hi ) * 0.5;
+
+    // MAX over the column's screen footprint, never the centre alone. One column
+    // covers ~12x12 pixels at 1080p and those pixels can see wildly different
+    // depths; taking the max means a cell dies only when it is behind
+    // EVERYTHING in the footprint, so air genuinely visible past a thin
+    // foreground edge is kept. Under-culling is the safe direction -- the centre
+    // tap alone cuts a hard edge along every silhouette.
+    float dSurf = 0.0;
+    {
+        const ivec2 maxpix = ivec2( fb ) - ivec2( 1 );
+
+        vec2 taps[ 5 ] = vec2[ 5 ]( mid,
+                                    vec2( lo.x, lo.y ),
+                                    vec2( hi.x, lo.y ),
+                                    vec2( lo.x, hi.y ),
+                                    vec2( hi.x, hi.y ) );
+
+        const uint ntaps = globalUniform.volumeDepthGateTaps >= 5 ? 5 : 1;
+
+        for( uint i = 0; i < ntaps; i++ )
+        {
+            const ivec2 p = clamp( ivec2( taps[ i ] ), ivec2( 0 ), maxpix );
+            dSurf = max( dSurf,
+                         texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( p ), 0 ).r );
+        }
+    }
+
+    // Sky, or nothing hit: there is no surface to be behind, so gate nothing.
+    // This is what keeps the moon's shafts through a ceiling opening intact --
+    // those columns end on sky and are never gated.
+    if( dSurf >= MAX_RAY_LENGTH )
+    {
+        return 1.0;
+    }
+
+    const float slice = max( 0.001,
+                             ( globalUniform.volumeCameraFar - globalUniform.volumeCameraNear ) /
+                                 float( VOLUMETRIC_SIZE_Z ) );
+
+    const float dCell = length( cellCenter - globalUniform.cameraPosition.xyz );
+    const float edge  = dSurf + globalUniform.volumeDepthGateBias;
+    const float half_ = max( 0.0001, 0.5 * slice * globalUniform.volumeDepthGateFeather );
+
+    // Ramp CENTRED on the surface, so a cell the surface bisects contributes
+    // about half. Pushing the ramp entirely past the surface instead would keep
+    // the whole straddling cell and therefore keep the leak; pulling it entirely
+    // in front would delete real in-scattering at every wall contact.
+    return 1.0 - smoothstep( edge - half_, edge + half_, dCell );
+}
+
 void main()
 {
     const ivec3 cell = ivec3( gl_LaunchIDEXT.xyz );
@@ -616,6 +708,18 @@ void main()
                         total;
         }
     }
+
+    // Doom64-RT: the depth gate, applied to the whole in-scattered term --
+    // ambient included, because a froxel the camera cannot see should not
+    // contribute its ambient floor either, and the ambient is the one term with
+    // no position to occlusion-test.
+    //
+    // DENSITY IS DELIBERATELY LEFT ALONE. The alpha channel is extinction and
+    // it is what fades distant geometry; zeroing it behind surfaces would
+    // un-fog everything seen through a gated cell. Only what the medium ADDS is
+    // gated. Applied before the tint so a gated cell is black rather than
+    // tinted black, and before the debug overrides so those still paint.
+    lighting *= volume_depthGate( cell, centerStable );
 
     lighting *= smoke_blendTint( fogTint, fogDens, smoke );
 

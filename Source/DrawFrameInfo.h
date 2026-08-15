@@ -344,6 +344,13 @@ namespace detail
             .ditherRadiusZ           = 1.0f,
             .spatialBlur             = 0.0f,
             .lightNearFade           = 0.0f,
+            // Off by default: this changes what every froxel behind a surface
+            // contributes, so a caller that does not ask for it keeps the stock
+            // volume bit for bit.
+            .depthGate               = 0.0f,
+            .depthGateBias           = 0.0f,
+            .depthGateFeather        = 1.0f,
+            .depthGateTaps           = 5,
         };
     };
 

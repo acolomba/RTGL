@@ -1219,6 +1219,57 @@ GLOBAL_UNIFORM_STRUCT = [
     # 0 disables it and restores pure list order.
     (TYPE_FLOAT32,      1,      "volumeShaftRelCull",               1),
 
+    # --- The froxel depth gate (Doom64-RT) ------------------------------------
+    # EXACTLY FOUR FIELDS, and the count is arithmetic rather than taste: there
+    # are no _pads left, and the scalar run from smokeCount down to here must
+    # stay a MULTIPLE OF FOUR or C and std140 disagree from the first vec4 array
+    # onward. tools/check_uniform_layout.py is the gate and build-rtgl.cmd
+    # refuses to build when it complains.
+    #
+    # WHAT IT FIXES. g_volumetric is a prefix sum from the camera outward
+    # (CmVolumetricProcess.comp) stored at froxel CENTRES, and it is read
+    # TRILINEARLY at the surface's distance. A wall therefore collects
+    # sum(up to slice k) + frac * (own contribution of slice k+1) -- and slice
+    # k+1 is BEHIND the wall, in the next room, where the froxel legitimately
+    # sees a lamp and is legitimately bright. Up to a whole slice of the lit air
+    # behind a wall lands on it, and volume_toSamplePosition_T CLAMPS z to
+    # [0,1], so a surface nearer than slice 0's centre (volumeCameraNear +
+    # 0.0078 * reach, i.e. ~0.47 m at a 60 m reach) collects slice 0 WHOLESALE.
+    # That is why the leak is worst with your face against the wall.
+    #
+    # No per-light visibility test can fix it -- every shadow ray involved is
+    # correct, and the wall IS shadowing the froxels in front of it. The wall
+    # simply falls inside a cell that was shaded for the far side of it. So the
+    # gate is at the CELL: weight a froxel by how much of it lies in front of
+    # the visible surface for its own screen column.
+    #
+    # Measured negative before this was written: the leak survives
+    # rt_cpu_cullmode 2 (whole map in the acceleration structure), so it is not
+    # a missing occluder. See docs/plan-light-shafts.md 4d.
+    #
+    # 0 = off, stock behaviour.
+    (TYPE_FLOAT32,      1,      "volumeDepthGate",                  1),
+    # METRES of slack beyond the surface before a cell starts being weighted
+    # down. 0 centres the ramp on the surface itself, which is the physical
+    # reading: a cell straddling the surface contributes the fraction of itself
+    # that is in front of it.
+    (TYPE_FLOAT32,      1,      "volumeDepthGateBias",              1),
+    # Width of that ramp in FROXEL SLICES, centred on surface + bias. 1 = the
+    # cell containing the surface contributes about half, which is what a
+    # straddling cell physically should. Larger is softer and leaks more;
+    # 0 is a hard cut and shows the grid.
+    (TYPE_FLOAT32,      1,      "volumeDepthGateFeather",           1),
+    # Depth taps across the froxel column's screen footprint, and the MAXIMUM is
+    # used. 1 = centre only; 5 = centre + four corners.
+    #
+    # The max matters: one column covers renderWidth/160 x renderHeight/88
+    # pixels -- about 12x12 at 1080p -- and those pixels can see very different
+    # depths. Taking the max means a cell is only killed when it is behind
+    # EVERYTHING in the footprint, so air genuinely visible past a thin
+    # foreground edge survives. Under-culling is the safe direction here; the
+    # centre tap alone draws a hard edge along every silhouette.
+    (TYPE_UINT32,       1,      "volumeDepthGateTaps",              1),
+
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
     (TYPE_FLOAT32,      4,      "smokePuffs",           CONST[ "SMOKE_PUFF_MAX" ]),
