@@ -34,6 +34,15 @@ struct LibraryConfig
     constexpr static int RequiredVersion{ 0 };
 
     bool developerMode               = false;
+    // Doom64-RT: developerMode does TWO unrelated things -- it makes the
+    // texture loader prefer raw PNG over KTX2, and it opens the ImGui debug
+    // window. A shipped build needs the first and must not have the second:
+    // the main material path uses OnlyKTX2LoaderIfNonDevMode(), so with
+    // developerMode off every authored PNG material is ignored and the game
+    // quietly looks stock. This splits the window off so it can be refused
+    // without giving up the loader. Default false: opt in, so a package that
+    // forgets to say anything ships without the window.
+    bool debugWindows                = false;
     bool vulkanValidation            = false;
     bool dlssValidation              = false;
     bool fpsMonitor                  = false;

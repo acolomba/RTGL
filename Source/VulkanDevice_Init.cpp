@@ -291,7 +291,7 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         amdFsr3dx12,
         physDevice->GetLUID() );
     
-    if( LibConfig().developerMode )
+    if( LibConfig().developerMode && LibConfig().debugWindows )
     {
         debugWindows = std::make_shared< DebugWindows >( 
             instance,

@@ -222,6 +222,7 @@ auto RTGL1::json_parser::detail::ReadSceneMetaArray( const std::filesystem::path
 // clang-format off
 JSON_TYPE( RTGL1::LibraryConfig )
       "developerMode", &T::developerMode
+    , "debugWindows", &T::debugWindows
     , "vulkanValidation", &T::vulkanValidation
     , "dlssValidation", &T::dlssValidation
     , "dlssForceDefaultPreset", &T::dlssForceDefaultPreset
@@ -232,7 +233,7 @@ JSON_TYPE( RTGL1::LibraryConfig )
     , "fsrValidation", &T::fsrValidation
 JSON_TYPE_END;
 // clang-format on
-static_assert( sizeof( RTGL1::LibraryConfig ) == 9, "Add definitions to parser" );
+static_assert( sizeof( RTGL1::LibraryConfig ) == 10, "Add definitions to parser" );
 
 auto RTGL1::json_parser::detail::ReadLibraryConfig( const std::filesystem::path& path )
     -> std::optional< LibraryConfig >
