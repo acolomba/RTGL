@@ -338,7 +338,7 @@ vec3 getSky( vec3 direction )
 bool traceShadowRay(uint surfInstCustomIndex, vec3 start, vec3 end, bool ignoreFirstPersonViewer /* = false */)
 {
     // prepare shadow payload
-    g_payloadShadow.isShadowed = 1;  
+    g_payloadShadow.isShadowed = 1;
 
     uint cullMask = getShadowCullMask(surfInstCustomIndex);
 
@@ -347,17 +347,40 @@ bool traceShadowRay(uint surfInstCustomIndex, vec3 start, vec3 end, bool ignoreF
         cullMask &= ~INSTANCE_MASK_FIRST_PERSON_VIEWER;
     }
 
+    uint sbtOffset = 0;
+
+#if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
+    // Doom64-RT: THIS IS A MEDIA RAY -- it asks what shadows the FOG, not what
+    // shadows a surface -- and sprites must not be part of that answer.
+    // Billboards are camera-facing cutouts: their "shadow" through a volume is
+    // a sheet that rotates with the view, and their axis-plane shadow proxies
+    // (INSTANCE_MASK_RESERVED_0) are solid rectangles -- the shell casing
+    // stamped exactly that into the muzzle smoke, and on a stormy map every
+    // monster strobes plane-shadows through the lightning shafts. So, unless
+    // rt_volume_spriteshadow asks for the old behaviour:
+    //   * the proxies are masked out entirely, and
+    //   * the ray is routed through the MEDIA hit groups, whose any-hit
+    //     discards GEOM_INST_FLAG_SPRITE geometry -- billboards vanish for
+    //     this ray while grates and fences still alpha-cut their shafts.
+    // This #if resolves per shader, so only RtVolumetric.rgen pays it.
+    if( globalUniform.volumeSpriteShadow == 0 )
+    {
+        cullMask &= ~INSTANCE_MASK_RESERVED_0;
+        sbtOffset = SBT_RAY_OFFSET_MEDIA;
+    }
+#endif
+
     vec3 l = end - start;
     float maxDistance = length(l);
     l /= maxDistance;
 
     traceRayEXT(
-        topLevelAS, 
-        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(), 
-        cullMask, 
-        0, 0, 	// sbtRecordOffset, sbtRecordStride
+        topLevelAS,
+        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(),
+        cullMask,
+        sbtOffset, 0, 	// sbtRecordOffset, sbtRecordStride
         SBT_INDEX_MISS_SHADOW, 		// shadow missIndex
-        start, 0.001, l, maxDistance - SHADOW_RAY_EPS, 
+        start, 0.001, l, maxDistance - SHADOW_RAY_EPS,
         PAYLOAD_INDEX_SHADOW);
 
     return g_payloadShadow.isShadowed == 1;

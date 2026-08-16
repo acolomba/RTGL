@@ -683,6 +683,50 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             // only", which would look like the gate being too aggressive.
             gu->volumeDepthGateTaps = params.depthGateTaps >= 5 ? 5u : 1u;
 
+            // Doom64-RT: the upscaler bias mask (CmPrepareFinal writes it into
+            // FB_IMAGE_INDEX_REACTIVITY, DLSS2/FSR2 hand it to the upscaler).
+            // Clamped to 0..1 because both APIs read the mask as an alpha and a
+            // value outside that range is undefined rather than merely strong.
+            gu->volumeUpscaleBias      = std::clamp( params.volumeUpscaleBias, 0.0f, 1.0f );
+            // Clamped ABOVE zero: this is a divisor in the shader, and an edge
+            // scale of 0 would mark every pixel with any transmittance gradient
+            // at all -- i.e. the whole veil, which is the noisy arm.
+            gu->volumeUpscaleBiasEdge  = std::max( 0.001f, params.volumeUpscaleBiasEdge );
+            gu->volumeUpscaleBiasFloor = std::clamp( params.volumeUpscaleBiasFloor, 0.0f, 1.0f );
+            gu->volumeUpscaleBiasDebug = params.volumeUpscaleBiasDebug ? 1u : 0u;
+
+            // Doom64-RT: post-upscale composite, GATED HOST-SIDE.
+            //
+            // Two paths must keep the old ordering or they break rather than
+            // improve:
+            //
+            //   DLSS RAY RECONSTRUCTION denoises from the composed radiance --
+            //   handing it a frame with no medium in it changes what it is
+            //   denoising, not just when the veil lands.
+            //
+            //   FRAME GENERATION interpolates frames inside its own technique,
+            //   after this. Only the real frames would come through this pass,
+            //   so every generated frame would be missing its fog and the whole
+            //   image would strobe at half the frame rate.
+            //
+            // The gate is here rather than in the shader so the flag the shader
+            // reads and the pass the device runs cannot disagree.
+            const bool postCompOk = !renderResolution.IsNvDlssRayReconstructionEnabled() &&
+                                    !swapchain->WithDLSS3FrameGeneration() &&
+                                    !swapchain->WithFSR3FrameGeneration();
+
+            gu->volumePostComp = ( params.volumePostComp && postCompOk ) ? 1u : 0u;
+            gu->volumeEdgeSoft = std::max( 0.0f, params.volumeEdgeSoft );
+            // Clamped above zero: this is the upper end of a smoothstep whose
+            // lower end is half of it, and a threshold of 0 would mark every
+            // pixel in the frame as a silhouette.
+            gu->volumeEdgeSoftEdge = std::max( 0.001f, params.volumeEdgeSoftEdge );
+            gu->volumeFp           = std::clamp( params.volumeFp, 0.0f, 2.0f );
+            gu->volumeReproj       = params.volumeReproj ? 1u : 0u;
+            gu->volumeSpriteShadow = params.volumeSpriteShadow ? 1u : 0u;
+            gu->volumeGridHistory  = std::clamp( params.volumeGridHistory, 0.0f, 64.0f );
+            gu->volumeReserved3    = 0.0f;
+
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );
             RG_MAX_VEC3( gu->volumeUnderwaterColor, 0.0f );
@@ -1446,7 +1490,11 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                         renderResolution,
                                         jitter,
                                         timeDelta,
-                                        resetHistory );
+                                        resetHistory,
+                                        // Doom64-RT: bind the volumetric's
+                                        // silhouette mask only when the feature
+                                        // is on, so 0 is the untouched path.
+                                        uniform->GetData()->volumeUpscaleBias > 0.0f );
             }
             else
             {
@@ -1500,6 +1548,35 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             {
                 assert( 0 );
             }
+        }
+
+        // Doom64-RT: THE MEDIUM GOES ON HERE, after the upscaler and before
+        // anything else touches the image.
+        //
+        // CmPrepareFinal left the surface alone when volumePostComp is set, so
+        // the upscaler has just reconstructed an ordinary game image instead of
+        // one with a stepped, jittering veil baked into it -- which is what it
+        // was drawing dark lines along. See CmVolumeCompose.comp.
+        //
+        // The position is load-bearing in both directions. AFTER the upscaler,
+        // obviously. But BEFORE DrawClassic below, because classic-shaded pixels
+        // are painted over the top and are meant to skip volumetrics entirely --
+        // exactly what CmPrepareFinal's own classicShading() guard does at
+        // render resolution. And before BlitForEffects / sharpening / bloom, so
+        // those still see a veiled image, as they always have.
+        if( uniform->GetData()->volumePostComp != 0 )
+        {
+            const bool upscaled = ( accum == FB_IMAGE_INDEX_UPSCALED_PING ||
+                                    accum == FB_IMAGE_INDEX_UPSCALED_PONG );
+
+            imageComposition->ComposeVolume(
+                cmd,
+                frameIndex,
+                *uniform,
+                *tonemapping,
+                accum,
+                upscaled ? renderResolution.UpscaledWidth() : renderResolution.Width(),
+                upscaled ? renderResolution.UpscaledHeight() : renderResolution.Height() );
         }
 
         if( lightmapScreenCoverage > 0 && !drawInfo.disableRasterization )

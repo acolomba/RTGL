@@ -884,6 +884,12 @@ typedef struct RgStartFrameRenderResolutionParams
     // Reconstruction (denoise + upscale). Requires nvngx_dlssd.dll. Frame generation
     // should be OFF. Ignores this flag if Ray Reconstruction is unavailable.
     RgBool32                 rayReconstruction;
+    // Doom64-RT: which DLSS render preset to ask NGX for, as the raw
+    // NVSDK_NGX_DLSS_Hint_Render_Preset value -- 0 = Default (let the DLL pick),
+    // 5 = E, 10 = J, 11 = K. RTGL1 hard-coded E, which on a DLSS 4 runtime
+    // (310.x) forces the legacy CNN model; the SDK header marks E deprecated and
+    // K "best image quality". Changing this re-creates the DLSS feature.
+    uint32_t                 dlssPreset;
 } RgStartFrameRenderResolutionParams;
 
 // Can be linked after RgStartFrameInfo.
@@ -1362,6 +1368,60 @@ typedef struct RgDrawFrameVolumetricParams
     // thin foreground edge alive -- the centre tap alone cuts a hard edge along
     // every silhouette. Default: 5.
     uint32_t        depthGateTaps;
+    // Doom64-RT: THE UPSCALER BIAS MASK. The thin dark line at every edge seen
+    // through a medium is drawn by the temporal upscaler, not by the froxel
+    // grid: the composite happens at render resolution and the upscaler runs
+    // after it, so a silhouette arrives with two different media states already
+    // baked into either side of it and nothing in the upscaler's inputs says
+    // the discontinuity is the medium's. Both DLSS and FSR2 take a mask meaning
+    // "favour the current frame over history here"; these fill it in.
+    // 0 = off, the mask is written as zero and both upscalers behave as before.
+    // Default: 0.
+    float           volumeUpscaleBias;
+    // Transmittance difference across a pixel that counts as a full-strength
+    // edge. Keeps the mask on silhouettes: biasing toward the current frame
+    // buys the outline back in noise, and the veil is where the smoke's noise
+    // lives. Default: 0.05.
+    float           volumeUpscaleBiasEdge;
+    // Constant bias wherever the medium is present at all. 0 = silhouettes
+    // only, which is the intent. Default: 0.
+    float           volumeUpscaleBiasFloor;
+    // 1 = draw the mask on screen instead of the image, because a mask handed
+    // to a black box is otherwise unobservable. Default: 0.
+    uint32_t        volumeUpscaleBiasDebug;
+    // Doom64-RT: apply the medium AFTER the upscaler instead of before it. The
+    // outline is the upscaler reconstructing surface and medium added together;
+    // this stops handing it the sum. Algebra is preserved exactly, but it
+    // FORCES emissive occlusion (that factor moves into the post pass), and it
+    // is ignored on paths that would break it -- DLSS Ray Reconstruction, and
+    // frame generation, which interpolates frames inside its own technique
+    // where a Vulkan-side post pass cannot reach. Default: 0.
+    uint32_t        volumePostComp;
+    // Doom64-RT: soften the medium's step across a silhouette by this many
+    // pixels before compositing. Mitigation for the paths postcomp cannot take;
+    // unlike the bias mask it never touches temporal history. Default: 0.
+    float           volumeEdgeSoft;
+    // Doom64-RT: how big a relative depth break counts as a silhouette for
+    // volumeEdgeSoft, as the second difference of 1/depth. Lower marks more
+    // edges. Default: 0.15.
+    float           volumeEdgeSoftEdge;
+    // Doom64-RT: the first-person weapon must not damage the medium. 0 = old
+    // path, 1 = fix (the accumulator keeps the WORLD's fog alive under the
+    // sprite and the composite paints no fog on the gun), 2 = debug. Default 0.
+    float           volumeFp;
+    // Doom64-RT: how the medium's temporal history is validated. 0 = surface
+    // rules (strict depth + normal), 1 = media rules (relative path length
+    // within 25%, no normal test). Default 0.
+    uint32_t        volumeReproj;
+    // Doom64-RT: do sprites shadow the froxel medium? 0 = no (billboards and
+    // their shadow proxies are invisible to volumetric shadow rays), 1 = the
+    // old behaviour. Default 1 to stay bit-identical for old callers.
+    uint32_t        volumeSpriteShadow;
+    // Doom64-RT: in-grid temporal accumulation length, in frames. 0 = off
+    // (legacy screen-space accumulation). > 0 = EMA the froxel grid in world
+    // space and recompute the ray integral fresh every frame -- the structural
+    // fix for every history-restart artefact at silhouettes. Default 0.
+    float           volumeGridHistory;
 } RgDrawFrameVolumetricParams;
 
 // Doom64-RT: LOCALISED SMOKE.

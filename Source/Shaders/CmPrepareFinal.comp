@@ -32,6 +32,58 @@ layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPO
 
 vec3 processDebug( const ivec2 pix, const vec3 fallback );
 
+// Doom64-RT: HOW MUCH OF A SILHOUETTE IS AT THIS PIXEL, 0..1.
+//
+// The second difference of 1/DEPTH. Two things are deliberate:
+//
+//   SECOND difference, because a first difference fires on any RECEDING
+//   surface -- a floor at a grazing angle changes distance fast from pixel to
+//   pixel -- and marked every floor in the room.
+//
+//   Of the RECIPROCAL, because screen space interpolates 1/depth, not depth.
+//   A plane at any angle is exactly linear in 1/depth, so this is zero on every
+//   flat surface however steeply it recedes, and large only where the surface
+//   is genuinely not continuous.
+//
+// Sky is MAX_RAY_LENGTH and would read as an enormous break along every
+// rooftop, so it is excluded: a sky edge has no medium behind it.
+float volumeSilhouette( const ivec2 pix, const float edge )
+{
+    const ivec2 mx = ivec2( int( globalUniform.renderWidth ) - 1,
+                            int( globalUniform.renderHeight ) - 1 );
+
+    const float dHere = texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( pix ), 0 ).r;
+    if( dHere >= MAX_RAY_LENGTH )
+    {
+        return 0.0;
+    }
+    const float iHere = 1.0 / max( dHere, 0.01 );
+
+    float step_ = 0.0;
+    for( int axis = 0; axis < 2; axis++ )
+    {
+        const ivec2 o = axis == 0 ? ivec2( 1, 0 ) : ivec2( 0, 1 );
+
+        const float dP = texelFetch(
+            framebufDepthWorld_Sampler, getCheckerboardPix( clamp( pix + o, ivec2( 0 ), mx ) ), 0 ).r;
+        const float dM = texelFetch(
+            framebufDepthWorld_Sampler, getCheckerboardPix( clamp( pix - o, ivec2( 0 ), mx ) ), 0 ).r;
+
+        if( dP < MAX_RAY_LENGTH && dM < MAX_RAY_LENGTH )
+        {
+            const float iP = 1.0 / max( dP, 0.01 );
+            const float iM = 1.0 / max( dM, 0.01 );
+
+            step_ = max( step_, abs( iP + iM - 2.0 * iHere ) / max( iHere, 1e-6 ) );
+        }
+    }
+
+    // A deadband rather than a ratio: framebufDepthWorld is FLOAT16, so a flat
+    // surface still carries a little quantisation ripple, and a ratio turns
+    // that into a small non-zero value over the whole frame.
+    return smoothstep( edge * 0.5, edge, step_ );
+}
+
 void main()
 {
     const ivec2 pix = ivec2( gl_GlobalInvocationID.x, gl_GlobalInvocationID.y );
@@ -47,14 +99,217 @@ void main()
     // also what the classic path gets.
     float volumeTransmittance = 1.0;
 
+    // Doom64-RT: the upscaler bias mask, 0 unless the feature is on. Declared
+    // out here because it is written unconditionally at the end -- the buffer is
+    // never cleared by anyone else, so a pixel that skips the branch below must
+    // still be told it is zero or it keeps last frame's value forever.
+    float upscaleBias = 0.0;
+
+    // Doom64-RT: with postcomp on, the medium is applied AFTER the upscaler
+    // (CmVolumeCompose.comp) and this pass must not apply it too. It also must
+    // not attenuate the screen emissive here -- that factor moves into the post
+    // pass along with everything else, which is what keeps the algebra exact.
+    const bool postComp = ( globalUniform.volumePostComp != 0 );
+
     if( !classicShading( pix ) )
     {
         // apply volumetrics
         {
             vec4 volumetric = texelFetch( framebufScattering_Sampler, pix, 0 );
-            hdr             = hdr * volumetric.a + volumetric.rgb;
 
-            volumeTransmittance = volumetric.a;
+            // Doom64-RT: FEATHER THE MEDIUM ACROSS A SILHOUETTE.
+            //
+            // Every theory of this artefact that survived measurement has the
+            // same thing at its centre: at a silhouette the medium STEPS,
+            // because the two sides have very different path lengths through
+            // it, and something downstream reconstructs that step badly. Two
+            // attempts to fix the "something downstream" both failed --
+            // rt_volume_ubias (tell the upscaler) and rt_volume_postcomp (do it
+            // after the upscaler), both measured, both still showing the line.
+            //
+            // So attack the step itself: average the medium over a few pixels
+            // where, and only where, there is a silhouette. The veil is a
+            // low-frequency field, so blurring it a little across an edge costs
+            // a slightly soft haze boundary and nothing else. Critically, and
+            // unlike the bias mask, THIS DOES NOT TOUCH TEMPORAL HISTORY -- it
+            // cannot make the smoke noisy, which is what killed that one.
+            if( globalUniform.volumeEdgeSoft > 0.0 )
+            {
+                const float e = volumeSilhouette( pix, globalUniform.volumeEdgeSoftEdge );
+                if( e > 0.0 )
+                {
+                    const ivec2 mx = ivec2( int( globalUniform.renderWidth ) - 1,
+                                            int( globalUniform.renderHeight ) - 1 );
+                    const int   r  = int( max( 1.0, globalUniform.volumeEdgeSoft ) );
+
+                    // THE FULL 3x3 AT RADIUS r, not a 5-tap cross. The cross
+                    // leaves the diagonals unaveraged, and a silhouette is a
+                    // curve: a monster's outline runs diagonally through most
+                    // of the pixels it covers, so the taps that most need
+                    // averaging are exactly the ones a cross does not take.
+                    vec4 sum   = vec4( 0 );
+                    float wsum = 0.0;
+                    for( int dy = -1; dy <= 1; dy++ )
+                    {
+                        for( int dx = -1; dx <= 1; dx++ )
+                        {
+                            const ivec2 p =
+                                clamp( pix + ivec2( dx * r, dy * r ), ivec2( 0 ), mx );
+
+                            sum += texelFetch( framebufScattering_Sampler, p, 0 );
+                            wsum += 1.0;
+                        }
+                    }
+
+                    volumetric = mix( volumetric, sum / wsum, e );
+                }
+            }
+
+            // Doom64-RT: NO FOG ON THE GUN. The scattering buffer at a
+            // first-person pixel deliberately holds the WORLD'S fog -- the far
+            // integral CmScatterAccum keeps alive under the sprite so that
+            // uncovering is seamless -- and compositing that over the viewmodel
+            // paints a wall's worth of veil onto a quad 0.3 m from the eye.
+            // Physically there is no medium to speak of in those 30 cm, so the
+            // correct image of the gun is the unfogged one. The stored value is
+            // for the accumulator's continuity, not for this composite.
+            if( globalUniform.volumeFp > 0.5 )
+            {
+                const uint ci = floatBitsToUint(
+                    texelFetch( framebufSurfacePosition_Sampler, getCheckerboardPix( pix ), 0 )
+                        .a );
+                if( ( ci & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON ) != 0 )
+                {
+                    volumetric = vec4( 0, 0, 0, 1 );
+                }
+            }
+
+            if( !postComp )
+            {
+                hdr = hdr * volumetric.a + volumetric.rgb;
+            }
+
+            volumeTransmittance = postComp ? 1.0 : volumetric.a;
+
+            // Doom64-RT: MARK THE SILHOUETTES FOR THE UPSCALER.
+            //
+            // This composite is the last thing that happens at render
+            // resolution; the temporal upscaler runs after it and is what draws
+            // the dark line at every edge seen through a medium
+            // (docs/rt-volumetric-edge-outlines.md -- measured, and none of the
+            // froxel knobs move it). It cannot know that the colour
+            // discontinuity at a silhouette belongs to the medium rather than to
+            // the surface, because by the time it sees the frame the two have
+            // been added together. So tell it: both DLSS and FSR2 take a mask
+            // meaning "favour the current frame over history here".
+            //
+            // THE SIGNAL IS A DEPTH STEP INSIDE THE MEDIUM -- a silhouette --
+            // and NOT the gradient of the transmittance, which was the first
+            // version of this and was badly wrong. The medium's own falloff
+            // varies smoothly across most of a puff, so a transmittance
+            // gradient marks the whole cloud and its froxel banding with it:
+            // the debug view came back as a white blob with rings in it rather
+            // than as outlines. It is the wrong shape AND the expensive one --
+            // biasing toward the current frame throws away temporal history,
+            // and inside a veil that history is what averages out the volume's
+            // noise. The volume is lit at one sample per cell with one shadow
+            // ray and has no spatial denoiser of its own; take its history away
+            // over a whole cloud and the cure is worse than the artefact.
+            //
+            // The artefact is one pixel wide and sits on silhouettes, so the
+            // mask is: depth discontinuity, weighted by how much medium is in
+            // front of it.
+            if( globalUniform.volumeUpscaleBias > 0.0 )
+            {
+                const ivec2 mx = ivec2( int( globalUniform.renderWidth ) - 1,
+                                        int( globalUniform.renderHeight ) - 1 );
+
+                const float dHere =
+                    texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( pix ), 0 ).r;
+
+                // THE SECOND DIFFERENCE, not the first, and this is the whole
+                // difference between a mask and a white screen. A first
+                // difference fires on any RECEDING surface: the floor of a room
+                // is seen at a grazing angle, so its distance changes fast from
+                // pixel to pixel and |d - dN| marks the entire floor. The debug
+                // view showed exactly that -- every surface inside the smoke lit
+                // up and only the walls outside it stayed dark, which is the
+                // `present` term with nothing else in it.
+                //
+                // |d(+1) + d(-1) - 2d| is zero for any PLANAR surface at any
+                // angle, however steeply it recedes, because depth across a
+                // plane is linear in screen space to first order. It is large
+                // only where the surface is not continuous -- which is the
+                // definition of a silhouette.
+                //
+                // Relative to d, not absolute: a 1 m break is a silhouette at
+                // 2 m and nothing at 40, and one room contains both.
+                // ON THE RECIPROCAL OF DEPTH, and that is the whole trick.
+                // Depth is NOT linear across a plane in screen space -- 1/depth
+                // is, which is why hardware interpolates the reciprocal. So the
+                // second difference of raw depth is NOT zero on a receding
+                // surface: it grows with the perspective foreshortening, and
+                // with the square of the tap spacing. Measured both ways here:
+                // on raw depth it marked roughly half the veil, and widening the
+                // taps to escape a suspected checkerboard problem made it worse
+                // rather than better -- which is the signature of a baseline
+                // term, not a sampling one.
+                //
+                // Half a veil biased toward the current frame is the smoke going
+                // noisy in motion, reported from play. On 1/depth a plane at any
+                // angle gives exactly zero and only a genuine discontinuity is
+                // left.
+                const float iHere = 1.0 / max( dHere, 0.01 );
+
+                float step_ = 0.0;
+                for( int axis = 0; axis < 2; axis++ )
+                {
+                    const ivec2 o = axis == 0 ? ivec2( 1, 0 ) : ivec2( 0, 1 );
+
+                    const float dP = texelFetch( framebufDepthWorld_Sampler,
+                                                 getCheckerboardPix( clamp( pix + o, ivec2( 0 ), mx ) ),
+                                                 0 ).r;
+                    const float dM = texelFetch( framebufDepthWorld_Sampler,
+                                                 getCheckerboardPix( clamp( pix - o, ivec2( 0 ), mx ) ),
+                                                 0 ).r;
+
+                    // Sky is MAX_RAY_LENGTH and would read as an enormous break
+                    // along every rooftop; a sky edge has no medium behind it to
+                    // be reconstructed wrongly, so it is not this artefact.
+                    if( dP < MAX_RAY_LENGTH && dM < MAX_RAY_LENGTH && dHere < MAX_RAY_LENGTH )
+                    {
+                        const float iP = 1.0 / max( dP, 0.01 );
+                        const float iM = 1.0 / max( dM, 0.01 );
+
+                        step_ = max( step_, abs( iP + iM - 2.0 * iHere ) / max( iHere, 1e-6 ) );
+                    }
+                }
+
+                // Weighted by how much medium is actually in front of the edge:
+                // a silhouette in clear air is not this artefact either, and
+                // marking it would spend history for nothing. (1 - a) is the
+                // veil's opacity at this pixel, which is exactly that.
+                const float present = 1.0 - volumeTransmittance;
+
+                // A DEADBAND, not a ratio, and this is the difference between a
+                // mask and a slow leak. framebufDepthWorld is FLOAT16, so a
+                // flat surface still has a little quantisation ripple in it,
+                // and step_/edge turns that into a small NONZERO bias over the
+                // whole veil. Small is not harmless here: the bias spends
+                // temporal history, the veil is exactly where the volume's
+                // noise needs that history, and the result reads in play as
+                // "the smoke got noisy, as if the dither stopped working" --
+                // reported from play, and invisible to a still capture taken
+                // after a four-second settle because by then the noise has
+                // converged. smoothstep is zero below half the threshold, so a
+                // surface that is merely quantised contributes nothing at all.
+                const float e = smoothstep( globalUniform.volumeUpscaleBiasEdge * 0.5,
+                                            globalUniform.volumeUpscaleBiasEdge,
+                                            step_ );
+
+                upscaleBias = globalUniform.volumeUpscaleBias * present *
+                              clamp( e + globalUniform.volumeUpscaleBiasFloor, 0.0, 1.0 );
+            }
         }
         // auto exposure
         {
@@ -91,6 +346,21 @@ void main()
         {
             hdr = mix( hdr, vec3( 4.0, 0.0, 0.0 ), 0.5 );
         }
+    }
+
+    // Doom64-RT: hand the mask to the upscaler. FB_IMAGE_INDEX_REACTIVITY is
+    // already bound as FSR2's `reactive` and is otherwise unwritten in this
+    // project -- only RsRasterizerLensFlare.frag writes it, and the engine never
+    // calls rgUploadLensFlare -- so this owns it. Written for EVERY pixel,
+    // including the zero: nothing clears this buffer between frames.
+    imageStore( framebufReactivity, pix, vec4( upscaleBias ) );
+
+    // Seeing the mask is not optional. It is handed to a black box, so without
+    // this "the fix did nothing" and "the mask is all zeros" are the same
+    // picture -- and this project has paid for that confusion more than once.
+    if( globalUniform.volumeUpscaleBiasDebug != 0 )
+    {
+        hdr = vec3( upscaleBias * 4.0 );
     }
 
     imageStore( framebufFinal, pix, vec4( hdr, 0 ) );

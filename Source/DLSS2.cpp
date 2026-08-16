@@ -250,6 +250,7 @@ namespace
                             VkDevice               device,
                             VkCommandBuffer        cmd,
                             const ResolutionState& resolution,
+                            uint32_t               presetFromCaller,
                             NVSDK_NGX_Handle*      oldFeature ) -> NVSDK_NGX_Handle*
     {
         auto dlssParams = NVSDK_NGX_DLSS_Create_Params{
@@ -289,9 +290,26 @@ namespace
             }
         }
 
-        NVSDK_NGX_DLSS_Hint_Render_Preset preset = LibConfig().dlssForceDefaultPreset
-                                                       ? NVSDK_NGX_DLSS_Hint_Render_Preset_Default
-                                                       : NVSDK_NGX_DLSS_Hint_Render_Preset_E;
+        // Doom64-RT: the preset used to be hard-coded to E. On the DLSS 4
+        // runtime this project ships (nvngx_dlss.dll 310.7) E is deprecated and
+        // selects the legacy CNN model; K is the transformer model the SDK
+        // header calls "best image quality". Which one is right for this game is
+        // an empirical question -- see docs/rt-volumetric-edge-outlines.md -- so
+        // it is a cvar, and the caller's value is passed straight through as the
+        // raw NGX enum.
+        NVSDK_NGX_DLSS_Hint_Render_Preset preset =
+            LibConfig().dlssForceDefaultPreset
+                ? NVSDK_NGX_DLSS_Hint_Render_Preset_Default
+                : static_cast< NVSDK_NGX_DLSS_Hint_Render_Preset >( presetFromCaller );
+
+        // Edge-triggered, because a preset that silently failed to apply is
+        // indistinguishable from a preset that did nothing to the image.
+        debug::Warning( "DLSS2: creating feature {}x{} -> {}x{}, render preset {}",
+                        resolution.renderWidth,
+                        resolution.renderHeight,
+                        resolution.upscaledWidth,
+                        resolution.upscaledHeight,
+                        static_cast< int >( preset ) );
         // clang-format off
         NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, preset );
         NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, preset );
@@ -321,6 +339,11 @@ namespace
         FB_IMAGE_INDEX_DEPTH_NDC,
         FB_IMAGE_INDEX_DEPTH_WORLD,
         FB_IMAGE_INDEX_MOTION_DLSS,
+        // Doom64-RT: the volumetric's bias mask, written by CmPrepareFinal. In
+        // this list so the storage barrier below covers it -- the compute write
+        // has to be visible to DLSS's read, and so ToNGXResource's assert
+        // accepts it.
+        FB_IMAGE_INDEX_REACTIVITY,
     };
     constexpr FramebufferImageIndex OUTPUT_IMAGE = RTGL1::FB_IMAGE_INDEX_UPSCALED_PONG;
 
@@ -360,7 +383,8 @@ auto RTGL1::DLSS2::Apply( VkCommandBuffer               cmd,
                           const RenderResolutionHelper& renderResolution,
                           RgFloat2D                     jitterOffset,
                           double                        timeDelta,
-                          bool                          resetAccumulation ) -> FramebufferImageIndex
+                          bool                          resetAccumulation,
+                          bool                          useBiasMask ) -> FramebufferImageIndex
 {
     auto label = CmdLabel{ cmd, "DLSS2" };
 
@@ -373,10 +397,17 @@ auto RTGL1::DLSS2::Apply( VkCommandBuffer               cmd,
 
     {
         auto newResolution = renderResolution.GetResolutionState();
-        if( m_prevResolution != newResolution )
+        // Doom64-RT: the preset is baked in at feature-create time, so changing
+        // it mid-session has to re-create the feature exactly as a resize does.
+        // Without this the cvar appears to do nothing until the window changes
+        // size, which is a very convincing false negative.
+        auto newPreset = renderResolution.GetDlssPreset();
+        if( m_prevResolution != newResolution || m_prevPreset != newPreset )
         {
             m_prevResolution = newResolution;
-            m_feature = CreateDlssFeature( m_params, m_device, cmd, newResolution, m_feature );
+            m_prevPreset     = newPreset;
+            m_feature        = CreateDlssFeature(
+                m_params, m_device, cmd, newResolution, newPreset, m_feature );
 
             if( !m_feature )
             {
@@ -411,6 +442,7 @@ auto RTGL1::DLSS2::Apply( VkCommandBuffer               cmd,
     NVSDK_NGX_Resource_VK motionVectorsResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_MOTION_DLSS, sourceSize );
     NVSDK_NGX_Resource_VK depthResource           = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DEPTH_NDC, sourceSize );
     NVSDK_NGX_Resource_VK rayLengthResource       = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DEPTH_WORLD, sourceSize );
+    NVSDK_NGX_Resource_VK biasMaskResource        = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_REACTIVITY, sourceSize );
     // clang-format on
 
 
@@ -424,10 +456,24 @@ auto RTGL1::DLSS2::Apply( VkCommandBuffer               cmd,
         .InReset                   = resetAccumulation ? 1 : 0,
         .InMVScaleX                = float( sourceSize.Width ),
         .InMVScaleY                = float( sourceSize.Height ),
+        // Doom64-RT: "prefer the current frame over history at these pixels".
+        // CmPrepareFinal marks the silhouettes inside a participating medium,
+        // which is where the upscaler otherwise draws a dark line: it is
+        // reconstructing a colour that already has two different media states
+        // baked into either side of the edge, and nothing else in these inputs
+        // says so. nullptr when off, so the mask is not bound at all rather
+        // than bound and zero -- the A/B control has to be the old path.
+        //
+        // Field order is not free here: these are designated initialisers, so
+        // both members must sit exactly where NVSDK_NGX_VK_DLSS_Eval_Params
+        // declares them (mask after InMVScaleY, subrect after
+        // InTranslucencySubrectBase) or this does not compile.
+        .pInBiasCurrentColorMask   = useBiasMask ? &biasMaskResource : nullptr,
         .InColorSubrectBase        = sourceOffset,
         .InDepthSubrectBase        = sourceOffset,
         .InMVSubrectBase           = sourceOffset,
         .InTranslucencySubrectBase = sourceOffset,
+        .InBiasCurrentColorSubrectBase = sourceOffset,
         .InPreExposure             = 1.0f,
         .InExposureScale           = 1.0f,
         .InToneMapperType          = NVSDK_NGX_TONEMAPPER_ONEOVERLUMA,
@@ -626,6 +672,7 @@ auto RTGL1::DLSS2::Apply( VkCommandBuffer,
                           const RenderResolutionHelper&,
                           RgFloat2D,
                           double,
+                          bool,
                           bool ) -> FramebufferImageIndex
 {
     assert( 0 );

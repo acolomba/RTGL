@@ -66,7 +66,13 @@ public:
                 const RenderResolutionHelper& renderResolution,
                 RgFloat2D                     jitterOffset,
                 double                        timeDelta,
-                bool                          resetAccumulation ) -> FramebufferImageIndex;
+                bool                          resetAccumulation,
+                // Doom64-RT: pass FB_IMAGE_INDEX_REACTIVITY as DLSS's
+                // pInBiasCurrentColorMask. Off by default so the mask is not
+                // even bound, which keeps `rt_volume_ubias 0` bit-identical to
+                // the build before this existed -- an A/B whose control differs
+                // from the shipping path measures the wrong thing.
+                bool useBiasMask ) -> FramebufferImageIndex;
 
     auto GetOptimalSettings( uint32_t               userWidth,
                              uint32_t               userHeight,
@@ -88,6 +94,9 @@ private:
 
     NVSDK_NGX_Handle* m_feature{ nullptr };
     ResolutionState   m_prevResolution{};
+    // Doom64-RT: sentinel, so the first frame always creates the feature even if
+    // the requested preset happens to equal the old hard-coded E.
+    uint32_t          m_prevPreset{ UINT32_MAX };
 };
 
 }

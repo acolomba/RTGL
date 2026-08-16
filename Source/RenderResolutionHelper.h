@@ -74,6 +74,7 @@ public:
 
         upscaleTechnique   = params.upscaleTechnique;
         sharpenTechnique   = params.sharpenTechnique;
+        dlssPreset         = params.dlssPreset;
         resolutionMode     = params.resolutionMode;
         rayReconstruction  = params.rayReconstruction && dlssRr != nullptr;
 
@@ -293,6 +294,12 @@ public:
 
     RgRenderResolutionMode GetResolutionMode() const { return resolutionMode; }
 
+    // Doom64-RT: the NVSDK_NGX_DLSS_Hint_Render_Preset to create the DLSS
+    // feature with. Kept here rather than in ResolutionState because that struct
+    // also drives framebuffer allocation, and a preset change must not be
+    // mistaken for a resize.
+    uint32_t GetDlssPreset() const { return dlssPreset; }
+
     ResolutionState GetResolutionState() const
     {
         assert( Width() % 2 == 0 );
@@ -310,6 +317,9 @@ private:
     RgRenderSharpenTechnique sharpenTechnique = RG_RENDER_SHARPEN_TECHNIQUE_NONE;
     RgRenderResolutionMode   resolutionMode   = RG_RENDER_RESOLUTION_MODE_CUSTOM;
     bool                     rayReconstruction = false;
+    // 5 = NVSDK_NGX_DLSS_Hint_Render_Preset_E, which is what RTGL1 hard-coded
+    // before this was configurable.
+    uint32_t                 dlssPreset        = 5;
 };
 
 }

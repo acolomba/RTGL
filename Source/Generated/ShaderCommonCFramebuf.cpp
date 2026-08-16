@@ -143,8 +143,8 @@ const RTGL1::FramebufferImageFlags RTGL1::ShFramebuffers_Flags[] =
     0, // IndirPong
     0, // AtrousFilteredVariance
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_IS_ATTACHMENT, // NormalDecal
-    0, // Scattering
-    0, // Scattering_Prev
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // Scattering
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // Scattering_Prev
     0, // ScatteringHistory
     0, // ScatteringHistory_Prev
     0, // ScreenEmisRT

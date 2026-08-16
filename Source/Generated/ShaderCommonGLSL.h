@@ -69,6 +69,9 @@
 #define SBT_INDEX_MISS_SHADOW (1)
 #define SBT_INDEX_HITGROUP_FULLY_OPAQUE (0)
 #define SBT_INDEX_HITGROUP_ALPHA_TESTED (1)
+#define SBT_INDEX_HITGROUP_MEDIA_FULLY_OPAQUE (2)
+#define SBT_INDEX_HITGROUP_MEDIA_ALPHA_TESTED (3)
+#define SBT_RAY_OFFSET_MEDIA (2)
 #define MATERIAL_NO_TEXTURE (0)
 #define MATERIAL_BLENDING_TYPE_OPAQUE (0)
 #define MATERIAL_BLENDING_TYPE_ALPHA (1)
@@ -407,6 +410,18 @@ struct ShGlobalUniform
     float volumeDepthGateBias;
     float volumeDepthGateFeather;
     uint volumeDepthGateTaps;
+    float volumeUpscaleBias;
+    float volumeUpscaleBiasEdge;
+    float volumeUpscaleBiasFloor;
+    uint volumeUpscaleBiasDebug;
+    uint volumePostComp;
+    float volumeEdgeSoft;
+    float volumeEdgeSoftEdge;
+    float volumeFp;
+    uint volumeReproj;
+    uint volumeSpriteShadow;
+    float volumeGridHistory;
+    float volumeReserved3;
     vec4 smokePuffs[128];
     vec4 smokeAlbedoDensity[128];
     vec4 smokeShape[128];

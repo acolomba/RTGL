@@ -359,11 +359,38 @@ float volume_depthGate( const ivec3 cell, const vec3 cellCenter )
 
         const uint ntaps = globalUniform.volumeDepthGateTaps >= 5 ? 5 : 1;
 
+        uint used = 0;
         for( uint i = 0; i < ntaps; i++ )
         {
-            const ivec2 p = clamp( ivec2( taps[ i ] ), ivec2( 0 ), maxpix );
-            dSurf = max( dSurf,
-                         texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( p ), 0 ).r );
+            const ivec2 p  = clamp( ivec2( taps[ i ] ), ivec2( 0 ), maxpix );
+            const ivec2 cb = getCheckerboardPix( p );
+
+            // Doom64-RT: THE WEAPON'S DEPTH MUST NOT GATE THE MEDIUM. The gate
+            // exists to cull froxel cells behind the WORLD's geometry; the
+            // first-person weapon is a quad 0.3 m from the eye, and letting its
+            // depth in culls the entire medium behind the gun for every column
+            // it covers -- which both punches a per-frame hole in the fog and
+            // sabotages the far-integral CmScatterAccum keeps under the sprite
+            // (rt_volume_fp). A tap on the weapon is simply not a tap.
+            if( globalUniform.volumeFp > 0.5 )
+            {
+                const uint ci = floatBitsToUint(
+                    texelFetch( framebufSurfacePosition_Sampler, cb, 0 ).a );
+                if( ( ci & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON ) != 0 )
+                {
+                    continue;
+                }
+            }
+
+            dSurf = max( dSurf, texelFetch( framebufDepthWorld_Sampler, cb, 0 ).r );
+            used++;
+        }
+
+        // Every tap was the weapon: there is no world surface to be behind in
+        // this column's footprint, so gate nothing -- same contract as sky.
+        if( used == 0 )
+        {
+            return 1.0;
         }
     }
 

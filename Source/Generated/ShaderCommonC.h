@@ -76,6 +76,9 @@ namespace RTGL1
 #define SBT_INDEX_MISS_SHADOW (1)
 #define SBT_INDEX_HITGROUP_FULLY_OPAQUE (0)
 #define SBT_INDEX_HITGROUP_ALPHA_TESTED (1)
+#define SBT_INDEX_HITGROUP_MEDIA_FULLY_OPAQUE (2)
+#define SBT_INDEX_HITGROUP_MEDIA_ALPHA_TESTED (3)
+#define SBT_RAY_OFFSET_MEDIA (2)
 #define MATERIAL_NO_TEXTURE (0)
 #define MATERIAL_BLENDING_TYPE_OPAQUE (0)
 #define MATERIAL_BLENDING_TYPE_ALPHA (1)
@@ -412,6 +415,18 @@ struct ShGlobalUniform
     float volumeDepthGateBias;
     float volumeDepthGateFeather;
     uint32_t volumeDepthGateTaps;
+    float volumeUpscaleBias;
+    float volumeUpscaleBiasEdge;
+    float volumeUpscaleBiasFloor;
+    uint32_t volumeUpscaleBiasDebug;
+    uint32_t volumePostComp;
+    float volumeEdgeSoft;
+    float volumeEdgeSoftEdge;
+    float volumeFp;
+    uint32_t volumeReproj;
+    uint32_t volumeSpriteShadow;
+    float volumeGridHistory;
+    float volumeReserved3;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];

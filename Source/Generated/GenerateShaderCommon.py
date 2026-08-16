@@ -318,6 +318,14 @@ CONST = {
     "SBT_INDEX_MISS_SHADOW"                 : 1,
     "SBT_INDEX_HITGROUP_FULLY_OPAQUE"       : 0,
     "SBT_INDEX_HITGROUP_ALPHA_TESTED"       : 1,
+    # Doom64-RT: MEDIA hit groups, reached by adding SBT_RAY_OFFSET_MEDIA to the
+    # ray's sbtRecordOffset. Same closest-hit as the pair above; the alpha-tested
+    # group's any-hit additionally discards GEOM_INST_FLAG_SPRITE geometry, so a
+    # volumetric shadow ray ignores billboards while grates and fences still cut
+    # their shafts. Instances keep offsets 0/1; the RAY chooses the table half.
+    "SBT_INDEX_HITGROUP_MEDIA_FULLY_OPAQUE" : 2,
+    "SBT_INDEX_HITGROUP_MEDIA_ALPHA_TESTED" : 3,
+    "SBT_RAY_OFFSET_MEDIA"                  : 2,
     
     "MATERIAL_NO_TEXTURE"                   : 0,
 
@@ -1270,6 +1278,111 @@ GLOBAL_UNIFORM_STRUCT = [
     # centre tap alone draws a hard edge along every silhouette.
     (TYPE_UINT32,       1,      "volumeDepthGateTaps",              1),
 
+    # Doom64-RT: TELL THE UPSCALER THE MEDIUM IS THERE.
+    #
+    # The dark line at every edge seen through smoke or fog is drawn by the
+    # TEMPORAL UPSCALER, not by this grid -- measured on MAP93, where turning
+    # DLSS and FSR both off removes it completely while the depth gate, the
+    # dither, the blur, the depth bias, the scattering history and the slice
+    # thickness each move it by 0.3 luminance levels or less.
+    # docs/rt-volumetric-edge-outlines.md has the ladder.
+    #
+    # The reason is ordering: CmPrepareFinal composites hdr*a + rgb at RENDER
+    # resolution and the upscaler runs after it, so what DLSS receives at a
+    # silhouette is a colour with two very different media states already baked
+    # into either side of the edge -- and nothing in its inputs says that
+    # discontinuity belongs to the medium rather than to the surface. Both
+    # upscalers have an input for exactly this (DLSS pInBiasCurrentColorMask,
+    # FSR2 transparencyAndComposition) and RTGL passed neither.
+    #
+    # These four build that mask. Master strength; 0 = off, and the mask is
+    # written as zero so the upscalers behave exactly as before.
+    (TYPE_FLOAT32,      1,      "volumeUpscaleBias",                1),
+    # The transmittance DIFFERENCE across a pixel that counts as a full-strength
+    # edge. This is what keeps the mask tight: biasing toward the current frame
+    # trades the outline for noise, so it must land on silhouettes and not on
+    # the whole veil -- the veil is where the smoke's own noise lives, and that
+    # noise is exactly what the temporal history is there to average away.
+    (TYPE_FLOAT32,      1,      "volumeUpscaleBiasEdge",            1),
+    # A constant floor applied wherever the medium is present at all, before the
+    # edge term. 0 = silhouettes only, which is the intent; raise it only to
+    # answer "is the mask reaching the upscaler", because a floor over the whole
+    # veil is the noisy arm by construction.
+    (TYPE_FLOAT32,      1,      "volumeUpscaleBiasFloor",           1),
+    # 1 = paint the mask on screen instead of the image. A mask handed to a
+    # black box is otherwise unobservable: without this, "no change" cannot be
+    # told apart from "the mask is all zeros", which is this project's most
+    # expensive recurring failure.
+    (TYPE_UINT32,       1,      "volumeUpscaleBiasDebug",           1),
+
+    # Doom64-RT: APPLY THE MEDIUM AFTER THE UPSCALER (CmVolumeCompose.comp).
+    #
+    # The bias mask above treats the symptom and was measured doing it badly:
+    # it buys part of the outline by discarding temporal history, and inside a
+    # veil that history is what averages out the volume's noise, so the smoke
+    # goes noisy in motion. This removes the cause instead. CmPrepareFinal stops
+    # compositing, the upscaler reconstructs an ordinary surface image, and the
+    # veil is applied at output resolution afterwards. Algebra preserved exactly;
+    # see the header of CmVolumeCompose.comp.
+    #
+    # 1 also FORCES the emissive occlusion (the T factor moves into the post
+    # pass), so rt_volume_occlude_emis 0 is not expressible while this is on.
+    (TYPE_UINT32,       1,      "volumePostComp",                   1),
+    # Doom64-RT: soften the medium's step across a silhouette by this many
+    # PIXELS before compositing. A mitigation that works on any path, including
+    # the ones postcomp has to leave alone (DLSS Ray Reconstruction, frame
+    # generation): it attacks the step's contrast rather than the ordering, and
+    # unlike the bias mask it never touches temporal history. 0 = off.
+    (TYPE_FLOAT32,      1,      "volumeEdgeSoft",                   1),
+    # How big a relative depth break counts as a silhouette for the feather
+    # above, as the second difference of 1/depth. Lower marks more edges. This
+    # is the reach knob: at the shipping 0.15 the strong silhouettes (a monster,
+    # a pillar corner) are caught and the fainter ones -- a floor seam, a shallow
+    # step -- are not, and those are what is left of the artefact.
+    (TYPE_FLOAT32,      1,      "volumeEdgeSoftEdge",               1),
+    # Doom64-RT: THE FIRST-PERSON WEAPON MUST NOT DAMAGE THE MEDIUM.
+    # 0 = old path, 1 = fix, 2 = debug (paint the affected pixels).
+    #
+    # Two halves, both keyed off the FIRST_PERSON flag in
+    # framebufSurfacePosition.w:
+    #   * CmScatterAccum, under the weapon, integrates the froxel volume TO FAR
+    #     instead of to the weapon's 0.3 m -- so the buffer keeps a live,
+    #     accumulated estimate of the WORLD's fog flowing under the sprite, and
+    #     uncovering is seamless. (A freeze was tried first and dragged the fog
+    #     around with the gun -- the motion vectors under the weapon are the
+    #     weapon's own.)
+    #   * CmPrepareFinal composites NO fog on first-person pixels -- there is
+    #     ~0.3 m of medium between the eye and the gun, so "no fog on the gun"
+    #     is the physically correct image, and it is also what stops the stored
+    #     world-fog values from being painted over the viewmodel.
+    (TYPE_FLOAT32,      1,      "volumeFp",                         1),
+    # Doom64-RT: how CmScatterAccum validates reprojected medium history.
+    # 0 = the surface rules (strict depth + normal), 1 = MEDIA rules: relative
+    # path-length within 25%, no normal test at all. The medium is an integral
+    # along the ray -- it does not care what surface ends the ray, only how far
+    # away it is. The surface rules reject history at every billboard silhouette
+    # under camera motion for a difference (fog-to-monster at 20 m vs
+    # fog-to-wall at 24 m) that is a few percent of veil.
+    (TYPE_UINT32,       1,      "volumeReproj",                     1),
+    # Doom64-RT: do sprites shadow the froxel medium? 0 = no (billboards and
+    # their axis-plane shadow proxies are invisible to the volumetric pass's
+    # shadow rays), 1 = the old behaviour. A camera-facing cutout casting a
+    # volumetric shadow sheet is wrong in every frame it appears: the proxies
+    # are solid planes (the shell casing stamped a RECTANGLE of shadow into the
+    # muzzle smoke), and billboards rotate with the camera, so their sheets
+    # sweep the fog as the view turns -- the MAP12 thunder smear.
+    (TYPE_UINT32,       1,      "volumeSpriteShadow",               1),
+    # Doom64-RT: IN-GRID temporal accumulation length, in frames. 0 = off (the
+    # legacy screen-space accumulation in CmScatterAccum runs instead). When
+    # > 0, CmVolumetricProcess EMA-blends each froxel cell against its world
+    # position reprojected into the previous frame's grid -- no surfaces
+    # involved, so no history rejection and no restart trails at silhouettes --
+    # and CmScatterAccum stops accumulating in screen space entirely.
+    (TYPE_FLOAT32,      1,      "volumeGridHistory",                1),
+    # One spare. THE SCALAR RUN MUST STAY A MULTIPLE OF FOUR (the layout gate
+    # caught exactly this list being one short); fields go in four at a time.
+    (TYPE_FLOAT32,      1,      "volumeReserved3",                  1),
+
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
     (TYPE_FLOAT32,      4,      "smokePuffs",           CONST[ "SMOKE_PUFF_MAX" ]),
@@ -1502,7 +1615,11 @@ FRAMEBUFFERS = {
     
     "NormalDecal"                       : (TYPE_UINT32,     COMPONENT_R,    FRAMEBUF_FLAGS_IS_ATTACHMENT),
     
-    "Scattering"                        : (TYPE_FLOAT16,    COMPONENT_RGBA, FRAMEBUF_FLAGS_STORE_PREV),
+    # Doom64-RT: BILINEAR, for CmVolumeCompose.comp -- the post-upscale pass
+    # samples this by normalised coordinate at OUTPUT resolution, so it needs
+    # interpolation between render-res texels. Safe for everything else: every
+    # other consumer reads it with texelFetch, which ignores the sampler filter.
+    "Scattering"                        : (TYPE_FLOAT16,    COMPONENT_RGBA, FRAMEBUF_FLAGS_STORE_PREV | FRAMEBUF_FLAGS_BILINEAR_SAMPLER),
     "ScatteringHistory"                 : (TYPE_FLOAT16,    COMPONENT_R,    FRAMEBUF_FLAGS_STORE_PREV),
     
     # need separate one for RT, to resolve checkerboarded across multiple pixels

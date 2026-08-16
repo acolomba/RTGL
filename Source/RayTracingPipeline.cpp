@@ -176,6 +176,13 @@ RTGL1::RayTracingPipeline::RayTracingPipeline( VkDevice                         
     AddHitGroup( toIndex( "RClsOpaque" ) );             assert( hitGroupCount - 1 == SBT_INDEX_HITGROUP_FULLY_OPAQUE );
     // alpha tested and then opaque
     AddHitGroup( toIndex( "RClsOpaque" ), toIndex( "RAlphaTest" ) ); assert( hitGroupCount - 1 == SBT_INDEX_HITGROUP_ALPHA_TESTED );
+    // Doom64-RT: the MEDIA half of the table, selected by the RAY adding
+    // SBT_RAY_OFFSET_MEDIA to its sbtRecordOffset while instances keep their
+    // 0/1 offsets. Same layout as the pair above; the alpha-tested group's
+    // any-hit additionally discards sprites, so volumetric shadow rays ignore
+    // billboards while alpha-tested walls still cut their shafts.
+    AddHitGroup( toIndex( "RClsOpaque" ) );             assert( hitGroupCount - 1 == SBT_INDEX_HITGROUP_MEDIA_FULLY_OPAQUE );
+    AddHitGroup( toIndex( "RClsOpaque" ), toIndex( "RAlphaTestMedia" ) ); assert( hitGroupCount - 1 == SBT_INDEX_HITGROUP_MEDIA_ALPHA_TESTED );
 
     CreatePipeline( &_shaderManager );
     CreateSBT();

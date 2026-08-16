@@ -60,10 +60,14 @@ static ShaderModuleDefinition G_SHADERS[] =
     { "RMissShadow",                "RtMissShadowCheck.rmiss.spv"           },
     { "RClsOpaque",                 "RtClsOpaque.rchit.spv"                 },
     { "RAlphaTest",                 "RtAlphaTest.rahit.spv"                 },
+    // Doom64-RT: any-hit for MEDIA shadow rays -- alpha test plus "sprites do
+    // not occlude the medium". See RtAlphaTestMedia.rahit.
+    { "RAlphaTestMedia",            "RtAlphaTestMedia.rahit.spv"            },
 #if LIGHT_GRID_ENABLED
     { "CLightGridBuild",            "CmLightGridBuild.comp.spv"             },
 #endif
     { "CPrepareFinal",              "CmPrepareFinal.comp.spv"               },
+    { "CVolumeCompose",             "CmVolumeCompose.comp.spv"              },
     { "CNoisyCompose",              "CmNoisyCompose.comp.spv"               },
     { "CLuminanceHistogram",        "CmLuminanceHistogram.comp.spv"         },
     { "CLuminanceAvg",              "CmLuminanceAvg.comp.spv"               },
