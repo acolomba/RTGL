@@ -32,6 +32,8 @@ SOFTWARE.
 
 namespace RTGL1
 {
+class Framebuffers;
+struct ShGlobalUniform;
 
 // NVIDIA NRD (ReBLUR / ReLAX / SIGMA) behind NRDIntegration's VK-wrapping
 // entry points: the Integration creates an NRI device AROUND RTGL1's existing
@@ -68,6 +70,19 @@ public:
     // up (logged); callers must then fall back to A-SVGF.
     bool EnsureReady( uint32_t renderWidth, uint32_t renderHeight );
 
+    // Stage 2: run ReLAX on the buffers CmNrdPack staged. Records NRD's
+    // dispatches (with its own internal barriers) into cmd. Returns false if
+    // the instance is not up -- the caller must then fall back to A-SVGF for
+    // this frame. gu supplies the column-major non-jittered matrices and the
+    // current jitter; the previous jitter is tracked here.
+    bool Denoise( VkCommandBuffer         cmd,
+                  uint32_t                frameIndex,
+                  Framebuffers&           framebuffers,
+                  const ShGlobalUniform*  gu,
+                  double                  timeDeltaSeconds,
+                  bool                    resetHistory,
+                  bool                    enableValidation );
+
     bool   Valid() const;
     double MemoryMb() const;
 
@@ -93,6 +108,10 @@ private:
     uint32_t m_height{ 0 };
     bool     m_valid{ false };
     bool     m_failedOnce{ false };
+
+    // NRD CommonSettings state carried across frames
+    float    m_jitterPrev[ 2 ]{ 0, 0 };
+    uint32_t m_nrdFrameIndex{ 0 };
 };
 
 }

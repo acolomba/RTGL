@@ -1401,6 +1401,16 @@ GLOBAL_UNIFORM_STRUCT = [
     # run unchanged, tools/check_uniform_layout.py is the gate).
     (TYPE_UINT32,       1,      "rrGlowPre",                        1),
 
+    # NRD lane stage 2. nrdValidation: CmNrdCompose paints NRD's own
+    # OUT_VALIDATION overlay instead of the image -- the vendor-supplied
+    # "did the guides arrive correctly" view. Three spares ride along because
+    # THE SCALAR RUN MUST STAY A MULTIPLE OF FOUR (see volumeDepthGate's
+    # comment above; tools/check_uniform_layout.py is the gate).
+    (TYPE_UINT32,       1,      "nrdValidation",                    1),
+    (TYPE_UINT32,       1,      "nrdReserved0",                     1),
+    (TYPE_UINT32,       1,      "nrdReserved1",                     1),
+    (TYPE_UINT32,       1,      "nrdReserved2",                     1),
+
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
     (TYPE_FLOAT32,      4,      "smokePuffs",           CONST[ "SMOKE_PUFF_MAX" ]),
@@ -1691,6 +1701,29 @@ FRAMEBUFFERS = {
     # frame. GPU-side because the value lives in tonemapping.avgLuminance and a
     # readback would cost a frame of latency.
     "RrExposure"                        : (TYPE_FLOAT32,    COMPONENT_R,    FRAMEBUF_FLAGS_SINGLE_PIXEL_SIZE),
+
+    # NRD lane (docs/plan-nrd-denoiser.md stage 2): the ReLAX data path.
+    # All render-res, regular (non-checkerboard) pixel space, written by
+    # CmNrdPack from the same unfiltered buffers A-SVGF consumes, denoised by
+    # NRDIntegration (NrdDenoiser.cpp), remodulated into PreFinal by
+    # CmNrdCompose. Formats follow NRD's contracts:
+    #  - radiance+hitDist: RGBA16F (RELAX_FrontEnd_PackRadianceAndHitDist)
+    #  - normal+roughness: encoding 2 (_NRD_EncodeNormalRoughness101010)
+    #    produces [0,1] values; FLOAT16 stores them losslessly enough and
+    #    needs no new format plumbing (A2 formats would).
+    #  - viewZ: true view-space Z (not radial distance), FP32 -- ReLAX bases
+    #    its disocclusion tests on it.
+    #  - motion: our 2.5D contract verbatim (xy = UV delta cur->prev,
+    #    z = distance delta), motionVectorScale = {1,1,1}.
+    "NrdDiffuse"                        : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
+    "NrdSpecular"                       : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
+    "NrdDiffuseOut"                     : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
+    "NrdSpecularOut"                    : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
+    "NrdNormalRoughness"                : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
+    "NrdViewZ"                          : (TYPE_FLOAT32,    COMPONENT_R,    0),
+    "NrdMotion"                         : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
+    "NrdBaseColorMetalness"             : (TYPE_UNORM8,     COMPONENT_RGBA, 0),
+    "NrdValidation"                     : (TYPE_UNORM8,     COMPONENT_RGBA, 0),
 
     # DLSS-RR: pInTransparencyLayer -- premultiplied RGBA16F, render res,
     # composited by NGX AFTER denoise+upscale. Every translucent sprite in the

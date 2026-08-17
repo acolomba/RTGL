@@ -58,6 +58,18 @@ public:
                                uint32_t                                      frameIndex,
                                const std::shared_ptr< const GlobalUniform >& uniform );
 
+    // NRD lane stage 2 (docs/plan-nrd-denoiser.md). PackForNrd stages the
+    // raw unfiltered signals into ReLAX's input layouts (CmNrdPack);
+    // ComposeAfterNrd remodulates the denoised outputs into PreFinal with
+    // CmNoisyCompose's exact arithmetic (CmNrdCompose). NrdDenoiser::Denoise
+    // runs between the two.
+    void      PackForNrd( VkCommandBuffer                               cmd,
+                          uint32_t                                      frameIndex,
+                          const std::shared_ptr< const GlobalUniform >& uniform );
+    void      ComposeAfterNrd( VkCommandBuffer                               cmd,
+                               uint32_t                                      frameIndex,
+                               const std::shared_ptr< const GlobalUniform >& uniform );
+
     void      OnShaderReload( const ShaderManager* shaderManager ) override;
 
 private:
@@ -79,6 +91,8 @@ private:
     VkPipeline                      varianceEstimation;
     VkPipeline                      atrous[ 4 ];
     VkPipeline                      noisyCompose;
+    VkPipeline                      nrdPack{ VK_NULL_HANDLE };
+    VkPipeline                      nrdCompose{ VK_NULL_HANDLE };
 };
 
 }

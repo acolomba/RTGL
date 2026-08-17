@@ -1297,6 +1297,10 @@ typedef struct RgDrawFrameIlluminationParams
     // edges (lamp bulbs). Only read while rrPreExposure is active.
     // Default: true
     RgBool32        rrGlowPre;
+    // Doom64-RT: NRD lane -- paint NRD's OUT_VALIDATION overlay instead of
+    // the image (vendor-supplied guide/reprojection sanity view). Only
+    // meaningful while nrdDenoiser is active. Default: false
+    RgBool32        nrdValidation;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

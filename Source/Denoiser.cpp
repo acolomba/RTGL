@@ -387,6 +387,89 @@ void RTGL1::Denoiser::ComposeNoisy( VkCommandBuffer                             
     vkCmdDispatch( cmd, wgCountX, wgCountY, 1 );
 }
 
+void RTGL1::Denoiser::PackForNrd( VkCommandBuffer                               cmd,
+                                  uint32_t                                      frameIndex,
+                                  const std::shared_ptr< const GlobalUniform >& uniform )
+{
+    typedef FramebufferImageIndex FI;
+
+    CmdLabel label( cmd, "NRD pack (ReLAX inputs)" );
+
+    VkDescriptorSet sets[] = {
+        framebuffers->GetDescSet( frameIndex ),
+        uniform->GetDescSet( frameIndex ),
+    };
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, std::size( sets ), sets, 0, nullptr );
+
+    FI fs[] = {
+        FI::FB_IMAGE_INDEX_ALBEDO,
+        FI::FB_IMAGE_INDEX_NORMAL,
+        FI::FB_IMAGE_INDEX_METALLIC_ROUGHNESS,
+        FI::FB_IMAGE_INDEX_IS_SKY,
+        FI::FB_IMAGE_INDEX_UNFILTERED_DIRECT,
+        FI::FB_IMAGE_INDEX_UNFILTERED_SPECULAR,
+        FI::FB_IMAGE_INDEX_UNFILTERED_INDIR,
+        FI::FB_IMAGE_INDEX_VIEW_DIRECTION,
+        FI::FB_IMAGE_INDEX_MOTION,
+        FI::FB_IMAGE_INDEX_SURFACE_POSITION,
+        FI::FB_IMAGE_INDEX_NRD_DIFFUSE,
+        FI::FB_IMAGE_INDEX_NRD_SPECULAR,
+        FI::FB_IMAGE_INDEX_NRD_NORMAL_ROUGHNESS,
+        FI::FB_IMAGE_INDEX_NRD_VIEW_Z,
+        FI::FB_IMAGE_INDEX_NRD_MOTION,
+        FI::FB_IMAGE_INDEX_NRD_BASE_COLOR_METALNESS,
+    };
+    framebuffers->BarrierMultiple( cmd, frameIndex, fs );
+
+    uint32_t wgCountX = Utils::GetWorkGroupCount( uniform->GetData()->renderWidth,
+                                                  COMPUTE_COMPOSE_GROUP_SIZE_X );
+    uint32_t wgCountY = Utils::GetWorkGroupCount( uniform->GetData()->renderHeight,
+                                                  COMPUTE_COMPOSE_GROUP_SIZE_Y );
+
+    vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, nrdPack );
+    vkCmdDispatch( cmd, wgCountX, wgCountY, 1 );
+}
+
+void RTGL1::Denoiser::ComposeAfterNrd( VkCommandBuffer                               cmd,
+                                       uint32_t                                      frameIndex,
+                                       const std::shared_ptr< const GlobalUniform >& uniform )
+{
+    typedef FramebufferImageIndex FI;
+
+    CmdLabel label( cmd, "NRD compose (remodulate ReLAX output)" );
+
+    VkDescriptorSet sets[] = {
+        framebuffers->GetDescSet( frameIndex ),
+        uniform->GetDescSet( frameIndex ),
+    };
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, std::size( sets ), sets, 0, nullptr );
+
+    // The NRD outputs were last written inside NRDIntegration; its
+    // restoreInitialState transition already returned them to the compute /
+    // storage state this barrier uses as its source.
+    FI fs[] = {
+        FI::FB_IMAGE_INDEX_ALBEDO,
+        FI::FB_IMAGE_INDEX_METALLIC_ROUGHNESS,
+        FI::FB_IMAGE_INDEX_THROUGHPUT,
+        FI::FB_IMAGE_INDEX_IS_SKY,
+        FI::FB_IMAGE_INDEX_NRD_DIFFUSE_OUT,
+        FI::FB_IMAGE_INDEX_NRD_SPECULAR_OUT,
+        FI::FB_IMAGE_INDEX_NRD_VALIDATION,
+        FI::FB_IMAGE_INDEX_PRE_FINAL,
+    };
+    framebuffers->BarrierMultiple( cmd, frameIndex, fs );
+
+    uint32_t wgCountX = Utils::GetWorkGroupCount( uniform->GetData()->renderWidth,
+                                                  COMPUTE_COMPOSE_GROUP_SIZE_X );
+    uint32_t wgCountY = Utils::GetWorkGroupCount( uniform->GetData()->renderHeight,
+                                                  COMPUTE_COMPOSE_GROUP_SIZE_Y );
+
+    vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, nrdCompose );
+    vkCmdDispatch( cmd, wgCountX, wgCountY, 1 );
+}
+
 void RTGL1::Denoiser::OnShaderReload( const ShaderManager* shaderManager )
 {
     DestroyPipelines();
@@ -415,6 +498,8 @@ void RTGL1::Denoiser::DestroyPipelines()
     vkDestroyPipeline( device, temporalAccumulation, nullptr );
     vkDestroyPipeline( device, varianceEstimation, nullptr );
     vkDestroyPipeline( device, noisyCompose, nullptr );
+    vkDestroyPipeline( device, nrdPack, nullptr );
+    vkDestroyPipeline( device, nrdCompose, nullptr );
 
     for( VkPipeline& p : gradientAtrous )
     {
@@ -432,6 +517,8 @@ void RTGL1::Denoiser::DestroyPipelines()
     temporalAccumulation = VK_NULL_HANDLE;
     varianceEstimation   = VK_NULL_HANDLE;
     noisyCompose         = VK_NULL_HANDLE;
+    nrdPack              = VK_NULL_HANDLE;
+    nrdCompose           = VK_NULL_HANDLE;
 }
 
 void RTGL1::Denoiser::CreatePipelines( const ShaderManager* shaderManager )
@@ -581,5 +668,29 @@ void RTGL1::Denoiser::CreatePipelines( const ShaderManager* shaderManager )
             vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &plInfo, nullptr, &noisyCompose );
         VK_CHECKERROR( r );
         SET_DEBUG_NAME( device, noisyCompose, VK_OBJECT_TYPE_PIPELINE, "Noisy compose pipeline" );
+    }
+    {
+        VkComputePipelineCreateInfo plInfo = {
+            .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage  = shaderManager->GetStageInfo( "CNrdPack" ),
+            .layout = pipelineLayout,
+        };
+
+        VkResult r =
+            vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &plInfo, nullptr, &nrdPack );
+        VK_CHECKERROR( r );
+        SET_DEBUG_NAME( device, nrdPack, VK_OBJECT_TYPE_PIPELINE, "NRD pack pipeline" );
+    }
+    {
+        VkComputePipelineCreateInfo plInfo = {
+            .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage  = shaderManager->GetStageInfo( "CNrdCompose" ),
+            .layout = pipelineLayout,
+        };
+
+        VkResult r =
+            vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &plInfo, nullptr, &nrdCompose );
+        VK_CHECKERROR( r );
+        SET_DEBUG_NAME( device, nrdCompose, VK_OBJECT_TYPE_PIPELINE, "NRD compose pipeline" );
     }
 }

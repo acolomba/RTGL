@@ -427,6 +427,10 @@ struct ShGlobalUniform
     uint32_t volumeSpriteShadow;
     float volumeGridHistory;
     uint32_t rrGlowPre;
+    uint32_t nrdValidation;
+    uint32_t nrdReserved0;
+    uint32_t nrdReserved1;
+    uint32_t nrdReserved2;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];

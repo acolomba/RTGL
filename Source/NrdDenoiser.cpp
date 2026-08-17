@@ -25,6 +25,8 @@ SOFTWARE.
 #include "NrdDenoiser.h"
 
 #include "DebugPrint.h"
+#include "Framebuffers.h"
+#include "Generated/ShaderCommonC.h"
 
 #include <cstdio>
 #include <iterator>
@@ -364,13 +366,139 @@ bool RTGL1::NrdDenoiser::EnsureReady( uint32_t renderWidth, uint32_t renderHeigh
 
     debug::Warning( "NRD: instance ALIVE at {}x{} -- ReBLUR+ReLAX+SIGMA created, embedded "
                     "SPIR-V loaded, NRI wrapped the existing VkDevice; pools {:.1f} MB "
-                    "(persistent {:.1f} + aliasable {:.1f}). PROBE ONLY: the Denoise() data "
-                    "path is not wired yet, A-SVGF is still the active denoiser.",
+                    "(persistent {:.1f} + aliasable {:.1f}). Stage 2 active: ReLAX is the "
+                    "denoiser this frame onward (pack -> DenoiseVK -> compose).",
                     renderWidth,
                     renderHeight,
                     m_impl->integration.GetTotalMemoryUsageInMb(),
                     m_impl->integration.GetPersistentMemoryUsageInMb(),
                     m_impl->integration.GetAliasableMemoryUsageInMb() );
+    return true;
+}
+
+bool RTGL1::NrdDenoiser::Denoise( VkCommandBuffer        cmd,
+                                  uint32_t               frameIndex,
+                                  Framebuffers&          framebuffers,
+                                  const ShGlobalUniform* gu,
+                                  double                 timeDeltaSeconds,
+                                  bool                   resetHistory,
+                                  bool                   enableValidation )
+{
+    if( !m_valid || !gu )
+    {
+        return false;
+    }
+
+    m_impl->integration.NewFrame();
+
+    // ReLAX with mostly-default settings; anti-firefly on because this game's
+    // 1-spp ReSTIR genuinely produces fireflies (A-SVGF ships a pass for
+    // them). Tuning knobs become cvars once the lane is judged worth keeping.
+    {
+        auto relax            = nrd::RelaxSettings{};
+        relax.enableAntiFirefly = true;
+
+        if( m_impl->integration.SetDenoiserSettings( nrd::Identifier( 2 ), &relax ) !=
+            nrd::Result::SUCCESS )
+        {
+            debug::Warning( "NRD: SetDenoiserSettings(RELAX) failed" );
+            return false;
+        }
+    }
+
+    auto common = nrd::CommonSettings{};
+    // Column-major, vector-is-column, NON-jittered -- exactly what
+    // gu->view/projection are (RTGL adds jitter in raygen / at raster time,
+    // never into the matrices).
+    static_assert( sizeof( common.viewToClipMatrix ) == sizeof( gu->projection ) );
+    memcpy( common.viewToClipMatrix, gu->projection, sizeof( common.viewToClipMatrix ) );
+    memcpy( common.viewToClipMatrixPrev, gu->projectionPrev, sizeof( common.viewToClipMatrixPrev ) );
+    memcpy( common.worldToViewMatrix, gu->view, sizeof( common.worldToViewMatrix ) );
+    memcpy( common.worldToViewMatrixPrev, gu->viewPrev, sizeof( common.worldToViewMatrixPrev ) );
+
+    // CmNrdPack writes motion as our native 2.5D contract: xy = UV delta
+    // cur->prev, z = distance delta -- so no conversion scale.
+    common.motionVectorScale[ 0 ] = 1.0f;
+    common.motionVectorScale[ 1 ] = 1.0f;
+    common.motionVectorScale[ 2 ] = 1.0f;
+    common.isMotionVectorInWorldSpace = false;
+
+    common.cameraJitter[ 0 ]     = gu->jitterX;
+    common.cameraJitter[ 1 ]     = gu->jitterY;
+    common.cameraJitterPrev[ 0 ] = m_jitterPrev[ 0 ];
+    common.cameraJitterPrev[ 1 ] = m_jitterPrev[ 1 ];
+    m_jitterPrev[ 0 ]            = gu->jitterX;
+    m_jitterPrev[ 1 ]            = gu->jitterY;
+
+    common.resourceSize[ 0 ]     = uint16_t( m_width );
+    common.resourceSize[ 1 ]     = uint16_t( m_height );
+    common.resourceSizePrev[ 0 ] = uint16_t( m_width );
+    common.resourceSizePrev[ 1 ] = uint16_t( m_height );
+    common.rectSize[ 0 ]         = uint16_t( m_width );
+    common.rectSize[ 1 ]         = uint16_t( m_height );
+    common.rectSizePrev[ 0 ]     = uint16_t( m_width );
+    common.rectSizePrev[ 1 ]     = uint16_t( m_height );
+
+    common.viewZScale             = 1.0f;
+    common.denoisingRange         = 100000.0f;
+    common.disocclusionThreshold  = 0.01f;
+    common.frameIndex             = m_nrdFrameIndex++;
+    common.timeDeltaBetweenFrames = float( timeDeltaSeconds * 1000.0 );
+    common.accumulationMode =
+        resetHistory ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    // ReLAX uses base-color/metalness to patch specular motion (Duke-RT sets
+    // this true for RELAX and false for REBLUR).
+    common.isBaseColorMetalnessAvailable = true;
+    common.enableValidation              = enableValidation;
+
+    if( m_impl->integration.SetCommonSettings( common ) != nrd::Result::SUCCESS )
+    {
+        debug::Warning( "NRD: SetCommonSettings failed" );
+        return false;
+    }
+
+    // Raw VkImage+format handover; the declared state is the compute/storage
+    // state everything RTGL-side reads and writes these images in, and
+    // restoreInitialState returns them to it, so RTGL's "everything stays
+    // GENERAL" assumption is never violated outside the Denoise call.
+    auto makeRes = [ & ]( FramebufferImageIndex fi ) {
+        auto [ image, view, format ] = framebuffers.GetImageHandles( fi, frameIndex );
+
+        nrd::Resource r  = {};
+        r.vk.image       = ( VKNonDispatchableHandle )( image );
+        r.vk.format      = VKEnum( format );
+        r.state          = nri::AccessLayoutStage{ nri::AccessBits::SHADER_RESOURCE_STORAGE,
+                                                   nri::Layout::SHADER_RESOURCE_STORAGE,
+                                                   nri::StageBits::COMPUTE_SHADER };
+        return r;
+    };
+
+    auto snapshot                = nrd::ResourceSnapshot{};
+    snapshot.restoreInitialState = true;
+    snapshot.SetResource( nrd::ResourceType::IN_MV, makeRes( FB_IMAGE_INDEX_NRD_MOTION ) );
+    snapshot.SetResource( nrd::ResourceType::IN_VIEWZ, makeRes( FB_IMAGE_INDEX_NRD_VIEW_Z ) );
+    snapshot.SetResource( nrd::ResourceType::IN_NORMAL_ROUGHNESS,
+                          makeRes( FB_IMAGE_INDEX_NRD_NORMAL_ROUGHNESS ) );
+    snapshot.SetResource( nrd::ResourceType::IN_BASECOLOR_METALNESS,
+                          makeRes( FB_IMAGE_INDEX_NRD_BASE_COLOR_METALNESS ) );
+    snapshot.SetResource( nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST,
+                          makeRes( FB_IMAGE_INDEX_NRD_DIFFUSE ) );
+    snapshot.SetResource( nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST,
+                          makeRes( FB_IMAGE_INDEX_NRD_SPECULAR ) );
+    snapshot.SetResource( nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST,
+                          makeRes( FB_IMAGE_INDEX_NRD_DIFFUSE_OUT ) );
+    snapshot.SetResource( nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST,
+                          makeRes( FB_IMAGE_INDEX_NRD_SPECULAR_OUT ) );
+    snapshot.SetResource( nrd::ResourceType::OUT_VALIDATION,
+                          makeRes( FB_IMAGE_INDEX_NRD_VALIDATION ) );
+
+    const nrd::Identifier relaxId = nrd::Identifier( 2 );
+    const auto            cmdDesc = nri::CommandBufferVKDesc{
+                   .vkCommandBuffer = cmd,
+                   .queueType       = nri::QueueType::GRAPHICS,
+    };
+    m_impl->integration.DenoiseVK( &relaxId, 1, cmdDesc, snapshot );
+
     return true;
 }
 
@@ -414,6 +542,17 @@ RTGL1::NrdDenoiser::~NrdDenoiser() = default;
 void RTGL1::NrdDenoiser::Destroy() {}
 
 bool RTGL1::NrdDenoiser::EnsureReady( uint32_t, uint32_t )
+{
+    return false;
+}
+
+bool RTGL1::NrdDenoiser::Denoise( VkCommandBuffer,
+                                  uint32_t,
+                                  Framebuffers&,
+                                  const ShGlobalUniform*,
+                                  double,
+                                  bool,
+                                  bool )
 {
     return false;
 }

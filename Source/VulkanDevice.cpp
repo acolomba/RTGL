@@ -1028,6 +1028,12 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                                 : 0u;
         gu->rrPreExpDebug = !!illum.rrPreExposureDebug;
 
+        // NRD lane: validation overlay switch + the alignment spares.
+        gu->nrdValidation = !!illum.nrdValidation;
+        gu->nrdReserved0  = 0;
+        gu->nrdReserved1  = 0;
+        gu->nrdReserved2  = 0;
+
         gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
         gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );
         // 32 -> 64 (2026-08-17): pure loop bound in calcInitialReservoir, no
@@ -1365,14 +1371,17 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             }
         }
 
-        // Doom64-RT: the NRD lane, stage 1 of docs/plan-nrd-denoiser.md. With
-        // rt_nrd set, the FULL stack is brought up -- NRD compiled in, its
-        // embedded SPIR-V unpacked into pipelines, NRI wrapped around this
-        // very VkDevice, history pools allocated -- and its liveness is
-        // reported to rt-console.log. That is the half of the port that fails
-        // invisibly, so it lands and gets verified on its own. The Denoise()
-        // data path (pack/demodulate -> NRD -> remodulate, replacing A-SVGF
-        // below when active) is stage 2; until then A-SVGF still runs.
+        // Doom64-RT: the NRD lane, stage 2 of docs/plan-nrd-denoiser.md. With
+        // rt_nrd set (and RR inactive -- precedence RR > NRD > A-SVGF), ReLAX
+        // replaces A-SVGF for the frame: CmNrdPack stages the same raw
+        // unfiltered signals into NRD's input layouts, NRDIntegration records
+        // ReLAX's dispatches, CmNrdCompose remodulates the denoised lighting
+        // into PreFinal with CmNoisyCompose's exact arithmetic. EVERYTHING
+        // downstream is the untouched A-SVGF frame shape: exposure baked in
+        // CmPrepareFinal, glow before the upscaler, DLSS-SR reconstructing --
+        // the shape the user reports as stable. Any failure at any step falls
+        // back to A-SVGF for the frame, loudly.
+        bool nrdRanThisFrame = false;
         {
             const uint32_t nrdRequested =
                 pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).nrdDenoiser;
@@ -1380,10 +1389,10 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                 renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr;
             const bool wantNrd = nrdRequested != 0 && !rrBlocks;
 
-            // Print what actually ARRIVED, edge-triggered -- "no NRD line at
-            // all" must be distinguishable from "the request never reached
-            // RTGL" without a debugger (2026-08-17: rt_nrd 1 produced total
-            // silence, and this is how it was bisected).
+            // Edge-triggered arrival print -- "no NRD line at all" must be
+            // distinguishable from "the request never reached RTGL" without a
+            // debugger (2026-08-17: rt_nrd 1 produced total silence, and this
+            // is how it was bisected).
             {
                 static bool     s_nHave = false;
                 static uint32_t s_nPrev[ 2 ] = {};
@@ -1410,7 +1419,26 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                                                    queues->GetIndexGraphics(),
                                                                    1 );
                 }
-                nrdDenoiser->EnsureReady( renderResolution.Width(), renderResolution.Height() );
+
+                if( nrdDenoiser->EnsureReady( renderResolution.Width(),
+                                              renderResolution.Height() ) )
+                {
+                    denoiser->PackForNrd( cmd, frameIndex, uniform );
+
+                    nrdRanThisFrame =
+                        nrdDenoiser->Denoise( cmd,
+                                              frameIndex,
+                                              *framebuffers,
+                                              uniform->GetData(),
+                                              timeDelta,
+                                              resetHistory,
+                                              uniform->GetData()->nrdValidation != 0 );
+
+                    if( nrdRanThisFrame )
+                    {
+                        denoiser->ComposeAfterNrd( cmd, frameIndex, uniform );
+                    }
+                }
             }
         }
 
@@ -1421,7 +1449,7 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             // ComposeNoisy → DLSS-RR. Soft analytic-light fades instead.
             denoiser->ComposeNoisy( cmd, frameIndex, uniform );
         }
-        else
+        else if( !nrdRanThisFrame )
         {
             denoiser->Denoise( cmd, frameIndex, uniform );
         }
