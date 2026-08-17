@@ -312,11 +312,28 @@ void main()
             }
         }
         // auto exposure
+        //
+        // Doom64-RT: NOT under the DLSS-RR pre-exposure reorder. RR's guide
+        // (S3.7) declares exposure unsupported -- the model wants linear
+        // pre-exposure radiance, and baking EV100 in here meant RR's temporal
+        // history mixed frames captured at different exposures whenever
+        // adaptation moved. With rrPreExposure set, this multiply (and the
+        // screen-emissive add below) move to CmRrPostExposure.comp, AFTER the
+        // upscaler. The flag is host-gated to frames where the RR branch
+        // actually runs, so every other path keeps this exact line.
+        if( globalUniform.rrPreExposure == 0 )
         {
             hdr = hdr * ev100ToLuminousExposure( getCurrentEV100() );
         }
     }
     // screen emissive
+    //
+    // Doom64-RT: the whole block moves to CmRrPostExposure.comp under the RR
+    // pre-exposure reorder -- the add is defined in post-exposure units (it sits
+    // AFTER the EV100 multiply), so adding it here to a pre-exposure image and
+    // then exposing the sum would scale the emissive by the scene's exposure,
+    // which is exactly what its fixed emissionMaxScreenColor calibration is not.
+    if( globalUniform.rrPreExposure == 0 )
     {
         vec3 screenEmis = texelFetch( framebufScreenEmission_Sampler, pix, 0 ).rgb;
 
@@ -339,8 +356,11 @@ void main()
         hdr = processDebug( pix, hdr );
     }
 
-    // DLSS-RR disocclusion mask A/B view: tint history-discard tiles red
-    if( globalUniform.rrDisoccShowMask != 0 )
+    // DLSS-RR disocclusion mask A/B view: tint history-discard tiles red.
+    // Under the pre-exposure reorder the tint moves to CmRrPostExposure.comp --
+    // applied here it would be multiplied by the post-RR exposure (~1/5 to
+    // ~1/250 at EV100 2..7.7) and the debug view would silently go blank.
+    if( globalUniform.rrDisoccShowMask != 0 && globalUniform.rrPreExposure == 0 )
     {
         if( texelFetch( framebufRrDisocclusion_Sampler, pix, 0 ).r > 0.0 )
         {

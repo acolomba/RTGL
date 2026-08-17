@@ -85,6 +85,10 @@ private:
 
     NVSDK_NGX_Handle* m_feature{ nullptr };
     ResolutionState   m_prevResolution{};
+    // UINT32_MAX sentinel, so the first frame always creates the feature even
+    // if the requested preset happens to equal the old hard-coded E -- the
+    // same reasoning as DLSS2.h's m_prevPreset.
+    uint32_t          m_prevPreset{ UINT32_MAX };
 };
 
 }

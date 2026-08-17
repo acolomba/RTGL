@@ -890,6 +890,14 @@ typedef struct RgStartFrameRenderResolutionParams
     // (310.x) forces the legacy CNN model; the SDK header marks E deprecated and
     // K "best image quality". Changing this re-creates the DLSS feature.
     uint32_t                 dlssPreset;
+    // Doom64-RT: the DLSS-RR (Ray Reconstruction) twin of dlssPreset, as the
+    // raw NVSDK_NGX_RayReconstruction_Hint_Render_Preset value. Only three are
+    // meaningful on current runtimes: 0 = Default (the DLL picks, NVIDIA's
+    // recommendation), 4 = D (default transformer), 5 = E (latest transformer,
+    // what RTGL1 hard-coded before this was configurable). A-C were removed in
+    // SDK 310.4.0 and 6..15 revert to default. Changing this re-creates the
+    // RR feature, so it takes effect live.
+    uint32_t                 dlssRrPreset;
 } RgStartFrameRenderResolutionParams;
 
 // Can be linked after RgStartFrameInfo.
@@ -1250,6 +1258,18 @@ typedef struct RgDrawFrameIlluminationParams
     // which DLSS-RR skips -- so under RR the gate reads stale data and may be
     // rejecting GI temporal reuse every frame. 0 ignores the gate. Default: 1
     uint32_t        restirIndirAntilag;
+    // Doom64-RT: feed DLSS-RR PRE-exposure radiance. CmPrepareFinal skips its
+    // EV100 multiply and screen-emissive add; CmRrPostExposure reapplies both
+    // on the upscaled output. NVIDIA's RR guide (S3.7) declares exposure
+    // unsupported for RR -- with exposure baked in, RR's temporal history
+    // mixed frames captured at different exposures whenever auto-exposure
+    // adapted. Only takes effect on frames where the RR branch actually runs;
+    // A-SVGF / DLSS-SR / FSR2 paths are untouched. Default: true
+    RgBool32        rrPreExposure;
+    // Debug: CmRrPostExposure tints its output magenta, so "no visible
+    // difference" and "the pass never ran" stop being the same image.
+    // Default: false
+    RgBool32        rrPreExposureDebug;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

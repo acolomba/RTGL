@@ -1010,6 +1010,21 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->restirTemporalJitter = std::clamp( illum.restirTemporalJitter, 0.0f, 8.0f );
         gu->rrSpecHitDist      = !!illum.rrSpecularHitDistance;
 
+        // Doom64-RT: DLSS-RR pre-exposure reorder. HOST-GATED to frames where
+        // the RR branch will actually run -- the exact condition guarding
+        // nvDlssRr->Apply. This gate is load-bearing: if the flag were set on a
+        // frame that silently fell back to DLSS2/FSR2 (null RR object, RR
+        // rejected), CmPrepareFinal would skip the EV100 multiply and NOTHING
+        // downstream would apply it -- a zero-exposure frame. The call site of
+        // the post pass reads this same uniform, so shader and pass can never
+        // disagree (the volumePostComp pattern).
+        gu->rrPreExposure = ( illum.rrPreExposure && //
+                              renderResolution.IsNvDlssRayReconstructionEnabled() &&
+                              nvDlssRr != nullptr )
+                                ? 1u
+                                : 0u;
+        gu->rrPreExpDebug = !!illum.rrPreExposureDebug;
+
         gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
         gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );
         gu->restirInitialSamples  = std::clamp( illum.restirInitialSamples, 1u, 32u );
@@ -1229,20 +1244,26 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             const bool dlssOn       = renderResolution.IsNvDlssEnabled();
             const bool rrEnabled    = renderResolution.IsNvDlssRayReconstructionEnabled();
             const bool rrActive     = rrEnabled && haveRrObject;
+            // Doom64-RT: reordered exposure is part of the path identity -- an
+            // A/B of rt_rr_preexposure must be able to read its arm back here.
+            const bool rrPreExp     = rrActive && uniform->GetData()->rrPreExposure != 0;
 
             static bool s_have = false;
             static bool s_prev = false;
-            if( !s_have || s_prev != rrActive )
+            static bool s_prevPreExp = false;
+            if( !s_have || s_prev != rrActive || s_prevPreExp != rrPreExp )
             {
                 s_have = true;
                 s_prev = rrActive;
+                s_prevPreExp = rrPreExp;
                 debug::Warning( "Denoiser path: {} (DLSS-RR object={}, DLSS upscaler={}, "
-                                "RR flag={})",
+                                "RR flag={}, preExposure={})",
                                 rrActive ? "DLSS-RR (ComposeNoisy -> nvDlssRr->Apply)"
                                          : "A-SVGF (Denoise)",
                                 haveRrObject ? "present" : "NULL",
                                 dlssOn ? "on" : "off",
-                                rrEnabled ? "on" : "off" );
+                                rrEnabled ? "on" : "off",
+                                rrPreExp ? "on (post-RR pass)" : "off (baked in CmPrepareFinal)" );
             }
 
             // ReSTIR feeds BOTH denoisers, so report it regardless of which one
@@ -1548,6 +1569,29 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             {
                 assert( 0 );
             }
+        }
+
+        // Doom64-RT: THE EXPOSURE GOES BACK ON HERE under the DLSS-RR
+        // pre-exposure reorder. CmPrepareFinal skipped the EV100 multiply and
+        // the screen-emissive add so RR could denoise linear pre-exposure
+        // radiance (its guide declares exposure unsupported, S3.7); this pass
+        // reapplies both on RR's output, at output resolution, BEFORE
+        // DrawClassic / BlitForEffects / sharpening / bloom -- everything after
+        // this line still sees a normally-exposed image, as it always has.
+        //
+        // Gated on the UNIFORM, not the cvar chain: it is the exact value
+        // CmPrepareFinal read this frame, so skip-side and apply-side cannot
+        // disagree. gu->rrPreExposure is host-gated to the RR branch above, so
+        // accum is UPSCALED_PONG by construction here.
+        if( uniform->GetData()->rrPreExposure != 0 )
+        {
+            assert( accum == FB_IMAGE_INDEX_UPSCALED_PONG );
+            imageComposition->RrPostExposure( cmd,
+                                              frameIndex,
+                                              *uniform,
+                                              *tonemapping,
+                                              renderResolution.UpscaledWidth(),
+                                              renderResolution.UpscaledHeight() );
         }
 
         // Doom64-RT: THE MEDIUM GOES ON HERE, after the upscaler and before

@@ -67,6 +67,17 @@ public:
                         uint32_t              width,
                         uint32_t              height );
 
+    // Doom64-RT: apply auto exposure and the screen emissive AFTER DLSS-RR, in
+    // place on RR's output image. Only dispatched when the frame's rrPreExposure
+    // uniform is set (CmPrepareFinal skipped both under that flag). See
+    // CmRrPostExposure.comp for why RR must denoise pre-exposure radiance.
+    void RrPostExposure( VkCommandBuffer      cmd,
+                         uint32_t             frameIndex,
+                         const GlobalUniform& uniform,
+                         const Tonemapping&   tonemapping,
+                         uint32_t             width,
+                         uint32_t             height );
+
     [[nodiscard]] auto SetupLpmParams( VkCommandBuffer                     cmd,
                                        uint32_t                            frameIndex,
                                        const RgDrawFrameTonemappingParams& params,
@@ -110,10 +121,12 @@ private:
     VkPipelineLayout composePipelineLayout;
     VkPipelineLayout checkerboardPipelineLayout;
     VkPipelineLayout volumeComposePipelineLayout;
+    VkPipelineLayout rrPostExposurePipelineLayout;
 
     VkPipeline composePipeline;
     VkPipeline checkerboardPipeline;
     VkPipeline volumeComposePipeline;
+    VkPipeline rrPostExposurePipeline;
 
     VkDescriptorSetLayout descLayout;
     VkDescriptorPool      descPool;

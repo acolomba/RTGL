@@ -68,6 +68,8 @@ static ShaderModuleDefinition G_SHADERS[] =
 #endif
     { "CPrepareFinal",              "CmPrepareFinal.comp.spv"               },
     { "CVolumeCompose",             "CmVolumeCompose.comp.spv"              },
+    // Doom64-RT: exposure + screen emissive after DLSS-RR (pre-exposure reorder)
+    { "CRrPostExposure",            "CmRrPostExposure.comp.spv"             },
     { "CNoisyCompose",              "CmNoisyCompose.comp.spv"               },
     { "CLuminanceHistogram",        "CmLuminanceHistogram.comp.spv"         },
     { "CLuminanceAvg",              "CmLuminanceAvg.comp.spv"               },

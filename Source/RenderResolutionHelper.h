@@ -75,6 +75,7 @@ public:
         upscaleTechnique   = params.upscaleTechnique;
         sharpenTechnique   = params.sharpenTechnique;
         dlssPreset         = params.dlssPreset;
+        dlssRrPreset       = params.dlssRrPreset;
         resolutionMode     = params.resolutionMode;
         rayReconstruction  = params.rayReconstruction && dlssRr != nullptr;
 
@@ -300,6 +301,10 @@ public:
     // mistaken for a resize.
     uint32_t GetDlssPreset() const { return dlssPreset; }
 
+    // Doom64-RT: the Ray Reconstruction twin. Same reasoning -- a preset change
+    // must not be mistaken for a resize, so it is not in ResolutionState.
+    uint32_t GetDlssRrPreset() const { return dlssRrPreset; }
+
     ResolutionState GetResolutionState() const
     {
         assert( Width() % 2 == 0 );
@@ -320,6 +325,10 @@ private:
     // 5 = NVSDK_NGX_DLSS_Hint_Render_Preset_E, which is what RTGL1 hard-coded
     // before this was configurable.
     uint32_t                 dlssPreset        = 5;
+    // 5 = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E, what DLSSRR.cpp
+    // hard-coded before this was configurable (D was A/B'd 2026-08-07 and was
+    // clearly worse). NOTE unlike SR, only 0 / 4 / 5 mean anything for RR.
+    uint32_t                 dlssRrPreset      = 5;
 };
 
 }

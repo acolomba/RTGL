@@ -313,6 +313,8 @@ namespace detail
             .rrGuideMin                                  = 0.01f,
             .rrGuideMode                                 = 1,
             .restirIndirAntilag                          = 1,
+            .rrPreExposure                               = true,
+            .rrPreExposureDebug                          = false,
         };
     };
 

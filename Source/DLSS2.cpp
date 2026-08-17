@@ -422,6 +422,19 @@ auto RTGL1::DLSS2::Apply( VkCommandBuffer               cmd,
                                   INPUT_IMAGES,
                                   Framebuffers::BarrierType::Storage );
 
+    // Doom64-RT: barrier the OUTPUT image too -- same latent cross-frame
+    // WAR/WAW hazard as DLSSRR.cpp: NGX writes UPSCALED_PONG in compute while
+    // the previous frame's post-effect chain touched it with input-only
+    // barriers. Kept separate from INPUT_IMAGES because ToNGXResource's assert
+    // distinguishes inputs from the output.
+    {
+        constexpr FramebufferImageIndex OUTPUT_IMAGES[] = { OUTPUT_IMAGE };
+        framebuffers.BarrierMultiple( cmd, //
+                                      frameIndex,
+                                      OUTPUT_IMAGES,
+                                      Framebuffers::BarrierType::Storage );
+    }
+
 
     auto sourceOffset = NVSDK_NGX_Coordinates{
         0,

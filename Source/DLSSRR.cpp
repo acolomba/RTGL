@@ -172,6 +172,7 @@ namespace
                              VkCommandBuffer        cmd,
                              const ResolutionState& resolution,
                              RgRenderResolutionMode mode,
+                             uint32_t               presetFromCaller,
                              NVSDK_NGX_Handle*      oldFeature ) -> NVSDK_NGX_Handle*
     {
         constexpr unsigned int creationNodeMask   = 1;
@@ -205,20 +206,23 @@ namespace
         dlssdParams.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
         dlssdParams.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
 
-        // Only D and E are usable: A/B/C were removed in SDK 310.4.0, and F..O
-        // silently revert to default behaviour (nvsdk_ngx_defs_dlssd.h:38-53).
+        // Only Default / D / E are meaningful: A/B/C were removed in SDK
+        // 310.4.0, and F..O silently revert to default behaviour
+        // (nvsdk_ngx_defs_dlssd.h:38-53).
+        //   0 = Default (the DLL picks; NVIDIA's current recommendation)
         //   D = default transformer model
         //   E = latest transformer model (required only if a DoF guide is used;
         //       we pass none)
-        // Both are pinned across all five quality slots so the preset does not
-        // change under the user when rt_upscale_dlss switches mode -- otherwise
-        // an A/B of image quality would silently also be an A/B of preset.
-        // Set at feature-creation time, so changing this needs a restart.
+        // The value is pinned across all five quality slots so the preset does
+        // not change under the user when rt_upscale_dlss switches mode --
+        // otherwise an A/B of image quality would silently also be an A/B of
+        // preset.
         //
-        // E, not D: preset D was A/B'd in-game on 2026-08-07 and was clearly
-        // worse -- visibly noisy even with a static camera, where E converges
-        // cleanly. Keep E unless something specifically motivates revisiting.
-        constexpr auto RR_PRESET = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E;
+        // Was hard-coded E ("preset D was A/B'd in-game on 2026-08-07 and was
+        // clearly worse"); now passed through from rt_rr_preset, whose default
+        // keeps E. Changing it re-creates the feature (the caller keys on the
+        // preset exactly as it keys on a resize), so it takes effect live.
+        const uint32_t RR_PRESET = presetFromCaller;
 
         for( const char* slot : {
                  NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
@@ -231,9 +235,12 @@ namespace
             NVSDK_NGX_Parameter_SetUI( params, slot, RR_PRESET );
         }
 
-        debug::Warning( "DLSSRR: using Ray Reconstruction preset {} ({})",
-                        RR_PRESET == NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D ? "D" : "E",
-                        int( RR_PRESET ) );
+        debug::Warning( "DLSSRR: using Ray Reconstruction preset {} (raw value {})",
+                        RR_PRESET == NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D ? "D"
+                        : RR_PRESET == NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E
+                            ? "E"
+                            : "Default/other",
+                        RR_PRESET );
 
         NVSDK_NGX_Handle* newFeature{ nullptr };
         NVSDK_NGX_Result  r = NGX_VULKAN_CREATE_DLSSD_EXT1( device,
@@ -319,14 +326,21 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
 
     {
         auto newResolution = renderResolution.GetResolutionState();
-        if( m_prevResolution != newResolution )
+        // Doom64-RT: the preset is baked in at feature-create time, so changing
+        // it mid-session has to re-create the feature exactly as a resize does
+        // -- the DLSS2 (SR) mechanism, mirrored. Without this the cvar appears
+        // to do nothing until the window changes size.
+        auto newPreset = renderResolution.GetDlssRrPreset();
+        if( m_prevResolution != newResolution || m_prevPreset != newPreset )
         {
             m_prevResolution = newResolution;
+            m_prevPreset     = newPreset;
             m_feature = CreateDlssdFeature( m_params,
                                             m_device,
                                             cmd,
                                             newResolution,
                                             renderResolution.GetResolutionMode(),
+                                            newPreset,
                                             m_feature );
 
             if( !m_feature )
@@ -352,6 +366,21 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
                                   frameIndex,
                                   INPUT_IMAGES,
                                   Framebuffers::BarrierType::Storage );
+
+    // Doom64-RT: the OUTPUT image needs a barrier too. NGX writes UPSCALED_PONG
+    // in compute, but the previous frame's post-effect chain ping-pongs through
+    // it with input-only barriers (EffectBase barriers only what it READS), so
+    // without this there is a cross-frame WAR/WAW hazard on the same queue --
+    // frequently masked by the blit chain's restore barrier, never guaranteed.
+    // Storage type gives the execution dependency (graphics|RT|compute src) and
+    // SHADER_WRITE availability; layout stays GENERAL, which NGX expects.
+    {
+        constexpr FramebufferImageIndex OUTPUT_IMAGES[] = { OUTPUT_IMAGE };
+        framebuffers.BarrierMultiple( cmd, //
+                                      frameIndex,
+                                      OUTPUT_IMAGES,
+                                      Framebuffers::BarrierType::Storage );
+    }
 
     auto sourceSize = NVSDK_NGX_Dimensions{
         renderResolution.Width(),
@@ -505,6 +534,10 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer,
                            RgFloat2D,
                            double,
                            bool,
+                           bool, // specHitDistEnabled -- the stub must match the
+                           bool, // disoccMaskEnabled  -- 11-param declaration or
+                                 // a build without RG_USE_NATIVE_DLSS2 cannot
+                                 // compile (out-of-line def with no decl)
                            const float*,
                            const float* ) -> FramebufferImageIndex
 {

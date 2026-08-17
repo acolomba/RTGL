@@ -791,8 +791,17 @@ GLOBAL_UNIFORM_STRUCT = [
     # ending at rrSpecHitDist must stay a whole vec4 or viewProjCubemap below
     # loses its 16-byte alignment and the C and GLSL layouts diverge.
     (TYPE_UINT32,       1,      "debugVisibility",                  1),
-    (TYPE_UINT32,       1,      "_pad7",                            1),
-    (TYPE_UINT32,       1,      "_pad8",                            1),
+    # DLSS-RR pre-exposure reorder (both taken from _pad slots, layout unchanged).
+    # 1 = CmPrepareFinal SKIPS the EV100 multiply and the screen-emissive add, so
+    # RR denoises linear pre-exposure radiance (NVIDIA's RR guide S3.7 declares
+    # exposure unsupported for RR -- the input is supposed to be pre-exposure),
+    # and CmRrPostExposure reapplies both on the UPSCALED output. Host-gated to
+    # frames where the RR branch actually runs: if this were 1 on a DLSS2/FSR
+    # fallback frame, nothing downstream would apply exposure at all.
+    (TYPE_UINT32,       1,      "rrPreExposure",                    1),
+    # Debug: CmRrPostExposure tints its output magenta. The absurd arm -- "no
+    # visible difference" and "the pass never ran" are otherwise the same image.
+    (TYPE_UINT32,       1,      "rrPreExpDebug",                    1),
 
     # Shadow rays per pixel for DIRECT illumination. 1 = stock. The direct
     # estimate multiplies by a single binary traceVisibility(), so that 0/1 term
@@ -1624,7 +1633,13 @@ FRAMEBUFFERS = {
     
     # need separate one for RT, to resolve checkerboarded across multiple pixels
     "ScreenEmisRT"                      : (TYPE_PACK_11,    COMPONENT_RGB,  0),
-    "ScreenEmission"                    : (TYPE_PACK_11,    COMPONENT_RGB,  FRAMEBUF_FLAGS_IS_ATTACHMENT),
+    # Doom64-RT: BILINEAR for CmRrPostExposure.comp, which re-adds the screen
+    # emissive at OUTPUT resolution under the DLSS-RR pre-exposure reorder and
+    # samples this by normalised coordinate. Same argument as Scattering above:
+    # every other consumer reads it with texelFetch, which ignores the sampler
+    # filter (CmPrepareFinal.comp, CmDecalNormalsCopy.comp), or writes it as an
+    # image/attachment, which has no sampler at all.
+    "ScreenEmission"                    : (TYPE_PACK_11,    COMPONENT_RGB,  FRAMEBUF_FLAGS_IS_ATTACHMENT | FRAMEBUF_FLAGS_BILINEAR_SAMPLER),
 
     "Bloom"                             : (TYPE_FLOAT16,    COMPONENT_RGBA, FRAMEBUF_FLAGS_FORCE_SIZE_BLOOM | FRAMEBUF_FLAGS_BILINEAR_SAMPLER | FRAMEBUF_FLAGS_UPSCALED_SIZE),
     "Bloom_Mip1"                        : (TYPE_FLOAT16,    COMPONENT_RGBA, FRAMEBUF_FLAGS_FORCE_SIZE_BLOOM | FRAMEBUF_FLAGS_BILINEAR_SAMPLER | FRAMEBUF_FLAGS_UPSCALED_SIZE),

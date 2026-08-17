@@ -336,8 +336,8 @@ struct ShGlobalUniform
     uint32_t rrGuideMode;
     uint32_t restirIndirAntilag;
     uint32_t debugVisibility;
-    uint32_t _pad7;
-    uint32_t _pad8;
+    uint32_t rrPreExposure;
+    uint32_t rrPreExpDebug;
     uint32_t shadowSamples;
     uint32_t debugRestirM;
     float restirTemporalJitter;
