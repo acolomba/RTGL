@@ -137,9 +137,15 @@ void main()
                     vec2( globalUniform.jitterX, globalUniform.jitterY ) /
                         vec2( globalUniform.renderWidth, globalUniform.renderHeight );
 
-    // BILINEAR -- the reason ScreenEmission now carries
-    // FRAMEBUF_FLAGS_BILINEAR_SAMPLER.
-    vec3 screenEmis = textureLod( framebufScreenEmission_Sampler, uv, 0.0 ).rgb;
+    // With rrGlowPre, the glow was already added into RR's input by
+    // CmPrepareFinal (in pre-exposure units) and has just been multiplied by
+    // the exposure above -- adding it here again would double it. The
+    // rrGlowPre=0 fallback keeps the post-RR add for the A/B, jitter-corrected
+    // but still carrying the irreducible per-frame resampling shimmer at
+    // sharp emissive edges (the reason rrGlowPre exists).
+    vec3 screenEmis = globalUniform.rrGlowPre != 0
+                          ? vec3( 0.0 )
+                          : textureLod( framebufScreenEmission_Sampler, uv, 0.0 ).rgb;
 
     // Attenuated by the medium, as in CmPrepareFinal -- an emissive panel must
     // not shine through smoke at full strength. volumePostComp is always 0 on

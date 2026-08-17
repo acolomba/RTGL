@@ -366,6 +366,28 @@ void main()
 
         hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor;
     }
+    else if( globalUniform.rrGlowPre != 0 )
+    {
+        // Doom64-RT: the glow goes back into RR's INPUT, in PRE-exposure
+        // units. Adding it post-RR (CmRrPostExposure) sampled the JITTERED
+        // render-res buffer with one bilinear tap per frame at a shifting
+        // sub-texel phase -- every sharp emissive edge shimmered, reported
+        // from play as flickery lamp bulbs. Here the glow and the frame share
+        // the same jittered space (texelFetch, same pixel), so RR dejitters
+        // and temporally stabilizes both together, exactly as the
+        // pre-reorder pipeline always did. emissionMaxScreenColor is
+        // calibrated in POST-exposure units, so divide by the same EV100
+        // factor the post pass multiplies back -- algebraically exact, same
+        // floor as the 1x1 exposure texture write above.
+        vec3 screenEmis = texelFetch( framebufScreenEmission_Sampler, pix, 0 ).rgb;
+        if( globalUniform.volumeOccludeEmis != 0 )
+        {
+            screenEmis *= volumeTransmittance;
+        }
+
+        const float exposure = max( ev100ToLuminousExposure( getCurrentEV100() ), 1e-6 );
+        hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor / exposure;
+    }
 
     if( globalUniform.debugShowFlags != 0 )
     {

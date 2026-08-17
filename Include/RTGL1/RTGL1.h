@@ -1290,6 +1290,13 @@ typedef struct RgDrawFrameIlluminationParams
     // stage 2 and A-SVGF keeps running until it lands. Ignored while DLSS-RR
     // is active (precedence: RR > NRD > A-SVGF). Default: false
     RgBool32        nrdDenoiser;
+    // Doom64-RT: under rrPreExposure, add the screen-emission glow into RR's
+    // INPUT (pre-exposure units, algebraically exact) instead of after RR.
+    // The post-RR add resamples the jittered render-res glow buffer at a
+    // different sub-texel phase every frame, which shimmers on sharp emissive
+    // edges (lamp bulbs). Only read while rrPreExposure is active.
+    // Default: true
+    RgBool32        rrGlowPre;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

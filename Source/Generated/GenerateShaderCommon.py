@@ -1388,9 +1388,18 @@ GLOBAL_UNIFORM_STRUCT = [
     # involved, so no history rejection and no restart trails at silhouettes --
     # and CmScatterAccum stops accumulating in screen space entirely.
     (TYPE_FLOAT32,      1,      "volumeGridHistory",                1),
-    # One spare. THE SCALAR RUN MUST STAY A MULTIPLE OF FOUR (the layout gate
-    # caught exactly this list being one short); fields go in four at a time.
-    (TYPE_FLOAT32,      1,      "volumeReserved3",                  1),
+    # Doom64-RT: under the DLSS-RR pre-exposure reorder, put the screen-emission
+    # GLOW back into RR's INPUT (in pre-exposure units: divided by the EV100
+    # factor pre-RR, multiplied back post-RR -- algebraically exact). The
+    # post-RR add sampled the JITTERED render-res glow buffer with one bilinear
+    # tap per frame at a shifting sub-texel phase, which shimmered on every
+    # sharp emissive edge -- reported from play as flickery/unstable lamp
+    # bulbs. Pre-reorder the glow always sat in RR's input and was dejittered
+    # and temporally stabilized with everything else; this restores that while
+    # keeping exposure post-RR. Read only when rrPreExposure is on. Took the
+    # volumeReserved3 spare (a uint where a float was -- same 4 bytes, scalar
+    # run unchanged, tools/check_uniform_layout.py is the gate).
+    (TYPE_UINT32,       1,      "rrGlowPre",                        1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

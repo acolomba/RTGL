@@ -725,7 +725,10 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             gu->volumeReproj       = params.volumeReproj ? 1u : 0u;
             gu->volumeSpriteShadow = params.volumeSpriteShadow ? 1u : 0u;
             gu->volumeGridHistory  = std::clamp( params.volumeGridHistory, 0.0f, 64.0f );
-            gu->volumeReserved3    = 0.0f;
+            // Doom64-RT: rrGlowPre took the volumeReserved3 spare. Only read by
+            // the shaders when rrPreExposure is active, so the raw request is
+            // fine here (no host gate needed).
+            gu->rrGlowPre = !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).rrGlowPre;
 
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );
