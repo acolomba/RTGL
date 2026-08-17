@@ -556,7 +556,17 @@ void RTGL1::LightManager::Add( uint32_t           frameIndex,
                                            CalculateLightStyle( light.additional, lightstyles ),
                                            transform ) );
 #else
-                debug::Error( "Polygonal / triangle lights are not supported" );
+                // WARNING, not Error: debug::Error is FATAL in this project
+                // (exits the game), and a light type the build lacks must
+                // degrade to "that light is missing", never to a crash.
+                // Triangle lights are a half-removed upstream feature: the
+                // shader decode behind TRIANGLE_LIGHTS is a deliberate
+                // #error landmine (Light.h "Refine decoding, as it's
+                // obsolete"), so the flag cannot simply be flipped on --
+                // see docs/plan-area-lights-mis.md in the parent repo.
+                debug::Warning( "Polygonal / triangle light IGNORED: not supported by this "
+                                "build (TRIANGLE_LIGHTS off; the shader path behind the "
+                                "flag is an unfinished upstream remnant)" );
 #endif
             },
         },
