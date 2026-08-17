@@ -1407,15 +1407,12 @@ GLOBAL_UNIFORM_STRUCT = [
     # THE SCALAR RUN MUST STAY A MULTIPLE OF FOUR (see volumeDepthGate's
     # comment above; tools/check_uniform_layout.py is the gate).
     (TYPE_UINT32,       1,      "nrdValidation",                    1),
-    # rrGlowPre mode 2 ("glow as light"): the fixed pre-exposure scale the
-    # glow is multiplied by when added into RR's input. Replaces mode 1's
-    # 1/exposure divide -- which was algebraically exact but PULSED while
-    # auto-exposure adapted (flashlight toggles read as scene changes). With
-    # a constant scale the glow is temporally stable in the input (RR
-    # dejitters it, no shimmer) and simply rides the exposure like the
-    # emissive surface it halos. ~35 = 1/exposure at the EV100 midpoint, so
-    # mid-exposure brightness matches the old post-add calibration. Took the
-    # nrdReserved0 spare (float where a uint was, same 4 bytes).
+    # rrGlowPre mode 2: artistic multiplier on the glow overlay (default 1).
+    # Mode 2 divides by the SMOOTHED exposure (the 1x1 RrExposure EMA), so
+    # the glow is steady-state exact at its old calibration in every room,
+    # while the slowly-drifting divisor keeps RR's input pulse-free through
+    # adaptation. (The first cut used a fixed mid-exposure constant here and
+    # ran the glow ~7x hot in dark rooms.) Took the nrdReserved0 spare.
     (TYPE_FLOAT32,      1,      "rrGlowScale",                      1),
     # DLSS-RR albedo demodulation (the Remix approach, demodulate.comp.slang):
     # RR denoises LIGHTING ONLY -- CmNoisyCompose divides the combined

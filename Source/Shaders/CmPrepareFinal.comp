@@ -97,15 +97,28 @@ void main()
     // radiance whose absolute scale swings ~52x with auto-exposure, and the
     // network is not scale-invariant -- this is how it is told the scale.
     // Written HERE because this pass already binds the tonemapping set, runs
-    // after CalculateExposure and before RR, and the value is by construction
-    // the very factor CmRrPostExposure multiplies by. Floored away from zero:
-    // frame 0 has avgLuminance 0, and NGX treating exposure 0.0 as a real
-    // scale would zero the network's input.
+    // after CalculateExposure and before RR. Floored away from zero: frame 0
+    // has avgLuminance 0, and NGX treating exposure 0.0 as a real scale
+    // would zero the network's input.
+    //
+    // SMOOTHED (EMA), for two reasons: NVIDIA recommends a smoothed exposure
+    // for the DLSS exposure texture, and the glow-as-light mode below divides
+    // by this value -- a slowly-drifting divisor keeps RR's input stable
+    // through adaptation (the whole point of mode 2) while converging to the
+    // live exposure, so the glow lands at exactly its old calibrated
+    // brightness in steady state instead of running ~7x hot in dark rooms
+    // (reported from play on MAP02's floor emissives).
     if( globalUniform.rrPreExposure != 0 && pix == ivec2( 0 ) )
     {
-        imageStore( framebufRrExposure,
-                    ivec2( 0 ),
-                    vec4( max( ev100ToLuminousExposure( getCurrentEV100() ), 1e-6 ), 0, 0, 0 ) );
+        const float cur = max( ev100ToLuminousExposure( getCurrentEV100() ), 1e-6 );
+        float       prev = imageLoad( framebufRrExposure, ivec2( 0 ) ).r;
+        if( !( prev > 0.0 ) || isnan( prev ) || isinf( prev ) )
+        {
+            prev = cur; // first frame / garbage seed
+        }
+        // ~0.08/frame: converges in well under a second, drifts slowly enough
+        // that RR never sees a per-frame pulse in the glow term.
+        imageStore( framebufRrExposure, ivec2( 0 ), vec4( mix( prev, cur, 0.08 ), 0, 0, 0 ) );
     }
 
     vec3 hdr = texelFetch( framebufFinal_Sampler, pix, 0 ).rgb;
@@ -406,8 +419,19 @@ void main()
 
         if( globalUniform.rrGlowPre == 2 )
         {
+            // Divide by the SMOOTHED exposure (the 1x1 EMA written above,
+            // read back as last frame's value -- any in-dispatch race just
+            // selects between two adjacent EMA steps, both fine). Steady
+            // state: smoothed == live, so after the post pass multiplies the
+            // live exposure back, the glow lands at EXACTLY its old
+            // calibrated brightness in every room -- fixing mode 2's first
+            // cut, whose fixed mid-exposure constant ran the glow up to ~7x
+            // hot in dark rooms. During adaptation the divisor drifts at the
+            // EMA rate instead of pulsing per frame, which is what RR needs.
+            // rrGlowScale is now a plain artistic multiplier (default 1).
+            const float expSmooth = max( imageLoad( framebufRrExposure, ivec2( 0 ) ).r, 1e-6 );
             hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor *
-                            max( globalUniform.rrGlowScale, 0.0 );
+                            max( globalUniform.rrGlowScale, 0.0 ) / expSmooth;
         }
         else
         {

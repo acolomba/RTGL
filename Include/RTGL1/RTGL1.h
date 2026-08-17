@@ -1300,8 +1300,9 @@ typedef struct RgDrawFrameIlluminationParams
     //       surface it halos)
     // Only read while rrPreExposure is active. Default: 0
     uint32_t        rrGlowPre;
-    // Doom64-RT: mode 2's fixed pre-exposure scale; ~35 matches the old
-    // post-add brightness at the EV100 midpoint. Default: 35
+    // Doom64-RT: mode 2's artistic glow multiplier; the mode divides by a
+    // smoothed exposure, so 1.0 = the old calibrated brightness everywhere.
+    // Default: 1
     float           rrGlowScale;
     // Doom64-RT: DLSS-RR albedo demodulation (the Remix approach) -- RR
     // denoises lighting only; the modulation factor carrying the crisp
