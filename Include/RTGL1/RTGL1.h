@@ -1303,6 +1303,12 @@ typedef struct RgDrawFrameIlluminationParams
     // Doom64-RT: mode 2's fixed pre-exposure scale; ~35 matches the old
     // post-add brightness at the EV100 midpoint. Default: 35
     float           rrGlowScale;
+    // Doom64-RT: DLSS-RR albedo demodulation (the Remix approach) -- RR
+    // denoises lighting only; the modulation factor carrying the crisp
+    // albedo/texel content is re-applied after RR at output resolution.
+    // Default: true. rrDemodFilter: 0 bilinear, 1 Catmull-Rom, 2 nearest.
+    RgBool32        rrDemod;
+    uint32_t        rrDemodFilter;
     // Doom64-RT: NRD lane -- paint NRD's OUT_VALIDATION overlay instead of
     // the image (vendor-supplied guide/reprojection sanity view). Only
     // meaningful while nrdDenoiser is active. Default: false

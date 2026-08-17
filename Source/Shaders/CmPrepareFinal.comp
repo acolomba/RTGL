@@ -394,6 +394,16 @@ void main()
             screenEmis *= volumeTransmittance;
         }
 
+        // Under albedo demodulation the post pass multiplies the WHOLE RR
+        // output by the modulation factor M -- but the glow is an overlay,
+        // not albedo-modulated content. Pre-divide it by this pixel's M so
+        // the post-multiply cancels exactly.
+        if( globalUniform.rrDemod != 0 )
+        {
+            screenEmis /= max( texelFetch( framebufRrDemodFactor_Sampler, pix, 0 ).rgb,
+                               vec3( 0.02 ) );
+        }
+
         if( globalUniform.rrGlowPre == 2 )
         {
             hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor *

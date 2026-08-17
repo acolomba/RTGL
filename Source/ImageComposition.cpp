@@ -148,6 +148,7 @@ void RTGL1::ImageComposition::Finalize( VkCommandBuffer                     cmd,
         FI::FB_IMAGE_INDEX_SCREEN_EMISSION, FI::FB_IMAGE_INDEX_FINAL,
         FI::FB_IMAGE_INDEX_DEPTH_WORLD,
         FI::FB_IMAGE_INDEX_SCATTERING,
+        FI::FB_IMAGE_INDEX_RR_DEMOD_FACTOR,
     };
     framebuffers->BarrierMultiple( cmd, frameIndex, fs );
 
@@ -257,6 +258,7 @@ void RTGL1::ImageComposition::RrPostExposure( VkCommandBuffer      cmd,
         FI::FB_IMAGE_INDEX_SCATTERING,
         FI::FB_IMAGE_INDEX_SCREEN_EMISSION,
         FI::FB_IMAGE_INDEX_RR_DISOCCLUSION,
+        FI::FB_IMAGE_INDEX_RR_DEMOD_FACTOR,
     };
     framebuffers->BarrierMultiple( cmd, frameIndex, fs );
 

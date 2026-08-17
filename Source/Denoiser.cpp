@@ -375,6 +375,7 @@ void RTGL1::Denoiser::ComposeNoisy( VkCommandBuffer                             
         FI::FB_IMAGE_INDEX_DIFF_COLOR_HISTORY,
         FI::FB_IMAGE_INDEX_RR_DISOCCLUSION,
         FI::FB_IMAGE_INDEX_RR_LUM_HISTORY,
+        FI::FB_IMAGE_INDEX_RR_DEMOD_FACTOR,
     };
     framebuffers->BarrierMultiple( cmd, frameIndex, fs );
 

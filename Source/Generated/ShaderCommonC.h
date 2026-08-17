@@ -429,8 +429,8 @@ struct ShGlobalUniform
     uint32_t rrGlowPre;
     uint32_t nrdValidation;
     float rrGlowScale;
-    uint32_t nrdReserved1;
-    uint32_t nrdReserved2;
+    uint32_t rrDemod;
+    uint32_t rrDemodFilter;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];

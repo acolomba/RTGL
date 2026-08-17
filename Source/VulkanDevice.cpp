@@ -1034,11 +1034,12 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                                 : 0u;
         gu->rrPreExpDebug = !!illum.rrPreExposureDebug;
 
-        // NRD lane: validation overlay switch + the alignment spares
-        // (nrdReserved0 became rrGlowScale, assigned with rrGlowPre above).
+        // NRD lane: validation overlay switch. (nrdReserved0 became
+        // rrGlowScale, assigned with rrGlowPre above; nrdReserved1/2 became
+        // the demodulation pair below.)
         gu->nrdValidation = !!illum.nrdValidation;
-        gu->nrdReserved1  = 0;
-        gu->nrdReserved2  = 0;
+        gu->rrDemod       = !!illum.rrDemod;
+        gu->rrDemodFilter = std::min( illum.rrDemodFilter, 2u );
 
         gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
         gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );

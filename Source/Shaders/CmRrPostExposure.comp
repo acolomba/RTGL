@@ -121,6 +121,65 @@ void main()
     // volumePostComp block), so exposing it here is overwritten anyway.
     c *= ev100ToLuminousExposure( getCurrentEV100() );
 
+    // ALBEDO RE-MODULATION (rrDemod): multiply back the factor CmNoisyCompose
+    // divided out of RR's input. The crisp texel content rides in this
+    // buffer instead of through the network -- reapplied at OUTPUT res with
+    // the chosen filter, it stays sharp at any upscale ratio. Runs BEFORE
+    // the glow add below: the glow is an overlay, not albedo content (the
+    // pre-RR glow paths pre-divided by M so this multiply cancels there).
+    if( globalUniform.rrDemod != 0 )
+    {
+        const vec2 renderSize = vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+        // the same dejittered mapping the glow sample below uses
+        const vec2 uvM = ( vec2( pix ) + 0.5 ) / vec2( push.width, push.height ) -
+                         vec2( globalUniform.jitterX, globalUniform.jitterY ) / renderSize;
+
+        vec3 M;
+        if( globalUniform.rrDemodFilter == 2 )
+        {
+            // nearest: the full chunky pixel-art reapply
+            const ivec2 nn = clamp( ivec2( floor( uvM * renderSize ) ),
+                                    ivec2( 0 ),
+                                    ivec2( renderSize ) - 1 );
+            M = texelFetch( framebufRrDemodFactor_Sampler, nn, 0 ).rgb;
+        }
+        else if( globalUniform.rrDemodFilter == 1 )
+        {
+            // 9-tap optimized Catmull-Rom -- sharp edges without blockiness
+            const vec2 samplePos = uvM * renderSize;
+            const vec2 texPos1   = floor( samplePos - 0.5 ) + 0.5;
+            const vec2 f         = samplePos - texPos1;
+
+            const vec2 w0  = f * ( -0.5 + f * ( 1.0 - 0.5 * f ) );
+            const vec2 w1  = 1.0 + f * f * ( -2.5 + 1.5 * f );
+            const vec2 w2  = f * ( 0.5 + f * ( 2.0 - 1.5 * f ) );
+            const vec2 w3  = f * f * ( -0.5 + 0.5 * f );
+            const vec2 w12 = w1 + w2;
+
+            const vec2 p0  = ( texPos1 - 1.0 ) / renderSize;
+            const vec2 p3  = ( texPos1 + 2.0 ) / renderSize;
+            const vec2 p12 = ( texPos1 + w2 / w12 ) / renderSize;
+
+            vec3 acc = vec3( 0.0 );
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p0.x,  p0.y  ), 0.0 ).rgb * w0.x  * w0.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p12.x, p0.y  ), 0.0 ).rgb * w12.x * w0.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p3.x,  p0.y  ), 0.0 ).rgb * w3.x  * w0.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p0.x,  p12.y ), 0.0 ).rgb * w0.x  * w12.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p12.x, p12.y ), 0.0 ).rgb * w12.x * w12.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p3.x,  p12.y ), 0.0 ).rgb * w3.x  * w12.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p0.x,  p3.y  ), 0.0 ).rgb * w0.x  * w3.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p12.x, p3.y  ), 0.0 ).rgb * w12.x * w3.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p3.x,  p3.y  ), 0.0 ).rgb * w3.x  * w3.y;
+            M = max( acc, vec3( 0.0 ) );
+        }
+        else
+        {
+            M = textureLod( framebufRrDemodFactor_Sampler, uvM, 0.0 ).rgb;
+        }
+
+        c *= M;
+    }
+
     // Screen emissive at output resolution. Both source buffers are REGULAR
     // pixel space at render res; sampled by normalised coordinate so this works
     // at any upscale ratio.

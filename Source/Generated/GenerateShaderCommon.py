@@ -1417,8 +1417,16 @@ GLOBAL_UNIFORM_STRUCT = [
     # mid-exposure brightness matches the old post-add calibration. Took the
     # nrdReserved0 spare (float where a uint was, same 4 bytes).
     (TYPE_FLOAT32,      1,      "rrGlowScale",                      1),
-    (TYPE_UINT32,       1,      "nrdReserved1",                     1),
-    (TYPE_UINT32,       1,      "nrdReserved2",                     1),
+    # DLSS-RR albedo demodulation (the Remix approach, demodulate.comp.slang):
+    # RR denoises LIGHTING ONLY -- CmNoisyCompose divides the combined
+    # modulation factor M out of its input and stores M in RrDemodFactor;
+    # CmRrPostExposure re-multiplies M at OUTPUT resolution with the filter
+    # below. The pixel-art texel edges live in M and never enter the network,
+    # which is what was blurring them (soft even at DLAA = the model's floor).
+    # rrDemodFilter: 0 = bilinear, 1 = Catmull-Rom, 2 = nearest (full chunky).
+    # Took the two nrdReserved spares.
+    (TYPE_UINT32,       1,      "rrDemod",                          1),
+    (TYPE_UINT32,       1,      "rrDemodFilter",                    1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
@@ -1733,6 +1741,13 @@ FRAMEBUFFERS = {
     "NrdMotion"                         : (TYPE_FLOAT16,    COMPONENT_RGBA, 0),
     "NrdBaseColorMetalness"             : (TYPE_UNORM8,     COMPONENT_RGBA, 0),
     "NrdValidation"                     : (TYPE_UNORM8,     COMPONENT_RGBA, 0),
+
+    # DLSS-RR demodulation: the combined modulation factor M (ro_d+ro_s times
+    # guideMod, floored) that CmNoisyCompose divided out of RR's input.
+    # Re-multiplied at output res by CmRrPostExposure -- the crisp albedo/
+    # texel content rides HERE instead of through the network. Bilinear
+    # sampler flag so filter modes 0/1 can textureLod it.
+    "RrDemodFactor"                     : (TYPE_FLOAT16,    COMPONENT_RGBA, FRAMEBUF_FLAGS_BILINEAR_SAMPLER),
 
     # DLSS-RR: pInTransparencyLayer -- premultiplied RGBA16F, render res,
     # composited by NGX AFTER denoise+upscale. Every translucent sprite in the

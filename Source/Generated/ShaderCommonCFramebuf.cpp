@@ -90,6 +90,7 @@ const VkFormat RTGL1::ShFramebuffers_Formats[] =
     VK_FORMAT_R16G16B16A16_SFLOAT, // NrdMotion
     VK_FORMAT_R8G8B8A8_UNORM, // NrdBaseColorMetalness
     VK_FORMAT_R8G8B8A8_UNORM, // NrdValidation
+    VK_FORMAT_R16G16B16A16_SFLOAT, // RrDemodFactor
     VK_FORMAT_R16G16B16A16_SFLOAT, // RrTransparency
     VK_FORMAT_R16G16_SFLOAT, // GradientInputs
     VK_FORMAT_R16G16_SFLOAT, // GradientInputs_Prev
@@ -187,6 +188,7 @@ const RTGL1::FramebufferImageFlags RTGL1::ShFramebuffers_Flags[] =
     0, // NrdMotion
     0, // NrdBaseColorMetalness
     0, // NrdValidation
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // RrDemodFactor
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_IS_ATTACHMENT, // RrTransparency
     0, // GradientInputs
     0, // GradientInputs_Prev
@@ -291,6 +293,7 @@ const uint32_t RTGL1::ShFramebuffers_Bindings[] =
     90,
     91,
     92,
+    93,
 };
 
 const uint32_t RTGL1::ShFramebuffers_BindingsSwapped[] = 
@@ -382,17 +385,17 @@ const uint32_t RTGL1::ShFramebuffers_BindingsSwapped[] =
     84,
     85,
     86,
-    88,
     87,
     89,
+    88,
     90,
     91,
     92,
+    93,
 };
 
 const uint32_t RTGL1::ShFramebuffers_Sampler_Bindings[] = 
 {
-    93,
     94,
     95,
     96,
@@ -485,19 +488,20 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_Bindings[] =
     183,
     184,
     185,
+    186,
+    187,
 };
 
 const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] = 
 {
-    93,
     94,
-    96,
     95,
-    98,
     97,
-    100,
+    96,
     99,
+    98,
     101,
+    100,
     102,
     103,
     104,
@@ -507,13 +511,13 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     108,
     109,
     110,
-    112,
     111,
-    114,
     113,
-    116,
+    112,
     115,
+    114,
     117,
+    116,
     118,
     119,
     120,
@@ -522,31 +526,31 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     123,
     124,
     125,
-    127,
     126,
     128,
-    130,
+    127,
     129,
-    132,
     131,
+    130,
     133,
+    132,
     134,
     135,
-    137,
     136,
     138,
+    137,
     139,
-    141,
     140,
     142,
+    141,
     143,
     144,
     145,
-    147,
     146,
-    149,
     148,
+    147,
     150,
+    149,
     151,
     152,
     153,
@@ -557,14 +561,14 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     158,
     159,
     160,
-    162,
     161,
     163,
+    162,
     164,
     165,
-    167,
     166,
     168,
+    167,
     169,
     170,
     171,
@@ -576,12 +580,14 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     177,
     178,
     179,
-    181,
     180,
-    182,
+    181,
     183,
+    182,
     184,
     185,
+    186,
+    187,
 };
 
 const char *const RTGL1::ShFramebuffers_DebugNames[] = 
@@ -672,6 +678,7 @@ const char *const RTGL1::ShFramebuffers_DebugNames[] =
     "Framebuf NrdMotion",
     "Framebuf NrdBaseColorMetalness",
     "Framebuf NrdValidation",
+    "Framebuf RrDemodFactor",
     "Framebuf RrTransparency",
     "Framebuf GradientInputs",
     "Framebuf GradientInputs_Prev",
@@ -769,6 +776,7 @@ const wchar_t *const RTGL1::ShFramebuffers_DebugNamesW[] =
     L"Framebuf NrdMotion",
     L"Framebuf NrdBaseColorMetalness",
     L"Framebuf NrdValidation",
+    L"Framebuf RrDemodFactor",
     L"Framebuf RrTransparency",
     L"Framebuf GradientInputs",
     L"Framebuf GradientInputs_Prev",

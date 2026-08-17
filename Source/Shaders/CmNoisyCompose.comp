@@ -123,6 +123,10 @@ void main()
                           pix.y < int( globalUniform.renderHeight );
 
     vec3 illuminated = vec3( 0.0 );
+    // DLSS-RR demodulation: the combined modulation factor divided out of
+    // RR's input and re-applied at OUTPUT res by CmRrPostExposure. 1.0 =
+    // nothing divided (sky, or rrDemod off).
+    vec3 demodM      = vec3( 1.0 );
     // lighting-only signal for the disocclusion mask: irradiance without
     // albedo (cancels materials) and without specular (view-dependent)
     float signalLum  = 0.0;
@@ -228,6 +232,24 @@ void main()
                     break;
             }
 
+            // ALBEDO DEMODULATION (the Remix approach): RR denoises LIGHTING
+            // only. The combined modulation factor M -- which carries the
+            // crisp albedo/texel content the network was blurring (soft even
+            // at DLAA, so it is the model's floor) -- is divided out here,
+            // stored in RrDemodFactor, and re-multiplied at OUTPUT res by
+            // CmRrPostExposure. The floor makes the division safe on dark
+            // albedo; where floored, a little modulation stays baked in the
+            // input, which is exactly the benign direction. With material-
+            // free input, the albedo guides go NEUTRAL (the guide contract's
+            // pre-demodulated case; Remix ships this way).
+            if( globalUniform.rrDemod != 0 )
+            {
+                demodM      = max( ( ro_d + ro_s ) * guideMod, vec3( 0.02 ) );
+                illuminated = illuminated / demodM;
+                guideDiff   = vec3( 1.0 );
+                guideSpec   = vec3( 1.0 );
+            }
+
             signalLum = getLuminance( diffuse + indirect );
         }
         else
@@ -263,6 +285,7 @@ void main()
         }
 
         imageStore( framebufPreFinal, pix, vec4( max( vec3( 0.0 ), illuminated ), 0.0 ) );
+        imageStore( framebufRrDemodFactor, pix, vec4( demodM, 0.0 ) );
 
         // RR staging (reused SVGF buffers; safe while A-SVGF is skipped):
         imageStore( framebufDiffPingColorAndVariance, pix, vec4( normal, roughness ) );
