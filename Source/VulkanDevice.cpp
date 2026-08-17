@@ -1052,7 +1052,24 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );
         gu->rrGuideMin            = std::clamp( illum.rrGuideMin, 0.0f, 1.0f );
         gu->rrGuideMode           = std::clamp( illum.rrGuideMode, 0u, 2u );
-        gu->restirIndirAntilag    = !!illum.restirIndirAntilag;
+        // The indirect antilag gate reads framebufDISGradientHistory, written
+        // ONLY inside Denoiser::Denoise() (A-SVGF). On RR and NRD frames that
+        // pass never runs, so the gate samples an UNINITIALIZED or stale
+        // buffer -- and any garbage alpha > 0.25 rejects the indirect
+        // temporal tap, silently pinning GI at raw 1 spp with no ReSTIR
+        // accumulation. That was the long-suspected "either a dead no-op or
+        // it rejects GI reuse every frame" (GenerateShaderCommon.py), settled
+        // 2026-08-17 by the user's report of indirect-only noise under RR.
+        // HOST-GATED to frames where A-SVGF actually runs. (If an NRD
+        // bring-up fails and the frame falls back to A-SVGF, the gate is off
+        // for that session -- antilag off means slight GI ghosting risk,
+        // strictly better than the alternative.)
+        {
+            const bool asvgfRunsThisFrame =
+                !( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr ) &&
+                !illum.nrdDenoiser;
+            gu->restirIndirAntilag = !!illum.restirIndirAntilag && asvgfRunsThisFrame;
+        }
 
         const bool fromGame = !!illum.enableRrTemporalPrefilter;
         if( devmode && devmode->rrTemporalPrefilterSticky )
