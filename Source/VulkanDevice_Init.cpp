@@ -568,6 +568,17 @@ RTGL1::VulkanDevice::~VulkanDevice()
 {
     vkDeviceWaitIdle( device );
 
+    // Doom64-RT: MUST be destroyed here, in the body, while the VkDevice is
+    // alive -- NRDIntegration's teardown calls back into the device through
+    // NRI (destroy pipelines / free pools / unwrap the device). Every other
+    // subsystem is reset explicitly below for the same reason; this one was
+    // missed, so its IMPLICIT member destructor ran after vkDestroyDevice and
+    // NRI dispatched into a dead device -- an access violation inside
+    // nvoglv64.dll on every quit with rt_nrd enabled (CrashReport.zip,
+    // 2026-08-17, stack: RTGL1 -> NRI -> driver). The wait-idle above makes
+    // the destroy safe despite autoWaitForIdle being off.
+    nrdDenoiser.reset();
+
     if( devmode )
     {
         Dev_SaveSettings( true );
