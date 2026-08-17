@@ -46,6 +46,12 @@ SOFTWARE.
 #include <NRD.h>
 #include <NRDSettings.h>
 
+// NRDIntegration's own step log (NRD-Doom64RT.log in the CWD). It opens the
+// file EARLY in Recreate -- before the NRI interfaces are even fetched -- so
+// after a hang, file-missing means the block is in nriCreateDeviceFromVKDevice
+// itself, and the file's tail otherwise narrows the step. Kept on: the file is
+// tiny, and this lane has already hung twice in ways only bracketing found.
+#define NRD_INTEGRATION_DEBUG_LOGGING
 #include <NRDIntegration.hpp>
 
 #ifdef _WIN32
@@ -54,6 +60,12 @@ SOFTWARE.
     #endif
     #ifndef NOMINMAX
         #define NOMINMAX
+    #endif
+    // NRI's Message enum has an ERROR member and its header says "wingdi.h
+    // must not be included after" -- NOGDI keeps the ERROR macro out (only
+    // loader APIs are used here).
+    #ifndef NOGDI
+        #define NOGDI
     #endif
     #include <windows.h>
 #endif
@@ -70,6 +82,33 @@ const nrd::DenoiserDesc g_denoisers[] = {
     { nrd::Identifier( 2 ), nrd::Denoiser::RELAX_DIFFUSE_SPECULAR },
     { nrd::Identifier( 3 ), nrd::Denoiser::SIGMA_SHADOW },
 };
+
+// NRI's DEFAULT callbacks turn any Message::ERROR into DebugBreak()
+// (Creation.cpp AbortExecution) -- inside this game that surfaces as an
+// invisible "GZDoom Very Fatal Error" dialog behind the window and reads as
+// a 0%-CPU hang (2026-08-17, found by enumerating the process's windows).
+// Route messages into RTGL's log instead, and make abort a no-op: NRI's
+// creation paths return a failure Result after reporting, which is exactly
+// the clean path EnsureReady already handles.
+void NRI_CALL NriMessageToLog(
+    nri::Message messageType, const char* file, uint32_t line, const char* message, void* )
+{
+    RTGL1::debug::Warning( "NRI[{}]: {} ({}:{})",
+                           messageType == nri::Message::ERROR ? "ERROR"
+                           : messageType == nri::Message::WARNING
+                               ? "WARNING"
+                               : "INFO",
+                           message ? message : "(null)",
+                           file ? file : "?",
+                           line );
+}
+
+void NRI_CALL NriAbortToLog( void* )
+{
+    RTGL1::debug::Warning( "NRI: abort requested after the ERROR above -- continuing so the "
+                           "creation path can fail cleanly (NRD lane disabled, A-SVGF "
+                           "unaffected)" );
+}
 
 // NRI.dll is DELAY-LOADED (CMakeLists /DELAYLOAD:NRI.dll): the app loads
 // rt/bin/RTGL1.dll with plain LoadLibraryA, whose DEPENDENCY search covers the
@@ -167,8 +206,11 @@ void RTGL1::NrdDenoiser::Destroy()
 {
     if( m_valid && m_impl )
     {
-        // autoWaitForIdle is enabled on creation, so Destroy is safe with
-        // work in flight.
+        // autoWaitForIdle is OFF (see EnsureReady -- a mid-frame device wait
+        // deadlocks this engine), so destroying with NRD work in flight is on
+        // the caller. Stage 1 records no NRD GPU work at all, and the real
+        // teardown paths (device shutdown, resolution change) already sit
+        // behind RTGL's own wait-idle points.
         m_impl->integration.Destroy();
     }
     m_valid  = false;
@@ -198,6 +240,13 @@ bool RTGL1::NrdDenoiser::EnsureReady( uint32_t renderWidth, uint32_t renderHeigh
         return false;
     }
 
+    // Bracket logs: the first bring-up blocked the render thread with zero
+    // CPU (2026-08-17) and the only way to find WHERE without a debugger is
+    // to print before the step that never returns.
+    debug::Warning( "NRD: NRI.dll loaded; creating instance at {}x{}...",
+                    renderWidth,
+                    renderHeight );
+
     Destroy();
 
     auto integrationDesc = nrd::IntegrationCreationDesc{};
@@ -205,25 +254,54 @@ bool RTGL1::NrdDenoiser::EnsureReady( uint32_t renderWidth, uint32_t renderHeigh
     integrationDesc.resourceWidth  = uint16_t( renderWidth );
     integrationDesc.resourceHeight = uint16_t( renderHeight );
     integrationDesc.queuedFrameNum = uint8_t( MAX_FRAMES_IN_FLIGHT );
-    integrationDesc.autoWaitForIdle = true;
+    // MUST be false. autoWaitForIdle makes RecreatePipelines/Destroy call
+    // DeviceWaitIdle, and EnsureReady runs MID-FRAME on the render thread --
+    // in this engine the DXGI-present interop keeps cross-API timeline waits
+    // pending on the queue, so a mid-frame device-wait-idle never returns:
+    // render thread parked at 0% CPU, window still pumping (2026-08-17, found
+    // by bracketing). On first create there is nothing NRD-related in flight
+    // anyway; resize/teardown ordering is on US -- Duke-RT runs 'false' too
+    // and manages its own idles.
+    integrationDesc.autoWaitForIdle = false;
 
     auto instanceCreationDesc         = nrd::InstanceCreationDesc{};
     instanceCreationDesc.denoisers    = g_denoisers;
     instanceCreationDesc.denoisersNum = uint32_t( std::size( g_denoisers ) );
 
     // NRI wraps RTGL1's existing Vulkan objects; it does not own them. The
-    // extension lists are the ones the instance/device were actually created
-    // with (VulkanDevice_Init retains them for exactly this call) -- NRI
-    // gates its own capability usage on what it is told is enabled.
+    // lists tell NRI which capabilities it may use -- and it eagerly resolves
+    // dispatch tables for every extension it is told about, treating a
+    // missing entry point as FATAL. Declaring RTGL's full list made it demand
+    // vkCmdTraceRaysIndirect2KHR (ray_tracing_maintenance1, which RTGL never
+    // enables) just because ray_tracing_pipeline was mentioned (2026-08-17).
+    // This wrapped device exists ONLY to run NRD's compute dispatches, so
+    // declare exactly the intersection it needs: the three hard requirements
+    // plus the memory-budget query. Device extensions are filtered against
+    // what the device was ACTUALLY created with, so a lying declaration is
+    // impossible.
     auto instExts = std::vector< const char* >{};
     for( const auto& e : m_instanceExts )
     {
         instExts.push_back( e.c_str() );
     }
+    static constexpr const char* NRI_RELEVANT_DEVICE_EXTS[] = {
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+        VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+        VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+        VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+        VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
+    };
     auto devExts = std::vector< const char* >{};
     for( const auto& e : m_deviceExts )
     {
-        devExts.push_back( e.c_str() );
+        for( const char* allowed : NRI_RELEVANT_DEVICE_EXTS )
+        {
+            if( e == allowed )
+            {
+                devExts.push_back( e.c_str() );
+                break;
+            }
+        }
     }
 
     // MUST match the register shifts NRD's SPIR-V was generated with
@@ -243,7 +321,12 @@ bool RTGL1::NrdDenoiser::EnsureReady( uint32_t renderWidth, uint32_t renderHeigh
         .familyIndex = m_queueFamily,
     };
 
-    auto deviceDesc             = nri::DeviceCreationVKDesc{};
+    auto deviceDesc              = nri::DeviceCreationVKDesc{};
+    deviceDesc.callbackInterface = nri::CallbackInterface{
+        .MessageCallback = NriMessageToLog,
+        .AbortExecution  = NriAbortToLog,
+        .userArg         = nullptr,
+    };
     deviceDesc.vkBindingOffsets = bindingOffsets;
     deviceDesc.vkExtensions     = nri::VKExtensions{
             .instanceExtensions   = instExts.data(),

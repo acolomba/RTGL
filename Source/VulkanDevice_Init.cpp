@@ -1013,9 +1013,30 @@ void RTGL1::VulkanDevice::CreateDevice()
         .storageBuffer16BitAccess = 1,
     };
 
+    // Doom64-RT: the two features below are enabled solely for NRI, which
+    // wraps this device for the NRD denoiser lane and hard-requires
+    // extendedDynamicState + dynamicRendering + synchronization2
+    // (deps/NRI Source/VK/DeviceVK.hpp "Check hard requirements"; sync2 was
+    // already on). Both are additive -- nothing in RTGL1 changes behaviour by
+    // enabling them -- and universally supported on RT-capable drivers (core
+    // in Vulkan 1.3; this device is created as 1.2, so extension + feature
+    // must be stated explicitly or NRI's wrapped-device probe reads them as
+    // absent and refuses to create).
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extDynStateFeatures = {
+        .sType                = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext                = &storage16,
+        .extendedDynamicState = 1,
+    };
+
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynRenderingFeatures = {
+        .sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+        .pNext            = &extDynStateFeatures,
+        .dynamicRendering = 1,
+    };
+
     VkPhysicalDeviceSynchronization2FeaturesKHR sync2Features = {
         .sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-        .pNext            = &storage16,
+        .pNext            = &dynRenderingFeatures,
         .synchronization2 = 1,
     };
 
@@ -1059,6 +1080,9 @@ void RTGL1::VulkanDevice::CreateDevice()
         VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
         VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
         VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+        // for NRI (NRD lane) -- see the feature structs above
+        VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+        VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
 #ifdef RG_USE_DX12
         VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
         VK_KHR_EXTERNAL_FENCE_WIN32_EXTENSION_NAME,

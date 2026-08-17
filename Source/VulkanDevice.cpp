@@ -1367,9 +1367,29 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
         // data path (pack/demodulate -> NRD -> remodulate, replacing A-SVGF
         // below when active) is stage 2; until then A-SVGF still runs.
         {
-            const bool wantNrd =
-                !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).nrdDenoiser &&
-                !( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr );
+            const uint32_t nrdRequested =
+                pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).nrdDenoiser;
+            const bool rrBlocks =
+                renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr;
+            const bool wantNrd = nrdRequested != 0 && !rrBlocks;
+
+            // Print what actually ARRIVED, edge-triggered -- "no NRD line at
+            // all" must be distinguishable from "the request never reached
+            // RTGL" without a debugger (2026-08-17: rt_nrd 1 produced total
+            // silence, and this is how it was bisected).
+            {
+                static bool     s_nHave = false;
+                static uint32_t s_nPrev[ 2 ] = {};
+                if( !s_nHave || s_nPrev[ 0 ] != nrdRequested || s_nPrev[ 1 ] != uint32_t( rrBlocks ) )
+                {
+                    s_nHave      = true;
+                    s_nPrev[ 0 ] = nrdRequested;
+                    s_nPrev[ 1 ] = uint32_t( rrBlocks );
+                    debug::Warning( "NRD request: illum.nrdDenoiser={}, blockedByRR={}",
+                                    nrdRequested,
+                                    rrBlocks ? "yes" : "no" );
+                }
+            }
 
             if( wantNrd )
             {
