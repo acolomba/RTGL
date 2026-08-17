@@ -1358,6 +1358,35 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             }
         }
 
+        // Doom64-RT: the NRD lane, stage 1 of docs/plan-nrd-denoiser.md. With
+        // rt_nrd set, the FULL stack is brought up -- NRD compiled in, its
+        // embedded SPIR-V unpacked into pipelines, NRI wrapped around this
+        // very VkDevice, history pools allocated -- and its liveness is
+        // reported to rt-console.log. That is the half of the port that fails
+        // invisibly, so it lands and gets verified on its own. The Denoise()
+        // data path (pack/demodulate -> NRD -> remodulate, replacing A-SVGF
+        // below when active) is stage 2; until then A-SVGF still runs.
+        {
+            const bool wantNrd =
+                !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).nrdDenoiser &&
+                !( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr );
+
+            if( wantNrd )
+            {
+                if( !nrdDenoiser )
+                {
+                    nrdDenoiser = std::make_shared< NrdDenoiser >( instance,
+                                                                   physDevice->Get(),
+                                                                   device,
+                                                                   vkEnabledInstanceExtensions,
+                                                                   vkEnabledDeviceExtensions,
+                                                                   queues->GetIndexGraphics(),
+                                                                   1 );
+                }
+                nrdDenoiser->EnsureReady( renderResolution.Width(), renderResolution.Height() );
+            }
+        }
+
         if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
         {
             // Do NOT call AccumulateForRR here — feeding A-SVGF temporal into RR

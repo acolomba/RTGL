@@ -71,6 +71,7 @@ set(Sources
     "Source/Sharpening.cpp"
     "Source/DLSS2.cpp"
     "Source/DLSSRR.cpp"
+    "Source/NrdDenoiser.cpp"
     "Source/DLSS3_DX12.cpp"
     "Source/HaltonSequence.cpp"
     "Source/LensFlares.cpp"
@@ -132,6 +133,7 @@ option(RG_WITH_SURFACE_XLIB     "Build with Xlib VkSurfaceKHR support"      OFF)
 option(RG_WITH_IMGUI            "Build RTGL1 with ImGui debug windows"      ON)
 option(RG_WITH_DX12             "Build RTGL1 with DX12 features"            ON)
 option(RG_WITH_NATIVE_DLSS      "Build RTGL1 with native DLSS2"             ON)
+option(RG_WITH_NRD              "Build RTGL1 with the NVIDIA NRD denoiser lane (NRI-wrapped)" ON)
 
 option(RG_WITH_EXAMPLES         "Build with examples executable"            ON)
 
@@ -302,6 +304,87 @@ elseif (RG_WITH_NATIVE_DLSS)
         "Ray Reconstruction WILL BE COMPILED OUT of RTGL1.dll: rt_rayreconstr "
         "will appear to work but nvDlssRr is always null and no DLSSRR: log "
         "lines will ever be printed.")
+endif()
+
+# NRD + NRI (Doom64-RT: the third denoiser lane, docs/plan-nrd-denoiser.md).
+# Duke-RT's pattern: NRD's seven sources are compiled straight into this
+# target with the embedded pre-generated SPIR-V headers (deps/NRD/_Shaders,
+# produced once by tools/build-nrd-deps.cmd); NRI is a VK-only static build
+# from its own CMake (same script). The NRD_* definitions here MUST match
+# deps/NRD/Shaders/NRDConfig.hlsli or the C++ side and the shaders disagree
+# about the data layout silently.
+if (RG_WITH_NRD)
+    if (NOT DEFINED NRD_DEPS_PATH)
+        # deps/RTGL's siblings in the Doom64-RT layout
+        get_filename_component(NRD_DEPS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    endif()
+
+    set(_NRD_DIR  "${NRD_DEPS_PATH}/NRD")
+    set(_NRI_DIR  "${NRD_DEPS_PATH}/NRI")
+    set(_ML_DIR   "${NRD_DEPS_PATH}/MathLib")
+    set(_SM_DIR   "${NRD_DEPS_PATH}/ShaderMake")
+    # NRI is a SHARED library on purpose: its VK backend embeds its own
+    # VulkanMemoryAllocator implementation, and RTGL1.dll already embeds one --
+    # two static VMA implementation TUs in one binary are LNK2005 across every
+    # Vma* class. Duke-RT ships NRI as runtime DLLs for the same reason.
+    # NRI.dll must be staged next to RTGL1.dll (tools/build-rtgl.cmd does).
+    set(_NRI_LIBS "${_NRI_DIR}/_Bin/Release/NRI.lib")
+
+    if (NOT EXISTS "${_NRD_DIR}/Include/NRD.h" OR NOT EXISTS "${_NRD_DIR}/_Shaders")
+        message(FATAL_ERROR
+            "RG_WITH_NRD=ON but '${_NRD_DIR}' is missing NRD or its pre-generated "
+            "_Shaders headers. Run tools/build-nrd-deps.cmd first, or configure with "
+            "-DRG_WITH_NRD=OFF; do not build silently without the NRD lane.")
+    endif()
+    if (NOT EXISTS "${_NRI_DIR}/_Bin/Release/NRI.lib")
+        message(FATAL_ERROR
+            "RG_WITH_NRD=ON but NRI is not built ('${_NRI_DIR}/_Bin/Release/NRI.lib' "
+            "missing). Run tools/build-nrd-deps.cmd first.")
+    endif()
+
+    message(STATUS "RG_WITH_NRD enabled: NRD at ${_NRD_DIR}, NRI at ${_NRI_DIR}")
+
+    target_sources(RayTracedGL1 PRIVATE
+        "${_SM_DIR}/ShaderMake/ShaderBlob.cpp"
+        "${_NRD_DIR}/Source/Wrapper.cpp"
+        "${_NRD_DIR}/Source/InstanceImpl.cpp"
+        "${_NRD_DIR}/Source/Reblur.cpp"
+        "${_NRD_DIR}/Source/Relax.cpp"
+        "${_NRD_DIR}/Source/Sigma.cpp"
+        "${_NRD_DIR}/Source/Reference.cpp"
+        "${_NRD_DIR}/Source/Timer.cpp"
+    )
+    target_include_directories(RayTracedGL1 PRIVATE
+        "${_NRD_DIR}/Include"
+        "${_NRD_DIR}/Integration"
+        "${_NRD_DIR}/_Shaders"
+        "${_ML_DIR}"
+        "${_NRI_DIR}/Include"
+        "${_SM_DIR}"
+    )
+    target_link_libraries(RayTracedGL1 PRIVATE ${_NRI_LIBS})
+    # Must mirror deps/NRD/Shaders/NRDConfig.hlsli exactly (one deliberate
+    # divergence from Duke-RT there: ANTIFIREFLY=1, documented in the file).
+    target_compile_definitions(RayTracedGL1 PRIVATE
+        RG_USE_NRD
+        NRD_STATIC_LIBRARY=1
+        NRD_NORMAL_ENCODING=2
+        NRD_ROUGHNESS_ENCODING=1
+        NRD_SUPPORTS_VIEWPORT_OFFSET=0
+        NRD_SUPPORTS_CHECKERBOARD=0
+        NRD_SUPPORTS_HISTORY_CONFIDENCE=0
+        NRD_SUPPORTS_DISOCCLUSION_THRESHOLD_MIX=0
+        NRD_SUPPORTS_BASECOLOR_METALNESS=1
+        NRD_SUPPORTS_ANTIFIREFLY=1
+        REBLUR_PERFORMANCE_MODE=0
+        NRD_EMBEDS_SPIRV_SHADERS=1
+        NRD_EMBEDS_DXIL_SHADERS=0
+        NRD_EMBEDS_DXBC_SHADERS=0
+        SPIRV_SREG_OFFSET=0
+        SPIRV_BREG_OFFSET=2
+        SPIRV_UREG_OFFSET=3
+        SPIRV_TREG_OFFSET=20
+    )
 endif()
 
 # FSR2

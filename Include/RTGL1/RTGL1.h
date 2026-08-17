@@ -1284,6 +1284,12 @@ typedef struct RgDrawFrameIlluminationParams
     // the opaque surface BEHIND it. RR frames only; all other paths keep
     // rasterizing into the final image. Default: true
     RgBool32        rrTransparencyLayer;
+    // Doom64-RT: the NVIDIA NRD lane (ReBLUR/ReLAX/SIGMA via NRI wrapping the
+    // existing VkDevice). Stage 1: setting this brings the full NRD stack up
+    // and reports liveness in the log; the actual denoising data path is
+    // stage 2 and A-SVGF keeps running until it lands. Ignored while DLSS-RR
+    // is active (precedence: RR > NRD > A-SVGF). Default: false
+    RgBool32        nrdDenoiser;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

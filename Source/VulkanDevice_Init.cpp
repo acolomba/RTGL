@@ -846,6 +846,10 @@ void RTGL1::VulkanDevice::CreateInstance( const RgInstanceCreateInfo& info )
     VkResult r = vkCreateInstance( &instanceInfo, nullptr, &instance );
     VK_CHECKERROR( r );
 
+    // Doom64-RT: retained for NRD/NRI (NrdDenoiser) -- NRI wraps this instance
+    // and must be told exactly which extensions it was created with.
+    vkEnabledInstanceExtensions.assign( extensions.begin(), extensions.end() );
+
 
     if( LibConfig().vulkanValidation )
     {
@@ -1123,6 +1127,9 @@ void RTGL1::VulkanDevice::CreateDevice()
 
     VkResult r = vkCreateDevice( physDevice->Get(), &deviceCreateInfo, nullptr, &device );
     VK_CHECKERROR( r );
+
+    // Doom64-RT: retained for NRD/NRI (NrdDenoiser) -- same as the instance list.
+    vkEnabledDeviceExtensions.assign( deviceExtensions.begin(), deviceExtensions.end() );
 
     InitDeviceExtensionFunctions( device );
 
