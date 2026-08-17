@@ -363,6 +363,16 @@ if (RG_WITH_NRD)
         "${_SM_DIR}"
     )
     target_link_libraries(RayTracedGL1 PRIVATE ${_NRI_LIBS})
+    # DELAY-LOADED, and this is load-bearing: the app loads rt/bin/RTGL1.dll
+    # with plain LoadLibraryA (rgLoadLibraryAndCreate), so a STATIC import of
+    # NRI.dll would be resolved against the EXE's directory and PATH -- not
+    # rt/bin -- and RTGL1.dll itself would fail to load ("RTGL1.dll not
+    # found", with NRI.dll never mentioned). Delay-loading defers resolution
+    # until the first NRI call; NrdDenoiser::EnsureReady explicitly loads
+    # NRI.dll from RTGL1.dll's own directory before that call. Bonus: NRI.dll
+    # is not even mapped unless rt_nrd is actually enabled.
+    target_link_options(RayTracedGL1 PRIVATE "/DELAYLOAD:NRI.dll")
+    target_link_libraries(RayTracedGL1 PRIVATE delayimp)
     # Must mirror deps/NRD/Shaders/NRDConfig.hlsli exactly (one deliberate
     # divergence from Duke-RT there: ANTIFIREFLY=1, documented in the file).
     target_compile_definitions(RayTracedGL1 PRIVATE

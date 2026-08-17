@@ -48,6 +48,16 @@ SOFTWARE.
 
 #include <NRDIntegration.hpp>
 
+#ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
+#endif
+
 namespace
 {
 
@@ -60,6 +70,68 @@ const nrd::DenoiserDesc g_denoisers[] = {
     { nrd::Identifier( 2 ), nrd::Denoiser::RELAX_DIFFUSE_SPECULAR },
     { nrd::Identifier( 3 ), nrd::Denoiser::SIGMA_SHADOW },
 };
+
+// NRI.dll is DELAY-LOADED (CMakeLists /DELAYLOAD:NRI.dll): the app loads
+// rt/bin/RTGL1.dll with plain LoadLibraryA, whose DEPENDENCY search covers the
+// exe directory and PATH but NOT rt/bin -- a static import of NRI.dll made
+// RTGL1.dll itself fail to load, and the loader's error message names
+// RTGL1.dll, never the dependency ("rtgl1.dll not found", 2026-08-17). This
+// loads NRI.dll by full path from THIS module's own directory before the first
+// NRI call; once mapped, the delay-load resolver finds it by base name.
+bool PreloadNriFromOwnDirectory()
+{
+#ifdef _WIN32
+    static int s_state = 0; // 0 = untried, 1 = ok, -1 = failed (latched)
+    if( s_state != 0 )
+    {
+        return s_state > 0;
+    }
+
+    HMODULE self = nullptr;
+    if( !GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             reinterpret_cast< LPCSTR >( &PreloadNriFromOwnDirectory ),
+                             &self ) )
+    {
+        RTGL1::debug::Warning( "NRD: GetModuleHandleExA failed ({}) -- cannot locate "
+                               "RTGL1.dll's own directory to load NRI.dll from",
+                               uint32_t( GetLastError() ) );
+        s_state = -1;
+        return false;
+    }
+
+    char path[ MAX_PATH ]{};
+    if( GetModuleFileNameA( self, path, MAX_PATH ) == 0 )
+    {
+        RTGL1::debug::Warning( "NRD: GetModuleFileNameA failed ({})",
+                               uint32_t( GetLastError() ) );
+        s_state = -1;
+        return false;
+    }
+
+    if( char* lastSlash = strrchr( path, '\\' ) )
+    {
+        lastSlash[ 1 ] = '\0';
+    }
+    strncat_s( path, "NRI.dll", _TRUNCATE );
+
+    if( !LoadLibraryA( path ) )
+    {
+        RTGL1::debug::Warning( "NRD: LoadLibraryA(\"{}\") failed ({}) -- NRI.dll must sit "
+                               "next to RTGL1.dll (tools/build-rtgl.cmd stages it). The NRD "
+                               "lane is unavailable this session, A-SVGF unaffected",
+                               path,
+                               uint32_t( GetLastError() ) );
+        s_state = -1;
+        return false;
+    }
+
+    s_state = 1;
+    return true;
+#else
+    return true;
+#endif
+}
 
 }
 
@@ -114,6 +186,15 @@ bool RTGL1::NrdDenoiser::EnsureReady( uint32_t renderWidth, uint32_t renderHeigh
     {
         // A failed stack will not heal by retrying every frame; it would only
         // spam vkDeviceWaitIdle. One shot per session, loudly logged.
+        return false;
+    }
+
+    // Before ANY call that crosses into NRI: the delay-load resolver must be
+    // able to find NRI.dll, or the first nri* call raises the delay-load SEH
+    // exception instead of failing cleanly.
+    if( !PreloadNriFromOwnDirectory() )
+    {
+        m_failedOnce = true;
         return false;
     }
 
