@@ -1671,6 +1671,28 @@ FRAMEBUFFERS = {
     # then set to nullptr; this is the correct value. Written by RtRaygenDirect
     # in checkerboard space, resolved like the other direct outputs.
     "SpecularHitDistance"               : (TYPE_FLOAT16,    COMPONENT_R,    0),
+
+    # DLSS-RR: pInExposureTexture -- the "1x1 texture containing the final
+    # exposure scale" (nvsdk_ngx_defs.h). Under the pre-exposure reorder the
+    # network's colour input is raw radiance whose absolute scale swings ~52x
+    # with auto-exposure (EV100 2.0..7.7); the network is not scale-invariant,
+    # so it must be told the scale. CmPrepareFinal thread (0,0) writes
+    # ev100ToLuminousExposure(getCurrentEV100()) here -- the exact factor the
+    # post-RR pass multiplies by, from the same tonemapping buffer in the same
+    # frame. GPU-side because the value lives in tonemapping.avgLuminance and a
+    # readback would cost a frame of latency.
+    "RrExposure"                        : (TYPE_FLOAT32,    COMPONENT_R,    FRAMEBUF_FLAGS_SINGLE_PIXEL_SIZE),
+
+    # DLSS-RR: pInTransparencyLayer -- premultiplied RGBA16F, render res,
+    # composited by NGX AFTER denoise+upscale. Every translucent sprite in the
+    # game is RASTERIZED (rt_draw.cpp: "A translucent sprite is RASTERIZED by
+    # RTGL1 -- never in the BLAS"); without this layer they are baked into RR's
+    # colour input while every guide (albedo, normal, depth, MV) describes the
+    # opaque wall BEHIND them, so the network treats them as noise to remove.
+    # RGBA16F because alpha carries the NGX occlusion of the denoised
+    # background, which RGB-only packed formats cannot. Same size/aspect as
+    # Final so the world raster pass can render into it unchanged.
+    "RrTransparency"                    : (TYPE_FLOAT16,    COMPONENT_RGBA, FRAMEBUF_FLAGS_IS_ATTACHMENT),
 }
 
 if GRADIENT_ESTIMATION_ENABLED:

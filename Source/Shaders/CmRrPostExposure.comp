@@ -123,11 +123,19 @@ void main()
 
     // Screen emissive at output resolution. Both source buffers are REGULAR
     // pixel space at render res; sampled by normalised coordinate so this works
-    // at any upscale ratio. No jitter correction: CmVolumeCompose.comp:147-155
-    // measured both signs for the veil and neither mattered; the glow is
-    // smooth, and half a render texel is below its feature size. Revisit only
-    // if emissive panel edges shimmer under RR.
-    const vec2 uv = ( vec2( pix ) + 0.5 ) / vec2( push.width, push.height );
+    // at any upscale ratio.
+    //
+    // JITTER-CORRECTED, and this is load-bearing: the render-res buffers were
+    // written through a jittered projection, so their content shifts by a
+    // sub-pixel offset every frame. Pre-reorder that shift was consumed by RR
+    // itself (it dejitters its whole input); here the image is already
+    // reconstructed and stable, so adding the raw buffer back put a constant
+    // per-frame wobble over everything emissive -- reported from play as
+    // "visible constant jitter on the image". Same correction, same sign, as
+    // CmVolumeCompose.comp.
+    const vec2 uv = ( vec2( pix ) + 0.5 ) / vec2( push.width, push.height ) -
+                    vec2( globalUniform.jitterX, globalUniform.jitterY ) /
+                        vec2( globalUniform.renderWidth, globalUniform.renderHeight );
 
     // BILINEAR -- the reason ScreenEmission now carries
     // FRAMEBUF_FLAGS_BILINEAR_SAMPLER.

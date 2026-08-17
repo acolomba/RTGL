@@ -1270,6 +1270,20 @@ typedef struct RgDrawFrameIlluminationParams
     // difference" and "the pass never ran" stop being the same image.
     // Default: false
     RgBool32        rrPreExposureDebug;
+    // Doom64-RT: bind the 1x1 GPU-written exposure texture to DLSS-RR
+    // (pInExposureTexture). Only meaningful with rrPreExposure: the network's
+    // input is then raw radiance whose absolute scale swings ~52x with
+    // auto-exposure, and the network is not scale-invariant -- this is the
+    // SDK's mechanism for telling it the scale. Ignored when rrPreExposure is
+    // off. Default: true
+    RgBool32        rrExposureTexture;
+    // Doom64-RT: route rasterized content (every translucent sprite in the
+    // game, particles, lens flares) into DLSS-RR's transparency layer
+    // (pInTransparencyLayer, NGX-composited after denoise+upscale) instead of
+    // baking it into the denoiser's colour input, where every guide describes
+    // the opaque surface BEHIND it. RR frames only; all other paths keep
+    // rasterizing into the final image. Default: true
+    RgBool32        rrTransparencyLayer;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

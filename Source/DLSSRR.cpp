@@ -311,6 +311,8 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
                            bool                          resetAccumulation,
                            bool                          specHitDistEnabled,
                            bool                          disoccMaskEnabled,
+                           bool                          exposureTexEnabled,
+                           bool                          transparencyLayerEnabled,
                            const float*                  worldToViewMatrix16,
                            const float*                  viewToClipMatrix16 )
     -> FramebufferImageIndex
@@ -360,12 +362,27 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
         FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE,
         FB_IMAGE_INDEX_RR_DISOCCLUSION,
         FB_IMAGE_INDEX_SPECULAR_HIT_DISTANCE,
+        FB_IMAGE_INDEX_RR_EXPOSURE,
     };
 
     framebuffers.BarrierMultiple( cmd, //
                                   frameIndex,
                                   INPUT_IMAGES,
                                   Framebuffers::BarrierType::Storage );
+
+    // Doom64-RT: the transparency layer is written as a COLOR ATTACHMENT by the
+    // world raster pass, not as shader storage -- BarrierType::Storage would
+    // name the wrong srcAccess (SHADER_WRITE) and leave the attachment writes
+    // un-made-available. BarrierType::All includes COLOR_ATTACHMENT_WRITE.
+    {
+        constexpr FramebufferImageIndex ATTACHMENT_INPUTS[] = {
+            FB_IMAGE_INDEX_RR_TRANSPARENCY,
+        };
+        framebuffers.BarrierMultiple( cmd, //
+                                      frameIndex,
+                                      ATTACHMENT_INPUTS,
+                                      Framebuffers::BarrierType::All );
+    }
 
     // Doom64-RT: the OUTPUT image needs a barrier too. NGX writes UPSCALED_PONG
     // in compute, but the previous frame's post-effect chain ping-pongs through
@@ -402,6 +419,8 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     NVSDK_NGX_Resource_VK specAlbResource   = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_DIFF_PONG_COLOR_AND_VARIANCE, sourceSize );
     NVSDK_NGX_Resource_VK disoccResource    = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_RR_DISOCCLUSION, sourceSize );
     NVSDK_NGX_Resource_VK specHitDistResource = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_SPECULAR_HIT_DISTANCE, sourceSize );
+    NVSDK_NGX_Resource_VK exposureResource  = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_RR_EXPOSURE, NVSDK_NGX_Dimensions{ 1, 1 } );
+    NVSDK_NGX_Resource_VK transLayerResource = ToNGXResource( framebuffers, frameIndex, FB_IMAGE_INDEX_RR_TRANSPARENCY, sourceSize );
     // clang-format on
 
     // Matrices must outlive Evaluate — NGX reads pointers asynchronously with the cmd buffer.
@@ -458,6 +477,21 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer               cmd,
     // both states left the buffer bound, so the toggle never tested the
     // pre-2026-08-06 configuration (no mask at all).
     evalParams.pInDisocclusionMask       = disoccMaskEnabled ? &disoccResource : nullptr;
+    // The 1x1 "final exposure scale" (nvsdk_ngx_defs.h) written by
+    // CmPrepareFinal from the tonemapping buffer. Only meaningful with the
+    // pre-exposure reorder: with InPreExposure = 1.0 and unexposed radiance in
+    // pInColor, this is how the network learns the frame's absolute scale --
+    // Doom's auto-exposure swings it ~52x between a lit hall and a dark
+    // crypt, and the network is not scale-invariant. The caller gates this on
+    // rrPreExposure: binding it against an ALREADY-exposed input would declare
+    // the scale twice.
+    evalParams.pInExposureTexture        = exposureTexEnabled ? &exposureResource : nullptr;
+    // Premultiplied RGBA16F layer holding everything the world raster pass
+    // drew (translucent sprites, particles, lens flares), composited by NGX
+    // AFTER denoise+upscale. Without it that content is baked into pInColor
+    // while every guide describes the opaque surface BEHIND it. nullptr when
+    // disabled -- same unbind-vs-zero reasoning as the disocclusion mask.
+    evalParams.pInTransparencyLayer      = transparencyLayerEnabled ? &transLayerResource : nullptr;
     evalParams.pInWorldToViewMatrix      = worldToView;
     evalParams.pInViewToClipMatrix       = viewToClip;
 
@@ -534,10 +568,12 @@ auto RTGL1::DLSSRR::Apply( VkCommandBuffer,
                            RgFloat2D,
                            double,
                            bool,
-                           bool, // specHitDistEnabled -- the stub must match the
-                           bool, // disoccMaskEnabled  -- 11-param declaration or
-                                 // a build without RG_USE_NATIVE_DLSS2 cannot
-                                 // compile (out-of-line def with no decl)
+                           bool, // specHitDistEnabled     -- the stub must match
+                           bool, // disoccMaskEnabled      -- the 13-param
+                           bool, // exposureTexEnabled     -- declaration or a
+                           bool, // transparencyLayerEnabled -- build without
+                                 // RG_USE_NATIVE_DLSS2 cannot compile
+                                 // (out-of-line def with no decl)
                            const float*,
                            const float* ) -> FramebufferImageIndex
 {

@@ -52,7 +52,20 @@ RTGL1::RasterPass::RasterPass( VkDevice                    _device,
         CreateWorldRenderPass( ShFramebuffers_Formats[ FB_IMAGE_INDEX_FINAL ],
                                ShFramebuffers_Formats[ FB_IMAGE_INDEX_SCREEN_EMISSION ],
                                ShFramebuffers_Formats[ FB_IMAGE_INDEX_REACTIVITY ],
-                               DEPTH_FORMAT );
+                               DEPTH_FORMAT,
+                               false );
+
+    // Doom64-RT: the DLSS-RR transparency layer variant. Identical structure
+    // (so the same geometry stream and shaders draw into it), but attachment 0
+    // is the layer image cleared to (0,0,0,0) on load -- an empty layer, not
+    // last frame's -- while ScreenEmission/Reactivity stay LOAD because they
+    // hold this frame's ray-traced content already.
+    worldTransparencyRenderPass =
+        CreateWorldRenderPass( ShFramebuffers_Formats[ FB_IMAGE_INDEX_RR_TRANSPARENCY ],
+                               ShFramebuffers_Formats[ FB_IMAGE_INDEX_SCREEN_EMISSION ],
+                               ShFramebuffers_Formats[ FB_IMAGE_INDEX_REACTIVITY ],
+                               DEPTH_FORMAT,
+                               true );
 
     // otherwise, we need to create classicRenderPass for different formats
     {
@@ -76,6 +89,22 @@ RTGL1::RasterPass::RasterPass( VkDevice                    _device,
                                                  "FragWorld",
                                                  true,
                                                  _instanceInfo.rasterizedVertexColorGamma );
+    // Same shaders and states as worldPipelines; only attachment-0 alpha
+    // blending differs (NGX coverage semantics, see RasterizerPipelines).
+    // Pipelines are created lazily per state, so this instance costs nothing
+    // until the transparency layer actually draws.
+    worldTransparencyPipelines =
+        std::make_shared< RasterizerPipelines >( device,
+                                                 _pipelineLayout,
+                                                 worldTransparencyRenderPass,
+                                                 _shaderManager,
+                                                 "VertDefault",
+                                                 "FragWorld",
+                                                 true,
+                                                 _instanceInfo.rasterizedVertexColorGamma,
+                                                 nullptr,
+                                                 nullptr,
+                                                 true );
     classicPipelines =
         std::make_shared< RasterizerPipelines >( device,
                                                  _pipelineLayout,
@@ -103,6 +132,7 @@ RTGL1::RasterPass::RasterPass( VkDevice                    _device,
 RTGL1::RasterPass::~RasterPass()
 {
     vkDestroyRenderPass( device, worldRenderPass, nullptr );
+    vkDestroyRenderPass( device, worldTransparencyRenderPass, nullptr );
     vkDestroyRenderPass( device, classicRenderPass, nullptr );
     vkDestroyRenderPass( device, skyRenderPass, nullptr );
     DestroyFramebuffers();
@@ -149,6 +179,7 @@ void RTGL1::RasterPass::CreateFramebuffers( uint32_t              renderWidth,
         assert( sameAtAnyFrameIndex( FB_IMAGE_INDEX_ALBEDO ) );
         assert( sameAtAnyFrameIndex( FB_IMAGE_INDEX_UPSCALED_PING ) );
         assert( sameAtAnyFrameIndex( FB_IMAGE_INDEX_UPSCALED_PONG ) );
+        assert( sameAtAnyFrameIndex( FB_IMAGE_INDEX_RR_TRANSPARENCY ) );
 
         assert( renderDepth.image == VK_NULL_HANDLE );
         assert( renderDepth.view == VK_NULL_HANDLE );
@@ -188,6 +219,35 @@ void RTGL1::RasterPass::CreateFramebuffers( uint32_t              renderWidth,
 
         SET_DEBUG_NAME(
             device, worldFramebuffer, VK_OBJECT_TYPE_FRAMEBUFFER, "Rasterizer raster framebuffer" );
+    }
+    // world at render size, into the DLSS-RR transparency layer -- identical
+    // except attachment 0
+    {
+        VkImageView attchs[] = {
+            storageFramebuffers.GetImageView( FB_IMAGE_INDEX_RR_TRANSPARENCY, 0 ),
+            storageFramebuffers.GetImageView( FB_IMAGE_INDEX_SCREEN_EMISSION, 0 ),
+            storageFramebuffers.GetImageView( FB_IMAGE_INDEX_REACTIVITY, 0 ),
+            renderDepth.view,
+        };
+
+        VkFramebufferCreateInfo fbInfo = {
+            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass      = worldTransparencyRenderPass,
+            .attachmentCount = std::size( attchs ),
+            .pAttachments    = attchs,
+            .width           = renderWidth,
+            .height          = renderHeight,
+            .layers          = 1,
+        };
+
+        VkResult r =
+            vkCreateFramebuffer( device, &fbInfo, nullptr, &worldTransparencyFramebuffer );
+        VK_CHECKERROR( r );
+
+        SET_DEBUG_NAME( device,
+                        worldTransparencyFramebuffer,
+                        VK_OBJECT_TYPE_FRAMEBUFFER,
+                        "Rasterizer RR transparency framebuffer" );
     }
     // world at upscaled size, for classic mode
     {
@@ -271,6 +331,7 @@ void RTGL1::RasterPass::DestroyFramebuffers()
 
     VkFramebuffer* todelete[] = {
         &worldFramebuffer,
+        &worldTransparencyFramebuffer,
         &classicFramebuffer_UpscaledPing,
         &classicFramebuffer_UpscaledPong,
         &classicFramebuffer_Final,
@@ -340,9 +401,26 @@ VkFramebuffer RTGL1::RasterPass::GetSkyFramebuffer() const
     return skyFramebuffer;
 }
 
+VkRenderPass RTGL1::RasterPass::GetWorldTransparencyRenderPass() const
+{
+    return worldTransparencyRenderPass;
+}
+
+VkFramebuffer RTGL1::RasterPass::GetWorldTransparencyFramebuffer() const
+{
+    return worldTransparencyFramebuffer;
+}
+
+const std::shared_ptr< RTGL1::RasterizerPipelines >&
+RTGL1::RasterPass::GetWorldTransparencyPipelines() const
+{
+    return worldTransparencyPipelines;
+}
+
 void RTGL1::RasterPass::OnShaderReload( const ShaderManager* shaderManager )
 {
     worldPipelines->OnShaderReload( shaderManager );
+    worldTransparencyPipelines->OnShaderReload( shaderManager );
     classicPipelines->OnShaderReload( shaderManager );
     skyPipelines->OnShaderReload( shaderManager );
 
@@ -352,14 +430,18 @@ void RTGL1::RasterPass::OnShaderReload( const ShaderManager* shaderManager )
 VkRenderPass RTGL1::RasterPass::CreateWorldRenderPass( VkFormat finalImageFormat,
                                                        VkFormat screenEmisionFormat,
                                                        VkFormat reactivityFormat,
-                                                       VkFormat depthImageFormat ) const
+                                                       VkFormat depthImageFormat,
+                                                       bool     clearColorAttch0 ) const
 {
     const VkAttachmentDescription attchs[] = {
         {
-            // final image attachment
+            // final image attachment; for the DLSS-RR transparency layer
+            // variant it is CLEARED to zero -- the layer must start empty
+            // every frame, and clear-on-load costs nothing while a separate
+            // vkCmdClearColorImage would need its own barriers
             .format         = finalImageFormat,
             .samples        = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .loadOp = clearColorAttch0 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
             .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,

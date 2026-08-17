@@ -65,6 +65,8 @@ public:
                 bool                          resetAccumulation,
                 bool                          specHitDistEnabled,
                 bool                          disoccMaskEnabled,
+                bool                          exposureTexEnabled,
+                bool                          transparencyLayerEnabled,
                 const float*                  worldToViewMatrix16,
                 const float*                  viewToClipMatrix16 ) -> FramebufferImageIndex;
 

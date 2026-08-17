@@ -92,6 +92,22 @@ void main()
         return;
     }
 
+    // Doom64-RT: DLSS-RR pInExposureTexture, the 1x1 "final exposure scale".
+    // Under the pre-exposure reorder the network's colour input is raw
+    // radiance whose absolute scale swings ~52x with auto-exposure, and the
+    // network is not scale-invariant -- this is how it is told the scale.
+    // Written HERE because this pass already binds the tonemapping set, runs
+    // after CalculateExposure and before RR, and the value is by construction
+    // the very factor CmRrPostExposure multiplies by. Floored away from zero:
+    // frame 0 has avgLuminance 0, and NGX treating exposure 0.0 as a real
+    // scale would zero the network's input.
+    if( globalUniform.rrPreExposure != 0 && pix == ivec2( 0 ) )
+    {
+        imageStore( framebufRrExposure,
+                    ivec2( 0 ),
+                    vec4( max( ev100ToLuminousExposure( getCurrentEV100() ), 1e-6 ), 0, 0, 0 ) );
+    }
+
     vec3 hdr = texelFetch( framebufFinal_Sampler, pix, 0 ).rgb;
 
     // Doom64-RT: the medium's transmittance at this pixel, kept so the screen

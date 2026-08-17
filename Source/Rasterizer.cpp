@@ -386,15 +386,18 @@ void RTGL1::Rasterizer::DrawToFinalImage( VkCommandBuffer               cmd,
                                           const float*                  proj,
                                           const RgFloat2D&              jitter,
                                           const RenderResolutionHelper& renderResolution,
-                                          float                         lightmapScreenCoverage )
+                                          float                         lightmapScreenCoverage,
+                                          bool                          toRrTransparencyLayer )
 {
-    auto label = CmdLabel{ cmd, "Rasterized to final framebuf" };
+    auto label = CmdLabel{ cmd,
+                           toRrTransparencyLayer ? "Rasterized to RR transparency layer"
+                                                 : "Rasterized to final framebuf" };
     using FI   = FramebufferImageIndex;
 
 
     FI fs[] = {
         FI::FB_IMAGE_INDEX_DEPTH_NDC,
-        FI::FB_IMAGE_INDEX_FINAL,
+        toRrTransparencyLayer ? FI::FB_IMAGE_INDEX_RR_TRANSPARENCY : FI::FB_IMAGE_INDEX_FINAL,
     };
     storageFramebuffers->BarrierMultiple( cmd, frameIndex, fs );
 
@@ -425,10 +428,14 @@ void RTGL1::Rasterizer::DrawToFinalImage( VkCommandBuffer               cmd,
     };
 
     const RasterDrawParams params = {
-        .pipelines       = rasterPass->GetRasterPipelines().get(),
+        .pipelines       = toRrTransparencyLayer
+                               ? rasterPass->GetWorldTransparencyPipelines().get()
+                               : rasterPass->GetRasterPipelines().get(),
         .drawInfos       = collector->GetDrawInfos( GeometryRasterType::WORLD ),
-        .renderPass      = rasterPass->GetWorldRenderPass(),
-        .framebuffer     = rasterPass->GetWorldFramebuffer(),
+        .renderPass      = toRrTransparencyLayer ? rasterPass->GetWorldTransparencyRenderPass()
+                                                 : rasterPass->GetWorldRenderPass(),
+        .framebuffer     = toRrTransparencyLayer ? rasterPass->GetWorldTransparencyFramebuffer()
+                                                 : rasterPass->GetWorldFramebuffer(),
         .width           = renderResolution.Width(),
         .height          = renderResolution.Height(),
         .vertexBuffer    = collector->GetVertexBuffer(),

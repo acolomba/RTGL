@@ -1305,20 +1305,32 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                 const uint32_t spechit = uniform->GetData()->rrSpecHitDist;
                 const uint32_t guide   = uniform->GetData()->rrGuideMode;
 
+                const auto& illumRr = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+                const uint32_t exptex =
+                    ( uniform->GetData()->rrPreExposure != 0 && illumRr.rrExposureTexture ) ? 1u
+                                                                                            : 0u;
+                const uint32_t translayer =
+                    ( illumRr.rrTransparencyLayer && !drawInfo.disableRasterization ) ? 1u : 0u;
+
                 static bool     s_gHave = false;
-                static uint32_t s_gPrev[ 3 ] = {};
+                static uint32_t s_gPrev[ 5 ] = {};
                 if( !s_gHave || s_gPrev[ 0 ] != disocc || s_gPrev[ 1 ] != spechit ||
-                    s_gPrev[ 2 ] != guide )
+                    s_gPrev[ 2 ] != guide || s_gPrev[ 3 ] != exptex || s_gPrev[ 4 ] != translayer )
                 {
                     s_gHave    = true;
                     s_gPrev[ 0 ] = disocc;
                     s_gPrev[ 1 ] = spechit;
                     s_gPrev[ 2 ] = guide;
+                    s_gPrev[ 3 ] = exptex;
+                    s_gPrev[ 4 ] = translayer;
                     debug::Warning( "RR guides: pInDisocclusionMask={}, "
-                                    "pInSpecularHitDistance={}, albedo guide mode={}",
+                                    "pInSpecularHitDistance={}, albedo guide mode={}, "
+                                    "pInExposureTexture={}, pInTransparencyLayer={}",
                                     disocc ? "BOUND" : "nullptr",
                                     spechit ? "BOUND" : "nullptr",
-                                    guide );
+                                    guide,
+                                    exptex ? "BOUND (1x1, CmPrepareFinal)" : "nullptr",
+                                    translayer ? "BOUND (raster redirected)" : "nullptr" );
 
                     // b031a21 replaced the hardcoded TEMPORAL_RADIUS 2 with this
                     // uniform, and bisect blames that commit for the RR worm
@@ -1365,9 +1377,25 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
     imageComposition->PrepareForRaster( cmd, frameIndex, uniform.get() );
     volumetric->BarrierToReadIllumination( cmd, frameIndex );
 
+    // Doom64-RT: with DLSS-RR active, rasterized content (every translucent
+    // sprite in the game, particles, lens flares) is redirected into the NGX
+    // transparency layer instead of the final image. Baked into FINAL it
+    // becomes part of RR's colour input while every guide (albedo, normal,
+    // depth, MV) describes the opaque surface BEHIND it -- content the network
+    // is explicitly told is not there, i.e. noise to remove. The layer is
+    // NGX-composited after denoise+upscale, which is NVIDIA's sanctioned
+    // route for exactly this content. Gated per-frame on the same condition
+    // the RR branch below uses, so the layer can never be bound on a frame
+    // whose raster did not fill it (disableRasterization included).
+    const bool rrTransLayer = renderResolution.IsNvDlssRayReconstructionEnabled() &&
+                              nvDlssRr != nullptr &&
+                              !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo )
+                                    .rrTransparencyLayer &&
+                              !drawInfo.disableRasterization;
+
     if( !drawInfo.disableRasterization )
     {
-        // draw rasterized geometry into the final image
+        // draw rasterized geometry into the final image (or the RR layer)
         rasterizer->DrawToFinalImage( cmd,
                                       frameIndex,
                                       *textureManager,
@@ -1378,7 +1406,8 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                       cameraInfo.projection,
                                       jitter,
                                       renderResolution,
-                                      lightmapScreenCoverage );
+                                      lightmapScreenCoverage,
+                                      rrTransLayer );
     }
 
     imageComposition->Finalize( cmd,
@@ -1466,6 +1495,12 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
         {
             if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
             {
+                // Exposure texture only with the pre-exposure reorder: against
+                // an already-exposed input it would declare the scale twice.
+                const bool rrExpTex =
+                    uniform->GetData()->rrPreExposure != 0 &&
+                    !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).rrExposureTexture;
+
                 accum = nvDlssRr->Apply( cmd,
                                          frameIndex,
                                          *framebuffers,
@@ -1475,6 +1510,8 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                          resetHistory,
                                          uniform->GetData()->rrSpecHitDist != 0,
                                          uniform->GetData()->rrDisoccEnable != 0,
+                                         rrExpTex,
+                                         rrTransLayer,
                                          uniform->GetData()->view,
                                          uniform->GetData()->projection );
             }
