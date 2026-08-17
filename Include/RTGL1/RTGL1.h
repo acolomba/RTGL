@@ -1290,13 +1290,19 @@ typedef struct RgDrawFrameIlluminationParams
     // stage 2 and A-SVGF keeps running until it lands. Ignored while DLSS-RR
     // is active (precedence: RR > NRD > A-SVGF). Default: false
     RgBool32        nrdDenoiser;
-    // Doom64-RT: under rrPreExposure, add the screen-emission glow into RR's
-    // INPUT (pre-exposure units, algebraically exact) instead of after RR.
-    // The post-RR add resamples the jittered render-res glow buffer at a
-    // different sub-texel phase every frame, which shimmers on sharp emissive
-    // edges (lamp bulbs). Only read while rrPreExposure is active.
-    // Default: true
-    RgBool32        rrGlowPre;
+    // Doom64-RT: where the screen-emission glow goes under rrPreExposure.
+    //   0 = added after RR (jitter-corrected Catmull-Rom; residual shimmer
+    //       on sharp emissive edges is irreducible in this mode)
+    //   1 = in RR's input, divided by live exposure (exact brightness, but
+    //       the input pulses while auto-exposure adapts)
+    //   2 = in RR's input at the FIXED rrGlowScale ("glow as light": stable
+    //       input, no shimmer, glow rides the exposure like the emissive
+    //       surface it halos)
+    // Only read while rrPreExposure is active. Default: 0
+    uint32_t        rrGlowPre;
+    // Doom64-RT: mode 2's fixed pre-exposure scale; ~35 matches the old
+    // post-add brightness at the EV100 midpoint. Default: 35
+    float           rrGlowScale;
     // Doom64-RT: NRD lane -- paint NRD's OUT_VALIDATION overlay instead of
     // the image (vendor-supplied guide/reprojection sanity view). Only
     // meaningful while nrdDenoiser is active. Default: false

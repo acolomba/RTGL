@@ -423,7 +423,7 @@ struct ShGlobalUniform
     float volumeGridHistory;
     uint rrGlowPre;
     uint nrdValidation;
-    uint nrdReserved0;
+    float rrGlowScale;
     uint nrdReserved1;
     uint nrdReserved2;
     vec4 smokePuffs[128];

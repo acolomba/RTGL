@@ -368,25 +368,42 @@ void main()
     }
     else if( globalUniform.rrGlowPre != 0 )
     {
-        // Doom64-RT: the glow goes back into RR's INPUT, in PRE-exposure
-        // units. Adding it post-RR (CmRrPostExposure) sampled the JITTERED
-        // render-res buffer with one bilinear tap per frame at a shifting
-        // sub-texel phase -- every sharp emissive edge shimmered, reported
-        // from play as flickery lamp bulbs. Here the glow and the frame share
-        // the same jittered space (texelFetch, same pixel), so RR dejitters
-        // and temporally stabilizes both together, exactly as the
-        // pre-reorder pipeline always did. emissionMaxScreenColor is
-        // calibrated in POST-exposure units, so divide by the same EV100
-        // factor the post pass multiplies back -- algebraically exact, same
-        // floor as the 1x1 exposure texture write above.
+        // Doom64-RT: the glow goes into RR's INPUT. Adding it post-RR
+        // (CmRrPostExposure) resamples the JITTERED render-res buffer at a
+        // shifting sub-texel phase every frame -- sharp emissive edges
+        // shimmer, and no filter fully fixes it (Catmull-Rom measured
+        // insufficient). Here the glow and the frame share the same jittered
+        // space (texelFetch, same pixel), so RR dejitters and stabilizes
+        // both together. Two ways to scale it:
+        //
+        //   mode 1: divide by the live EV100 factor the post pass multiplies
+        //     back -- algebraically EXACT final brightness, but the input
+        //     term carries 1/exposure(t) and PULSES while auto-exposure
+        //     adapts; RR reads flashlight toggles and room transitions as
+        //     the scene changing (measured from play).
+        //   mode 2 ("glow as light"): a FIXED pre-exposure scale
+        //     (rrGlowScale, ~1/exposure-at-EV100-midpoint). Temporally
+        //     stable input, and the glow simply rides the exposure like the
+        //     emissive surface it halos -- brighter in dark rooms, dimmer in
+        //     bright ones, exactly as the bulb itself already does. The one
+        //     concession: glow brightness is no longer exposure-invariant,
+        //     which was an overlay artifact, not a feature.
         vec3 screenEmis = texelFetch( framebufScreenEmission_Sampler, pix, 0 ).rgb;
         if( globalUniform.volumeOccludeEmis != 0 )
         {
             screenEmis *= volumeTransmittance;
         }
 
-        const float exposure = max( ev100ToLuminousExposure( getCurrentEV100() ), 1e-6 );
-        hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor / exposure;
+        if( globalUniform.rrGlowPre == 2 )
+        {
+            hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor *
+                            max( globalUniform.rrGlowScale, 0.0 );
+        }
+        else
+        {
+            const float exposure = max( ev100ToLuminousExposure( getCurrentEV100() ), 1e-6 );
+            hdr = hdr + screenEmis * globalUniform.emissionMaxScreenColor / exposure;
+        }
     }
 
     if( globalUniform.debugShowFlags != 0 )

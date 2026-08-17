@@ -727,8 +727,14 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             gu->volumeGridHistory  = std::clamp( params.volumeGridHistory, 0.0f, 64.0f );
             // Doom64-RT: rrGlowPre took the volumeReserved3 spare. Only read by
             // the shaders when rrPreExposure is active, so the raw request is
-            // fine here (no host gate needed).
-            gu->rrGlowPre = !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).rrGlowPre;
+            // fine here (no host gate needed). 0=post-add, 1=/exposure,
+            // 2=fixed rrGlowScale ("glow as light").
+            {
+                const auto& illumGlow =
+                    pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+                gu->rrGlowPre   = std::min( illumGlow.rrGlowPre, 2u );
+                gu->rrGlowScale = std::max( illumGlow.rrGlowScale, 0.0f );
+            }
 
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );
@@ -1028,9 +1034,9 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                                 : 0u;
         gu->rrPreExpDebug = !!illum.rrPreExposureDebug;
 
-        // NRD lane: validation overlay switch + the alignment spares.
+        // NRD lane: validation overlay switch + the alignment spares
+        // (nrdReserved0 became rrGlowScale, assigned with rrGlowPre above).
         gu->nrdValidation = !!illum.nrdValidation;
-        gu->nrdReserved0  = 0;
         gu->nrdReserved1  = 0;
         gu->nrdReserved2  = 0;
 
