@@ -28,7 +28,9 @@ SOFTWARE.
 #include "Framebuffers.h"
 #include "Generated/ShaderCommonC.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 
 #ifdef RG_USE_NRD
@@ -382,7 +384,8 @@ bool RTGL1::NrdDenoiser::Denoise( VkCommandBuffer        cmd,
                                   const ShGlobalUniform* gu,
                                   double                 timeDeltaSeconds,
                                   bool                   resetHistory,
-                                  bool                   enableValidation )
+                                  bool                   enableValidation,
+                                  const Tuning&          tuning )
 {
     if( !m_valid || !gu )
     {
@@ -391,12 +394,77 @@ bool RTGL1::NrdDenoiser::Denoise( VkCommandBuffer        cmd,
 
     m_impl->integration.NewFrame();
 
-    // ReLAX with mostly-default settings; anti-firefly on because this game's
-    // 1-spp ReSTIR genuinely produces fireflies (A-SVGF ships a pass for
-    // them). Tuning knobs become cvars once the lane is judged worth keeping.
+    // ReLAX defaults + the live tuning block (0 = keep the default). Anti-
+    // firefly on by default because this game's 1-spp ReSTIR genuinely
+    // produces fireflies (A-SVGF ships a pass for them).
     {
-        auto relax            = nrd::RelaxSettings{};
-        relax.enableAntiFirefly = true;
+        auto relax              = nrd::RelaxSettings{};
+        relax.enableAntiFirefly = tuning.antiFirefly;
+
+        if( tuning.maxAccumFrames != 0 )
+        {
+            relax.diffuseMaxAccumulatedFrameNum  = tuning.maxAccumFrames;
+            relax.specularMaxAccumulatedFrameNum = tuning.maxAccumFrames;
+        }
+        if( tuning.fastAccumFrames != 0 )
+        {
+            relax.diffuseMaxFastAccumulatedFrameNum  = tuning.fastAccumFrames;
+            relax.specularMaxFastAccumulatedFrameNum = tuning.fastAccumFrames;
+        }
+        if( tuning.atrousIterations != 0 )
+        {
+            relax.atrousIterationNum = std::clamp( tuning.atrousIterations, 2u, 8u );
+        }
+        if( tuning.prepassDiffuse > 0.0f )
+        {
+            relax.diffusePrepassBlurRadius = tuning.prepassDiffuse;
+        }
+        if( tuning.prepassSpecular > 0.0f )
+        {
+            relax.specularPrepassBlurRadius = tuning.prepassSpecular;
+        }
+        if( tuning.phiLuminance > 0.0f )
+        {
+            relax.diffusePhiLuminance = tuning.phiLuminance;
+        }
+        if( tuning.minHitDistWeight > 0.0f )
+        {
+            relax.minHitDistanceWeight = std::min( tuning.minHitDistWeight, 0.2f );
+        }
+
+        // Read the arm back: the settings that actually reached NRD, edge-
+        // triggered on change (the project's oldest rule).
+        {
+            static bool     s_have = false;
+            static uint32_t s_prev[ 4 ]  = {};
+            static float    s_prevF[ 4 ] = {};
+            const uint32_t  curU[ 4 ]  = { relax.diffuseMaxAccumulatedFrameNum,
+                                           relax.diffuseMaxFastAccumulatedFrameNum,
+                                           relax.atrousIterationNum,
+                                           uint32_t( relax.enableAntiFirefly ) };
+            const float     curF[ 4 ]  = { relax.diffusePrepassBlurRadius,
+                                           relax.specularPrepassBlurRadius,
+                                           relax.diffusePhiLuminance,
+                                           relax.minHitDistanceWeight };
+            if( !s_have || memcmp( s_prev, curU, sizeof( curU ) ) != 0 ||
+                memcmp( s_prevF, curF, sizeof( curF ) ) != 0 )
+            {
+                s_have = true;
+                memcpy( s_prev, curU, sizeof( curU ) );
+                memcpy( s_prevF, curF, sizeof( curF ) );
+                debug::Warning( "NRD/ReLAX settings: accum={} fast={} atrous={} "
+                                "prepassD={:.0f} prepassS={:.0f} phiLum={:.1f} "
+                                "minHitDistW={:.2f} antiFirefly={}",
+                                curU[ 0 ],
+                                curU[ 1 ],
+                                curU[ 2 ],
+                                curF[ 0 ],
+                                curF[ 1 ],
+                                curF[ 2 ],
+                                curF[ 3 ],
+                                curU[ 3 ] ? "on" : "off" );
+            }
+        }
 
         if( m_impl->integration.SetDenoiserSettings( nrd::Identifier( 2 ), &relax ) !=
             nrd::Result::SUCCESS )
@@ -552,7 +620,8 @@ bool RTGL1::NrdDenoiser::Denoise( VkCommandBuffer,
                                   const ShGlobalUniform*,
                                   double,
                                   bool,
-                                  bool )
+                                  bool,
+                                  const Tuning& )
 {
     return false;
 }

@@ -1301,6 +1301,16 @@ typedef struct RgDrawFrameIlluminationParams
     // the image (vendor-supplied guide/reprojection sanity view). Only
     // meaningful while nrdDenoiser is active. Default: false
     RgBool32        nrdValidation;
+    // Doom64-RT: ReLAX tuning, pushed to NRD every frame (live-tunable).
+    // Zeros mean "use ReLAX defaults". See nrd::RelaxSettings for semantics.
+    uint32_t        nrdMaxAccumFrames;      // default 30
+    uint32_t        nrdFastAccumFrames;     // default 6
+    uint32_t        nrdAtrousIterations;    // [2..8], default 5
+    float           nrdPrepassDiffuse;      // pixels, default 30
+    float           nrdPrepassSpecular;     // pixels, default 50
+    float           nrdPhiLuminance;        // diffuse a-trous luminance sensitivity, default 2
+    float           nrdMinHitDistWeight;    // (0;0.2], default 0.1; smaller for ReSTIR
+    RgBool32        nrdAntiFirefly;         // default true
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

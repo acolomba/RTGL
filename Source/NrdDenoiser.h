@@ -70,6 +70,21 @@ public:
     // up (logged); callers must then fall back to A-SVGF.
     bool EnsureReady( uint32_t renderWidth, uint32_t renderHeight );
 
+    // ReLAX tuning pushed every frame; zeros = ReLAX defaults. Values come
+    // straight from the rt_nrd_* cvars via the illumination params, so they
+    // are live-tunable in the console without a rebuild.
+    struct Tuning
+    {
+        uint32_t maxAccumFrames{ 0 };
+        uint32_t fastAccumFrames{ 0 };
+        uint32_t atrousIterations{ 0 };
+        float    prepassDiffuse{ 0 };
+        float    prepassSpecular{ 0 };
+        float    phiLuminance{ 0 };
+        float    minHitDistWeight{ 0 };
+        bool     antiFirefly{ true };
+    };
+
     // Stage 2: run ReLAX on the buffers CmNrdPack staged. Records NRD's
     // dispatches (with its own internal barriers) into cmd. Returns false if
     // the instance is not up -- the caller must then fall back to A-SVGF for
@@ -81,7 +96,8 @@ public:
                   const ShGlobalUniform*  gu,
                   double                  timeDeltaSeconds,
                   bool                    resetHistory,
-                  bool                    enableValidation );
+                  bool                    enableValidation,
+                  const Tuning&           tuning );
 
     bool   Valid() const;
     double MemoryMb() const;

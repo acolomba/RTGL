@@ -1425,6 +1425,19 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                 {
                     denoiser->PackForNrd( cmd, frameIndex, uniform );
 
+                    const auto& illumNrd =
+                        pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+                    const auto tuning = NrdDenoiser::Tuning{
+                        .maxAccumFrames   = illumNrd.nrdMaxAccumFrames,
+                        .fastAccumFrames  = illumNrd.nrdFastAccumFrames,
+                        .atrousIterations = illumNrd.nrdAtrousIterations,
+                        .prepassDiffuse   = illumNrd.nrdPrepassDiffuse,
+                        .prepassSpecular  = illumNrd.nrdPrepassSpecular,
+                        .phiLuminance     = illumNrd.nrdPhiLuminance,
+                        .minHitDistWeight = illumNrd.nrdMinHitDistWeight,
+                        .antiFirefly      = !!illumNrd.nrdAntiFirefly,
+                    };
+
                     nrdRanThisFrame =
                         nrdDenoiser->Denoise( cmd,
                                               frameIndex,
@@ -1432,7 +1445,8 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                               uniform->GetData(),
                                               timeDelta,
                                               resetHistory,
-                                              uniform->GetData()->nrdValidation != 0 );
+                                              uniform->GetData()->nrdValidation != 0,
+                                              tuning );
 
                     if( nrdRanThisFrame )
                     {
