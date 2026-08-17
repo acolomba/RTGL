@@ -477,7 +477,7 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
 {
     // RIS candidate count. Traces no rays outside the INITIAL pass (see the
     // LIGHT_SAMPLE_METHOD_INITIAL guard below), so raising it buys better light
-    // importance sampling almost for free. Clamped C++-side to [1,32].
+    // importance sampling almost for free. Clamped C++-side to [1,64].
     const uint INITIAL_SAMPLES = max(globalUniform.restirInitialSamples, 1u);
     
     Reservoir regularReservoir = emptyReservoir();

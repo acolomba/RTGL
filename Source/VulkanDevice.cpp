@@ -1030,7 +1030,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
         gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
         gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );
-        gu->restirInitialSamples  = std::clamp( illum.restirInitialSamples, 1u, 32u );
+        // 32 -> 64 (2026-08-17): pure loop bound in calcInitialReservoir, no
+        // rays traced, no fixed-size arrays -- and scenes dense with small
+        // emitters (the stripe-bulb rooms) genuinely need more candidates to
+        // sample their light set without per-tile luminance noise.
+        gu->restirInitialSamples  = std::clamp( illum.restirInitialSamples, 1u, 64u );
         gu->restirSpatialSamples  = std::clamp( illum.restirSpatialSamples, 0u, 16u );
         gu->restirSpatialRadius   = std::clamp( illum.restirSpatialRadius, 1.0f, 64.0f );
         gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );

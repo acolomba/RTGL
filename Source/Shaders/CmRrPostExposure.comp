@@ -139,13 +139,50 @@ void main()
 
     // With rrGlowPre, the glow was already added into RR's input by
     // CmPrepareFinal (in pre-exposure units) and has just been multiplied by
-    // the exposure above -- adding it here again would double it. The
-    // rrGlowPre=0 fallback keeps the post-RR add for the A/B, jitter-corrected
-    // but still carrying the irreducible per-frame resampling shimmer at
-    // sharp emissive edges (the reason rrGlowPre exists).
-    vec3 screenEmis = globalUniform.rrGlowPre != 0
-                          ? vec3( 0.0 )
-                          : textureLod( framebufScreenEmission_Sampler, uv, 0.0 ).rgb;
+    // the exposure above -- adding it here again would double it. That mode
+    // gives perfectly calm emissive edges, but its 1/exposure term makes the
+    // glow in RR's INPUT swell and shrink while auto-exposure ADAPTS
+    // (flashlight toggles, room transitions) -- RR reads that as the scene
+    // changing, reported from play as noise/instability around exactly those
+    // moments. So the default is the post-RR add below, upgraded from one
+    // bilinear tap to a 9-tap Catmull-Rom: the shimmer was the tap's
+    // phase-varying reconstruction error on sharp emissive edges, and a
+    // bicubic kernel cuts that error hard while staying exposure-neutral.
+    vec3 screenEmis = vec3( 0.0 );
+    if( globalUniform.rrGlowPre == 0 )
+    {
+        // Optimized 9-tap Catmull-Rom (bilinear-tap folding), sampling the
+        // render-res buffer at the jitter-corrected uv computed above.
+        const vec2 texSize   = vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+        const vec2 samplePos = uv * texSize;
+        const vec2 texPos1   = floor( samplePos - 0.5 ) + 0.5;
+        const vec2 f         = samplePos - texPos1;
+
+        const vec2 w0  = f * ( -0.5 + f * ( 1.0 - 0.5 * f ) );
+        const vec2 w1  = 1.0 + f * f * ( -2.5 + 1.5 * f );
+        const vec2 w2  = f * ( 0.5 + f * ( 2.0 - 1.5 * f ) );
+        const vec2 w3  = f * f * ( -0.5 + 0.5 * f );
+        const vec2 w12 = w1 + w2;
+
+        const vec2 p0  = ( texPos1 - 1.0 ) / texSize;
+        const vec2 p3  = ( texPos1 + 2.0 ) / texSize;
+        const vec2 p12 = ( texPos1 + w2 / w12 ) / texSize;
+
+        vec3 acc = vec3( 0.0 );
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p0.x,  p0.y  ), 0.0 ).rgb * w0.x  * w0.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p12.x, p0.y  ), 0.0 ).rgb * w12.x * w0.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p3.x,  p0.y  ), 0.0 ).rgb * w3.x  * w0.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p0.x,  p12.y ), 0.0 ).rgb * w0.x  * w12.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p12.x, p12.y ), 0.0 ).rgb * w12.x * w12.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p3.x,  p12.y ), 0.0 ).rgb * w3.x  * w12.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p0.x,  p3.y  ), 0.0 ).rgb * w0.x  * w3.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p12.x, p3.y  ), 0.0 ).rgb * w12.x * w3.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p3.x,  p3.y  ), 0.0 ).rgb * w3.x  * w3.y;
+
+        // Catmull-Rom's negative lobes can undershoot on bright edges -- and
+        // this is additive glow, so a negative value would DARKEN the frame.
+        screenEmis = max( acc, vec3( 0.0 ) );
+    }
 
     // Attenuated by the medium, as in CmPrepareFinal -- an emissive panel must
     // not shine through smoke at full strength. volumePostComp is always 0 on
