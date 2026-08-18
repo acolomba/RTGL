@@ -133,7 +133,12 @@ option(RG_WITH_SURFACE_XLIB     "Build with Xlib VkSurfaceKHR support"      OFF)
 option(RG_WITH_IMGUI            "Build RTGL1 with ImGui debug windows"      ON)
 option(RG_WITH_DX12             "Build RTGL1 with DX12 features"            ON)
 option(RG_WITH_NATIVE_DLSS      "Build RTGL1 with native DLSS2"             ON)
-option(RG_WITH_NRD              "Build RTGL1 with the NVIDIA NRD denoiser lane (NRI-wrapped)" ON)
+# OFF by default: A-SVGF is the shipping baseline denoiser, and NRD needs an
+# SDK that is not in the repo (deps/NRD + deps/NRI, built by
+# tools/build-nrd-deps.cmd). Defaulting ON made a clean checkout -- the CI
+# release runner included -- fail configure with the FATAL_ERROR below rather
+# than build the baseline. Turn it ON to work on the NRD lane.
+option(RG_WITH_NRD              "Build RTGL1 with the NVIDIA NRD denoiser lane (NRI-wrapped)" OFF)
 
 option(RG_WITH_EXAMPLES         "Build with examples executable"            ON)
 
