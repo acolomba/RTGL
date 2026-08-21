@@ -43,6 +43,12 @@ namespace RTGL1
 struct TextureOverrides;
 
 
+// Doom64-RT: the effective texture-array size. TEXTURE_COUNT_MAX is what we want;
+// this is what the device will actually allow. Call InitTextureCountMax once,
+// before the TextureManager is constructed.
+uint32_t GetTextureCountMax();
+void     InitTextureCountMax( VkPhysicalDevice physDevice );
+
 class TextureManager : public IFileDependency
 {
 public:

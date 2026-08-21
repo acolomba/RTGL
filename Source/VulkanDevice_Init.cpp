@@ -329,6 +329,9 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         memAllocator, 
         *cmdManager );
 
+    // Doom64-RT: decide the texture-array size before anything allocates it.
+    InitTextureCountMax( physDevice->Get() );
+
     textureManager = std::make_shared< TextureManager >(
         device, 
         memAllocator, 
