@@ -93,6 +93,20 @@ float getSpecularDominantFactor(float nv, float roughness)
     return clamp(f, 0.0, 1.0);
 }
 
+// Doom64-RT: is the surface that was at a PREVIOUS-frame pixel the
+// first-person weapon? Same test CmPrepareFinal uses on the current frame:
+// the primary raygen stores instCustomIndex as raw bits in SurfacePosition.a.
+bool isFirstPersonPrev(const ivec2 xy)
+{
+    const uint ci = floatBitsToUint(texelFetch(framebufSurfacePosition_Prev_Sampler, xy, 0).a);
+    return (ci & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON) != 0;
+}
+bool isFirstPersonCur(const ivec2 xy)
+{
+    const uint ci = floatBitsToUint(texelFetch(framebufSurfacePosition_Sampler, xy, 0).a);
+    return (ci & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON) != 0;
+}
+
 void main()
 {
     const ivec2 pix = ivec2(gl_GlobalInvocationID);
@@ -368,6 +382,92 @@ void main()
 
         indirAccum = unfilteredIndir;
         indirHistoryLengthAccum = 1.0;
+
+        // Doom64-RT: no consistent history at the reprojected pixel. Stock
+        // restarts from this one sample, which under a DECAYING light lands at
+        // the light's current level while the neighbours still carry its
+        // brighter lagging history -- a dark silhouette-shaped band wherever
+        // the weapon (or any sprite) just was. Same class as the medium's fix
+        // in CmScatterAccum: borrow validated neighbour history instead of
+        // starting from nothing. The search is in the PREVIOUS frame around
+        // the reprojected pixel, so it holds the same lag as the neighbours,
+        // and the weapon's own pixels are never a donor. The borrowed history
+        // is capped short so the pixel still converges on the truth quickly.
+        // The weapon itself keeps the stock path: its history is its own.
+        if (globalUniform.svgfFp != 0 && !isFirstPersonCur(pix))
+        {
+            vec3  bDiff    = vec3(0.0);
+            vec2  bMoments = vec2(0.0);
+            vec3  bIndir   = vec3(0.0);
+            vec2  bHist    = vec2(0.0);
+            float bWeight  = 0.0;
+
+            for (int radius = 1; radius <= 3 && bWeight <= 0.0001; radius++)
+            {
+                for (int yy = -radius; yy <= radius; yy++)
+                {
+                    for (int xx = -radius; xx <= radius; xx++)
+                    {
+                        if (abs(xx) != radius && abs(yy) != radius)
+                        {
+                            continue; // only the ring; the inner ones were tried
+                        }
+                        const ivec2 xy = pixPrev + ivec2(xx, yy);
+
+                        if (!testPixInRenderArea(xy, chRenderArea) || isFirstPersonPrev(xy))
+                        {
+                            continue;
+                        }
+                        const float depthPrev  = texelFetch(framebufDepthWorld_Prev_Sampler, xy, 0).r;
+                        const vec3  normalPrev = texelFetchNormal_Prev(xy);
+
+                        if (!testReprojectedDepth(depth, depthPrev, motionZ) ||
+                            !testReprojectedNormal(normal, normalPrev))
+                        {
+                            continue;
+                        }
+                        const vec4 hist = texelFetch(framebufAccumHistoryLength_Prev_Sampler, xy, 0);
+                        if (hist.x <= 1.5)
+                        {
+                            continue; // a donor that itself just restarted has nothing to lend
+                        }
+                        bDiff    += texelFetch(framebufDiffColorHistory_Sampler,      xy, 0).rgb;
+                        bMoments += texelFetch(framebufDiffAccumMoments_Prev_Sampler, xy, 0).rg;
+                        bIndir   += texelFetchIndirAccum_Prev(xy);
+                        bHist    += hist.xy;
+                        bWeight  += 1.0;
+                    }
+                }
+            }
+
+            if (bWeight > 0.0001)
+            {
+                const float inv = 1.0 / bWeight;
+                bDiff *= inv; bMoments *= inv; bIndir *= inv; bHist *= inv;
+
+                const float SVGF_FP_BORROW_MAX_HISTORY = 8.0;
+
+                float diffHistoryLength  = min(bHist.x * pow(1.0 - antilagAlpha_Diff,  10), SVGF_FP_BORROW_MAX_HISTORY);
+                float indirHistoryLength = min(bHist.y * pow(1.0 - antilagAlpha_Indir, 10), SVGF_FP_BORROW_MAX_HISTORY);
+                diffHistoryLength  = clamp(diffHistoryLength  + 1.0, 1.0, 256.0);
+                indirHistoryLength = clamp(indirHistoryLength + 1.0, 1.0, 256.0);
+
+                float alphaDiff  = mix(1.0 / diffHistoryLength,  1.0, antilagAlpha_Diff);
+                float alphaIndir = mix(1.0 / indirHistoryLength, 1.0, antilagAlpha_Indir);
+
+                diffColorAccum   = mix(bDiff,    unfilteredDiff,  alphaDiff);
+                diffMomentsAccum = mix(bMoments, moments,         alphaDiff);
+                diffHistoryLengthAccum = diffHistoryLength;
+
+                indirAccum = mix(bIndir, unfilteredIndir, alphaIndir);
+                indirHistoryLengthAccum = indirHistoryLength;
+
+                if (globalUniform.svgfFp == 2)
+                {
+                    diffColorAccum = mix(diffColorAccum, vec3(1.0, 0.0, 1.0), 0.5);
+                }
+            }
+        }
     }
 
     imageStoreDiffTemporary(                pix, diffColorAccum );

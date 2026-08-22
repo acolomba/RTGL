@@ -426,6 +426,10 @@ struct ShGlobalUniform
     float rrGlowScale;
     uint rrDemod;
     uint rrDemodFilter;
+    uint svgfFp;
+    uint svgfFpGrad;
+    uint svgfPad0;
+    uint svgfPad1;
     vec4 smokePuffs[128];
     vec4 smokeAlbedoDensity[128];
     vec4 smokeShape[128];

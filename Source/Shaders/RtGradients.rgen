@@ -81,6 +81,21 @@ void main()
             const ivec2 iter_curPix = gradPix * COMPUTE_ASVGF_STRATA_SIZE + ivec2(xx, yy);
             const ivec2 iter_prevPix = ivec2(floor(getPrevScreenPos(framebufMotion_Sampler, iter_curPix)));
 
+            // Doom64-RT: never measure the lighting change ON THE WEAPON. At a
+            // pixel the gun just uncovered the previous pixel IS the gun, and
+            // its lighting delta (muzzle glow, its own motion) would be blurred
+            // over the wall by the gradient a-trous. The weapon's own pixels are
+            // skipped too: the world under them is not there to compare.
+            if (globalUniform.svgfFpGrad != 0)
+            {
+                const uint ciPrev = floatBitsToUint(texelFetch(framebufSurfacePosition_Prev_Sampler, iter_prevPix, 0).a);
+                const uint ciCur  = floatBitsToUint(texelFetch(framebufSurfacePosition_Sampler,      iter_curPix,  0).a);
+                if (((ciPrev | ciCur) & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON) != 0)
+                {
+                    continue;
+                }
+            }
+
             const vec2 iter_prevLuminance = imageLoad(framebufGradientInputs_Prev, iter_prevPix).xy;
 
             if (max(iter_prevLuminance.x, iter_prevLuminance.y) > max(prevLuminance.x, prevLuminance.y))

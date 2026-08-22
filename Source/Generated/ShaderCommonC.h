@@ -431,6 +431,10 @@ struct ShGlobalUniform
     float rrGlowScale;
     uint32_t rrDemod;
     uint32_t rrDemodFilter;
+    uint32_t svgfFp;
+    uint32_t svgfFpGrad;
+    uint32_t svgfPad0;
+    uint32_t svgfPad1;
     float smokePuffs[512];
     float smokeAlbedoDensity[512];
     float smokeShape[512];

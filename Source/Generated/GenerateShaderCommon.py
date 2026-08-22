@@ -1424,6 +1424,17 @@ GLOBAL_UNIFORM_STRUCT = [
     # Took the two nrdReserved spares.
     (TYPE_UINT32,       1,      "rrDemod",                          1),
     (TYPE_UINT32,       1,      "rrDemodFilter",                    1),
+    # Doom64-RT: the first-person weapon must not damage the SURFACE
+    # denoiser's history either (docs/rt-volumetric-weapon-trails.md, the
+    # same class one buffer over). svgfFp: 0 = stock, 1 = a pixel whose
+    # history was fully rejected borrows validated neighbour history instead
+    # of restarting from one sample, 2 = debug (tint borrowed pixels).
+    # svgfFpGrad: 0 = stock, 1 = the A-SVGF gradient never samples the
+    # weapon and treats a vanished light as a change, not as "no change".
+    (TYPE_UINT32,       1,      "svgfFp",                           1),
+    (TYPE_UINT32,       1,      "svgfFpGrad",                       1),
+    (TYPE_UINT32,       1,      "svgfPad0",                         1),
+    (TYPE_UINT32,       1,      "svgfPad1",                         1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

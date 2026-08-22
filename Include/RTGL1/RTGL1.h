@@ -1324,6 +1324,14 @@ typedef struct RgDrawFrameIlluminationParams
     float           nrdPhiLuminance;        // diffuse a-trous luminance sensitivity, default 2
     float           nrdMinHitDistWeight;    // (0;0.2], default 0.1; smaller for ReSTIR
     RgBool32        nrdAntiFirefly;         // default true
+    // Doom64-RT: the first-person weapon vs the SURFACE denoiser's history.
+    // svgfFp: 0 = stock A-SVGF (a pixel the gun just uncovered restarts from
+    // one sample and reads as a dark silhouette beside lagging neighbours
+    // under a decaying light), 1 = fully rejected pixels borrow validated
+    // neighbour history, 2 = debug tint. svgfFpGrad: the gradient never
+    // samples the weapon and a vanished light counts as a change. Default 0.
+    uint32_t        svgfFp;
+    RgBool32        svgfFpGrad;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

@@ -1040,6 +1040,8 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->nrdValidation = !!illum.nrdValidation;
         gu->rrDemod       = !!illum.rrDemod;
         gu->rrDemodFilter = std::min( illum.rrDemodFilter, 2u );
+        gu->svgfFp        = std::min( illum.svgfFp, 2u );
+        gu->svgfFpGrad    = !!illum.svgfFpGrad;
 
         gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
         gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );
