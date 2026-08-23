@@ -1193,6 +1193,12 @@ typedef struct RgDrawFrameIlluminationParams
     // 0 = off, 1 = greyscale (black where shadowed), 2 = normal shading with
     // shadowed pixels tinted red. Default: 0
     uint32_t        debugVisibility;
+    // Doom64-RT: raw DEBUG_SHOW_FLAG_* bits OR'd into the debug view, so a
+    // layer can be isolated from a cvar instead of the dev window. 1 motion,
+    // 2 gradients, 4 unfiltered direct, 8 unfiltered spec, 16 unfiltered
+    // indirect, 32 only direct diffuse, 64 only specular, 128 only indirect,
+    // 1024 normals. Default 0.
+    uint32_t        debugShowFlags;
     // ReSTIR temporal reuse tap jitter radius in pixels. Stock 2.0. The jitter
     // decorrelates the temporal tap, but on grazing surfaces a 2px offset moves
     // depth far past the flat 10% reuse threshold, so the tap is rejected and M
@@ -1332,6 +1338,11 @@ typedef struct RgDrawFrameIlluminationParams
     // samples the weapon and a vanished light counts as a change. Default 0.
     uint32_t        svgfFp;
     RgBool32        svgfFpGrad;
+    // Doom64-RT: indirect history cap in frames (0 = stock 256) and the
+    // indirect antilag without its brightness suppression. The bounce of a
+    // transient light otherwise ghosts for seconds after the light is gone.
+    float           svgfIndirMaxHist;
+    RgBool32        svgfIndirAntilag;
 } RgDrawFrameIlluminationParams;
 
 // Can be linked after RgDrawFrameInfo.

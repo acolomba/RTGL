@@ -428,8 +428,8 @@ struct ShGlobalUniform
     uint rrDemodFilter;
     uint svgfFp;
     uint svgfFpGrad;
-    uint svgfPad0;
-    uint svgfPad1;
+    float svgfIndirMaxHist;
+    uint svgfIndirAntilag;
     vec4 smokePuffs[128];
     vec4 smokeAlbedoDensity[128];
     vec4 smokeShape[128];

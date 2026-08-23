@@ -1433,8 +1433,14 @@ GLOBAL_UNIFORM_STRUCT = [
     # weapon and treats a vanished light as a change, not as "no change".
     (TYPE_UINT32,       1,      "svgfFp",                           1),
     (TYPE_UINT32,       1,      "svgfFpGrad",                       1),
-    (TYPE_UINT32,       1,      "svgfPad0",                         1),
-    (TYPE_UINT32,       1,      "svgfPad1",                         1),
+    # Doom64-RT: the indirect (bounce) ghost. A-SVGF accumulated indirect over
+    # up to 256 frames, so a rocket flash's bounce lingered for seconds after
+    # the light died -- read in play as "the light lingers". svgfIndirMaxHist
+    # caps the indirect history length in frames (0 = stock 256).
+    # svgfIndirAntilag 1 drops the "if it's bright enough, don't drop history"
+    # suppression on the indirect antilag, which protected the brightest ghosts.
+    (TYPE_FLOAT32,      1,      "svgfIndirMaxHist",                 1),
+    (TYPE_UINT32,       1,      "svgfIndirAntilag",                 1),
 
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.

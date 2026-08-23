@@ -363,7 +363,10 @@ void main()
         // indirect diffuse
         {
             indirHistoryLength *= pow(1.0 - antilagAlpha_Indir, 10);
-            indirHistoryLength = clamp(indirHistoryLength + 1.0, 1.0, 256.0);
+            // Doom64-RT: a short cap is what makes a dead light's bounce leave
+            // in well under a second instead of ghosting for 256 frames.
+            const float indirMaxHist = globalUniform.svgfIndirMaxHist > 0.5 ? globalUniform.svgfIndirMaxHist : 256.0;
+            indirHistoryLength = clamp(indirHistoryLength + 1.0, 1.0, indirMaxHist);
 
             const float minAlpha = 0.01;
             float alphaColor = max(minAlpha, 1.0 / indirHistoryLength);
@@ -402,41 +405,53 @@ void main()
             vec2  bHist    = vec2(0.0);
             float bWeight  = 0.0;
 
-            for (int radius = 1; radius <= 3 && bWeight <= 0.0001; radius++)
+            // Donors are CURRENT-frame neighbours, each reprojected by its OWN
+            // motion vector. Searching the previous frame around pixPrev does
+            // not work: the band is as wide as the gun moved in one frame
+            // (10+ px at a bob), so a ring of 3 px there is still all gun.
+            // A current neighbour that is world climbs out of the gun in one
+            // step, and its own reprojection lands on valid world history.
+            const int RING_COUNT = 6;
+            const int rings[RING_COUNT] = int[RING_COUNT](2, 4, 7, 10, 14, 20);
+
+            for (int r = 0; r < RING_COUNT && bWeight <= 0.0001; r++)
             {
-                for (int yy = -radius; yy <= radius; yy++)
+                const int radius = rings[r];
+                for (int k = 0; k < 8; k++)
                 {
-                    for (int xx = -radius; xx <= radius; xx++)
+                    // 8 points on the ring: the 4 axes and the 4 diagonals
+                    const ivec2 d = ivec2(
+                        (k == 0 || k == 4 || k == 7) ?  radius : (k == 2 || k == 3 || k == 5) ? -radius : 0,
+                        (k == 1 || k == 4 || k == 5) ?  radius : (k == 3 || k == 6 || k == 7) ? -radius : 0);
+                    const ivec2 q = pix + d;
+
+                    if (!testPixInRenderArea(q, chRenderArea) || isFirstPersonCur(q))
                     {
-                        if (abs(xx) != radius && abs(yy) != radius)
-                        {
-                            continue; // only the ring; the inner ones were tried
-                        }
-                        const ivec2 xy = pixPrev + ivec2(xx, yy);
-
-                        if (!testPixInRenderArea(xy, chRenderArea) || isFirstPersonPrev(xy))
-                        {
-                            continue;
-                        }
-                        const float depthPrev  = texelFetch(framebufDepthWorld_Prev_Sampler, xy, 0).r;
-                        const vec3  normalPrev = texelFetchNormal_Prev(xy);
-
-                        if (!testReprojectedDepth(depth, depthPrev, motionZ) ||
-                            !testReprojectedNormal(normal, normalPrev))
-                        {
-                            continue;
-                        }
-                        const vec4 hist = texelFetch(framebufAccumHistoryLength_Prev_Sampler, xy, 0);
-                        if (hist.x <= 1.5)
-                        {
-                            continue; // a donor that itself just restarted has nothing to lend
-                        }
-                        bDiff    += texelFetch(framebufDiffColorHistory_Sampler,      xy, 0).rgb;
-                        bMoments += texelFetch(framebufDiffAccumMoments_Prev_Sampler, xy, 0).rg;
-                        bIndir   += texelFetchIndirAccum_Prev(xy);
-                        bHist    += hist.xy;
-                        bWeight  += 1.0;
+                        continue;
                     }
+                    const ivec2 qPrev = ivec2(floor(getPrevScreenPos(framebufMotion_Sampler, q)));
+                    if (!testPixInRenderArea(qPrev, chRenderArea) || isFirstPersonPrev(qPrev))
+                    {
+                        continue;
+                    }
+                    const float depthPrev  = texelFetch(framebufDepthWorld_Prev_Sampler, qPrev, 0).r;
+                    const vec3  normalPrev = texelFetchNormal_Prev(qPrev);
+
+                    if (!testReprojectedDepth(depth, depthPrev, motionZ) ||
+                        !testReprojectedNormal(normal, normalPrev))
+                    {
+                        continue;
+                    }
+                    const vec4 hist = texelFetch(framebufAccumHistoryLength_Prev_Sampler, qPrev, 0);
+                    if (hist.x <= 1.5)
+                    {
+                        continue; // a donor that itself just restarted has nothing to lend
+                    }
+                    bDiff    += texelFetch(framebufDiffColorHistory_Sampler,      qPrev, 0).rgb;
+                    bMoments += texelFetch(framebufDiffAccumMoments_Prev_Sampler, qPrev, 0).rg;
+                    bIndir   += texelFetchIndirAccum_Prev(qPrev);
+                    bHist    += hist.xy;
+                    bWeight  += 1.0;
                 }
             }
 
@@ -450,7 +465,7 @@ void main()
                 float diffHistoryLength  = min(bHist.x * pow(1.0 - antilagAlpha_Diff,  10), SVGF_FP_BORROW_MAX_HISTORY);
                 float indirHistoryLength = min(bHist.y * pow(1.0 - antilagAlpha_Indir, 10), SVGF_FP_BORROW_MAX_HISTORY);
                 diffHistoryLength  = clamp(diffHistoryLength  + 1.0, 1.0, 256.0);
-                indirHistoryLength = clamp(indirHistoryLength + 1.0, 1.0, 256.0);
+                indirHistoryLength = clamp(indirHistoryLength + 1.0, 1.0, globalUniform.svgfIndirMaxHist > 0.5 ? globalUniform.svgfIndirMaxHist : 256.0);
 
                 float alphaDiff  = mix(1.0 / diffHistoryLength,  1.0, antilagAlpha_Diff);
                 float alphaIndir = mix(1.0 / indirHistoryLength, 1.0, antilagAlpha_Indir);
@@ -464,8 +479,12 @@ void main()
 
                 if (globalUniform.svgfFp == 2)
                 {
-                    diffColorAccum = mix(diffColorAccum, vec3(1.0, 0.0, 1.0), 0.5);
+                    diffColorAccum = vec3(1.0, 0.0, 1.0); // magenta: borrowed
                 }
+            }
+            else if (globalUniform.svgfFp == 2)
+            {
+                diffColorAccum = vec3(0.0, 1.0, 1.0); // cyan: rejected, no donor found
             }
         }
     }

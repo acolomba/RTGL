@@ -164,8 +164,13 @@ void main()
         float normFactor = max( forwardProjectedLuminance.x, prevLuminance.x );
 
         // if it's bright enough, don't drop history
-        float brightness = getLuminance( texelFetchIndirAccum_Prev( prevShadingPix ) );
-        gradSample *= 1.0 - smoothstep( 0.0, 0.5, brightness );
+        // Doom64-RT: this suppression protected the brightest ghosts -- the
+        // stale bounce of a dead rocket flash is exactly what is "bright".
+        if (globalUniform.svgfIndirAntilag == 0)
+        {
+            float brightness = getLuminance( texelFetchIndirAccum_Prev( prevShadingPix ) );
+            gradSample *= 1.0 - smoothstep( 0.0, 0.5, brightness );
+        }
 
         gradDIS[ 1 ] = getAntilagAlpha( gradSample, normFactor );
     }
