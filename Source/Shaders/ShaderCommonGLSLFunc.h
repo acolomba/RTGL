@@ -236,9 +236,21 @@ uniform sampler3D g_volumetric_Sampler_Prev;
 layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_ILLUMINATION, r11f_g11f_b10f) 
 uniform image3D g_illuminationVolume;
 
-layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER) 
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER)
 uniform sampler3D g_illuminationVolume_Sampler;
 #endif
+
+// Doom64-RT: the volumetric cloud map (CmCloudMap.comp writes, the sky
+// fragment shaders read). rgb = premultiplied cloud radiance in sky-texture
+// units, a = transmittance along that direction.
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_CLOUDMAP_STORAGE, rgba16f)
+uniform image2D g_cloudMap;
+
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER)
+uniform sampler2D g_cloudMap_Sampler;
+
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER_PREV)
+uniform sampler2D g_cloudMap_Sampler_Prev;
 #endif
 
 

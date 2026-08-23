@@ -32,6 +32,8 @@ namespace
 // must be in sync with declaration in shaders
 constexpr VkFormat SCATTERING_VOLUME_FORMAT   = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat ILLUMINATION_VOLUME_FORMAT = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+// Doom64-RT: rgb premultiplied radiance, a transmittance (Clouds.h)
+constexpr VkFormat CLOUDMAP_FORMAT            = VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
 RTGL1::Volumetric::Volumetric( VkDevice              _device,
@@ -56,6 +58,13 @@ RTGL1::Volumetric::~Volumetric()
     vkDestroyDescriptorSetLayout( device, descLayout, nullptr );
     vkDestroyDescriptorPool( device, descPool, nullptr );
     vkDestroySampler( device, volumeSampler, nullptr );
+    vkDestroySampler( device, cloudSampler, nullptr );
+    for( auto& i : cloudMap )
+    {
+        vkDestroyImage( device, i.image, nullptr );
+        vkDestroyImageView( device, i.view, nullptr );
+        MemoryAllocator::FreeDedicated( device, i.memory );
+    }
     for( auto i : scattering )
     {
         vkDestroyImage( device, i.image, nullptr );
@@ -235,6 +244,98 @@ void RTGL1::Volumetric::BarrierToReadIllumination( VkCommandBuffer cmd, uint32_t
 #endif
 }
 
+void RTGL1::Volumetric::ProcessClouds( VkCommandBuffer      cmd,
+                                       uint32_t             frameIndex,
+                                       const GlobalUniform& uniform,
+                                       const BlueNoise&     rnd )
+{
+    const bool enabled = uniform.GetData()->cloudParams0[ 0 ] > 0.5f;
+
+    // Off: the shader writes "no cloud" (0,0,0,1) everywhere, which the sky
+    // composite would ignore anyway -- but it is written once per image so
+    // that switching the clouds ON never blends a map left over from minutes
+    // ago, and so a debug view reads the truth.
+    if( !enabled )
+    {
+        if( cloudMapClearedMask & ( 1u << frameIndex ) )
+        {
+            return;
+        }
+        cloudMapClearedMask |= ( 1u << frameIndex );
+    }
+    else
+    {
+        cloudMapClearedMask = 0;
+    }
+
+    CmdLabel label( cmd, "Volumetric clouds" );
+
+    auto barrier = [ & ]( VkPipelineStageFlags2 srcStage,
+                          VkAccessFlags2        srcAccess,
+                          VkPipelineStageFlags2 dstStage,
+                          VkAccessFlags2        dstAccess ) {
+        VkImageMemoryBarrier2 b = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext               = nullptr,
+            .srcStageMask        = srcStage,
+            .srcAccessMask       = srcAccess,
+            .dstStageMask        = dstStage,
+            .dstAccessMask       = dstAccess,
+            .oldLayout           = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout           = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = 0,
+            .dstQueueFamilyIndex = 0,
+            .image               = cloudMap[ frameIndex ].image,
+            .subresourceRange    = { .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     .baseMipLevel   = 0,
+                                     .levelCount     = 1,
+                                     .baseArrayLayer = 0,
+                                     .layerCount     = 1 },
+        };
+        VkDependencyInfoKHR info = {
+            .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers    = &b,
+        };
+        svkCmdPipelineBarrier2KHR( cmd, &info );
+    };
+
+    // Whoever read this image last (the sky passes two frames ago) is done.
+    barrier( VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+             VK_ACCESS_2_SHADER_READ_BIT_KHR,
+             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+             VK_ACCESS_2_SHADER_WRITE_BIT );
+
+    {
+        vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cloudPipeline );
+
+        VkDescriptorSet sets[] = {
+            this->GetDescSet( frameIndex ),
+            uniform.GetDescSet( frameIndex ),
+            rnd.GetDescSet(),
+        };
+        vkCmdBindDescriptorSets( cmd,
+                                 VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 processPipelineLayout,
+                                 0,
+                                 std::size( sets ),
+                                 sets,
+                                 0,
+                                 nullptr );
+
+        vkCmdDispatch( cmd,
+                       Utils::GetWorkGroupCountT( CLOUDMAP_WIDTH, COMPUTE_CLOUDMAP_GROUP_SIZE_X ),
+                       Utils::GetWorkGroupCountT( CLOUDMAP_HEIGHT, COMPUTE_CLOUDMAP_GROUP_SIZE_Y ),
+                       1 );
+    }
+
+    // Readable by the sky fragment shaders (and by next frame's march).
+    barrier( VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+             VK_ACCESS_2_SHADER_WRITE_BIT,
+             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+             VK_ACCESS_2_SHADER_READ_BIT_KHR );
+}
+
 void RTGL1::Volumetric::OnShaderReload( const ShaderManager* shaderManager )
 {
     DestroyPipelines();
@@ -262,6 +363,15 @@ void RTGL1::Volumetric::CreateSampler()
     };
 
     VkResult r = vkCreateSampler( device, &info, nullptr, &volumeSampler );
+    VK_CHECKERROR( r );
+
+    // The cloud map is lat-long: azimuth wraps, altitude clamps. Without the
+    // wrap there is a visible seam at the -180/+180 bearing.
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+    r = vkCreateSampler( device, &info, nullptr, &cloudSampler );
     VK_CHECKERROR( r );
 }
 
@@ -341,6 +451,85 @@ void RTGL1::Volumetric::CreateImages( CommandBufferManager& cmdManager, MemoryAl
                              VK_IMAGE_LAYOUT_GENERAL );
     }
 
+    // Doom64-RT: the cloud maps. 2D, otherwise the same life as the volumes.
+    for( auto& dst : cloudMap )
+    {
+        const char* debugName = "Cloud Map";
+
+        VkImageCreateInfo info = {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType     = VK_IMAGE_TYPE_2D,
+            .format        = CLOUDMAP_FORMAT,
+            .extent        = { .width = CLOUDMAP_WIDTH, .height = CLOUDMAP_HEIGHT, .depth = 1 },
+            .mipLevels     = 1,
+            .arrayLayers   = 1,
+            .samples       = VK_SAMPLE_COUNT_1_BIT,
+            .tiling        = VK_IMAGE_TILING_OPTIMAL,
+            .usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        VkResult r = vkCreateImage( device, &info, nullptr, &dst.image );
+        VK_CHECKERROR( r );
+        SET_DEBUG_NAME( device, dst.image, VK_OBJECT_TYPE_IMAGE, debugName );
+
+        VkMemoryRequirements memReqs;
+        vkGetImageMemoryRequirements( device, dst.image, &memReqs );
+
+        dst.memory = allocator.AllocDedicated( memReqs,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                               MemoryAllocator::AllocType::DEFAULT,
+                                               debugName );
+
+        r = vkBindImageMemory( device, dst.image, dst.memory, 0 );
+        VK_CHECKERROR( r );
+
+        VkImageViewCreateInfo viewInfo = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image            = dst.image,
+            .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+            .format           = CLOUDMAP_FORMAT,
+            .subresourceRange = { .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .baseMipLevel   = 0,
+                                  .levelCount     = 1,
+                                  .baseArrayLayer = 0,
+                                  .layerCount     = 1 },
+        };
+
+        r = vkCreateImageView( device, &viewInfo, nullptr, &dst.view );
+        VK_CHECKERROR( r );
+        SET_DEBUG_NAME( device, dst.view, VK_OBJECT_TYPE_IMAGE_VIEW, debugName );
+
+        Utils::BarrierImage( cmd,
+                             dst.image,
+                             0,
+                             VK_ACCESS_TRANSFER_WRITE_BIT,
+                             VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT );
+
+        // "No cloud" from the first frame, before any march has run: a sky
+        // fragment that samples an undefined image would paint garbage.
+        const VkClearColorValue noCloud = { .float32 = { 0.0f, 0.0f, 0.0f, 1.0f } };
+        const VkImageSubresourceRange range = { .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                                .baseMipLevel   = 0,
+                                                .levelCount     = 1,
+                                                .baseArrayLayer = 0,
+                                                .layerCount     = 1 };
+        vkCmdClearColorImage( cmd, dst.image, VK_IMAGE_LAYOUT_GENERAL, &noCloud, 1, &range );
+
+        Utils::BarrierImage( cmd,
+                             dst.image,
+                             VK_ACCESS_TRANSFER_WRITE_BIT,
+                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_IMAGE_LAYOUT_GENERAL,
+                             VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT );
+    }
+
     cmdManager.Submit( cmd );
     cmdManager.WaitGraphicsIdle();
 }
@@ -385,6 +574,29 @@ void RTGL1::Volumetric::CreateDescriptors()
                           VK_SHADER_STAGE_FRAGMENT_BIT,
         },
 #endif
+        // Doom64-RT: the cloud map. Written by CmCloudMap.comp, read by the sky
+        // fragment shaders.
+        {
+            .binding         = BINDING_VOLUMETRIC_CLOUDMAP_STORAGE,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT |
+                          VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding         = BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT |
+                          VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding         = BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER_PREV,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT |
+                          VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {
@@ -451,6 +663,13 @@ void RTGL1::Volumetric::CreateDescriptors()
 
 void RTGL1::Volumetric::UpdateDescriptors()
 {
+    // Index of the first cloud-map entry in imgs[] below.
+#if ILLUMINATION_VOLUME
+    constexpr int CLOUD_IMG_BASE = 5;
+#else
+    constexpr int CLOUD_IMG_BASE = 3;
+#endif
+
     for( uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++ )
     {
         VkDescriptorImageInfo imgs[] = {
@@ -488,6 +707,22 @@ void RTGL1::Volumetric::UpdateDescriptors()
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
 #endif
+            // Cloud map: storage and sampler = THIS frame's, prev = last frame's.
+            {
+                .sampler     = VK_NULL_HANDLE,
+                .imageView   = cloudMap[ i ].view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            },
+            {
+                .sampler     = cloudSampler,
+                .imageView   = cloudMap[ i ].view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            },
+            {
+                .sampler     = cloudSampler,
+                .imageView   = cloudMap[ Utils::GetPreviousByModulo( i, MAX_FRAMES_IN_FLIGHT ) ].view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            },
         };
 
         VkWriteDescriptorSet wrts[] = {
@@ -538,6 +773,33 @@ void RTGL1::Volumetric::UpdateDescriptors()
                 .pImageInfo      = &imgs[ 4 ],
             },
 #endif
+            {
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = descSets[ i ],
+                .dstBinding      = BINDING_VOLUMETRIC_CLOUDMAP_STORAGE,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .pImageInfo      = &imgs[ CLOUD_IMG_BASE + 0 ],
+            },
+            {
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = descSets[ i ],
+                .dstBinding      = BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo      = &imgs[ CLOUD_IMG_BASE + 1 ],
+            },
+            {
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = descSets[ i ],
+                .dstBinding      = BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER_PREV,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo      = &imgs[ CLOUD_IMG_BASE + 2 ],
+            },
         };
 
         static_assert( std::size( wrts ) == std::size( imgs ) );
@@ -654,6 +916,22 @@ void RTGL1::Volumetric::CreatePipelines( const ShaderManager& shaderManager )
         SET_DEBUG_NAME(
             device, accumPipeline, VK_OBJECT_TYPE_PIPELINE, "Volumetric Accum pipeline" );
     }
+    {
+        VkComputePipelineCreateInfo info = {
+            .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .pNext  = nullptr,
+            .flags  = 0,
+            .stage  = shaderManager.GetStageInfo( "CCloudMap" ),
+            .layout = processPipelineLayout,
+        };
+
+        VkResult r =
+            vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &info, nullptr, &cloudPipeline );
+        VK_CHECKERROR( r );
+
+        SET_DEBUG_NAME(
+            device, cloudPipeline, VK_OBJECT_TYPE_PIPELINE, "Volumetric Cloud map pipeline" );
+    }
 }
 
 void RTGL1::Volumetric::DestroyPipelines()
@@ -663,4 +941,7 @@ void RTGL1::Volumetric::DestroyPipelines()
 
     vkDestroyPipeline( device, accumPipeline, nullptr );
     accumPipeline = VK_NULL_HANDLE;
+
+    vkDestroyPipeline( device, cloudPipeline, nullptr );
+    cloudPipeline = VK_NULL_HANDLE;
 }

@@ -66,6 +66,7 @@ namespace detail
     template<> constexpr auto TypeToStructureType< RgDrawFrameVolumetricParams          > = RG_STRUCTURE_TYPE_DRAW_FRAME_VOLUMETRIC_PARAMS         ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameSmokeParams               > = RG_STRUCTURE_TYPE_DRAW_FRAME_SMOKE_PARAMS              ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameLightShaftParams          > = RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS        ;
+    template<> constexpr auto TypeToStructureType< RgDrawFrameVolumetricCloudParams     > = RG_STRUCTURE_TYPE_DRAW_FRAME_VOLUMETRIC_CLOUD_PARAMS   ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameTonemappingParams         > = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS        ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameBloomParams               > = RG_STRUCTURE_TYPE_DRAW_FRAME_BLOOM_PARAMS              ;
     template<> constexpr auto TypeToStructureType< RgDrawFrameReflectRefractParams      > = RG_STRUCTURE_TYPE_DRAW_FRAME_REFLECT_REFRACT_PARAMS    ;
@@ -111,6 +112,7 @@ namespace detail
     static_assert( CheckMembers< RgDrawFrameVolumetricParams >() );
     static_assert( CheckMembers< RgDrawFrameSmokeParams >() );
     static_assert( CheckMembers< RgDrawFrameLightShaftParams >() );
+    static_assert( CheckMembers< RgDrawFrameVolumetricCloudParams >() );
     static_assert( CheckMembers< RgDrawFrameTonemappingParams >() );
     static_assert( CheckMembers< RgDrawFrameBloomParams >() );
     static_assert( CheckMembers< RgDrawFrameReflectRefractParams >() );
@@ -167,6 +169,7 @@ namespace detail
     template<> struct LinkRootHelper< RgDrawFrameVolumetricParams        >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameSmokeParams             >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameLightShaftParams        >{ using Root = RgDrawFrameInfo; };
+    template<> struct LinkRootHelper< RgDrawFrameVolumetricCloudParams   >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameTonemappingParams       >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameBloomParams             >{ using Root = RgDrawFrameInfo; };
     template<> struct LinkRootHelper< RgDrawFrameReflectRefractParams    >{ using Root = RgDrawFrameInfo; };
@@ -405,6 +408,62 @@ namespace detail
         };
     };
 
+    // Doom64-RT: volumetric clouds OFF. A frame that never links the struct
+    // marches nothing and leaves every sky draw exactly as it was.
+    template<>
+    struct DefaultParams< RgDrawFrameVolumetricCloudParams >
+    {
+        constexpr static auto sType =
+            detail::TypeToStructureType< RgDrawFrameVolumetricCloudParams >;
+
+        constexpr static RgDrawFrameVolumetricCloudParams value = {
+            .sType         = sType,
+            .pNext         = nullptr,
+            .enabled       = false,
+            .altitude      = 600.0f,
+            .thickness     = 500.0f,
+            .coverage      = 0.55f,
+            .density       = 0.01f,
+            .featureSize   = 1500.0f,
+            .detail        = 0.5f,
+            .wind          = { 0, 0 },
+            .time          = 0.0f,
+            .steps         = 32,
+            .lightSteps    = 6,
+            .tint          = { 1, 1, 1 },
+            .lightDir      = { 0, 1, 0 },
+            .lightColor    = { 1, 1, 1 },
+            .underColor    = { 0, 0, 0 },
+            .underStrength = 0.0f,
+            .ambient       = { 0, 0, 0 },
+            .asymmetry     = 0.3f,
+            .transmitFloor = 0.0f,
+            .horizonFade   = 4.0f,
+            .historyBlend  = 0.8f,
+            .debugMode     = 0,
+            .sunOcclusion  = false,
+            .lightTransmit = 0.0f,
+            .lightOcclude  = 1.0f,
+            .backColor     = { 0, 0, 0 },
+            .backStrength  = 0.0f,
+            .fireStrength  = 0.0f,
+            .fireScale     = 300.0f,
+            .fireCover     = 0.25f,
+            .fireLit       = 1.0f,
+            .layers        = 1,
+            .gapFraction   = 0.2f,
+            .sheetExtinction = 0.3f,
+            .firePulse       = 0.0f,
+            .firePulseSpeed  = 1.0f,
+            .fireFlicker     = 0.0f,
+            .cascadeStrength = 0.0f,
+            .cascadeLength   = 400.0f,
+            .cascadeCover    = 0.3f,
+            .cascadeSpeed    = 80.0f,
+            .cascadeWidth    = 40.0f,
+        };
+    };
+
     template<>
     struct DefaultParams< RgDrawFrameTonemappingParams >
     {
@@ -487,6 +546,7 @@ namespace detail
             .lavaPulseSpeed                        = 0.35f,
             .lavaGiBoost                           = 1.0f,
             .lavaDebug                             = 0.0f,
+
             .lavaTint                              = { 1.0f, 0.55f, 0.30f },
             .stylizedWaterDebug                    = 0.0f,
                         .stylizedWaterReflMin                  = 0.1f,

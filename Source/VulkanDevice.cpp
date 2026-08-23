@@ -547,6 +547,7 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->lavaPulseSpeed         = params.lavaPulseSpeed;
         gu->lavaGiBoost            = std::max( 0.0f, params.lavaGiBoost );
         gu->lavaDebug              = std::max( 0.0f, params.lavaDebug );
+
         memcpy( gu->lavaTint, params.lavaTint.data, 3 * sizeof( float ) );
         gu->lavaTint[ 3 ] = 0.0f;
         gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
@@ -973,6 +974,92 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->volumeShaftRelCull = std::clamp( params.relativeCull, 0.0f, 1.0f );
     }
 
+    // Doom64-RT: VOLUMETRIC CLOUDS. See RgDrawFrameVolumetricCloudParams and
+    // Shaders/Clouds.h for the packing. A frame that never links the struct
+    // lands on enabled=0, and then nothing here is read by any shader.
+    {
+        const auto& p = pnext::get< RgDrawFrameVolumetricCloudParams >( drawInfo );
+
+        const bool on = p.enabled && p.thickness > 0.0f && p.density > 0.0f;
+
+        gu->cloudParams0[ 0 ] = on ? 1.0f : 0.0f;
+        gu->cloudParams0[ 1 ] = std::max( p.altitude, 1.0f );
+        gu->cloudParams0[ 2 ] = std::max( p.thickness, 1.0f );
+        gu->cloudParams0[ 3 ] = std::clamp( p.coverage, 0.0f, 1.0f );
+
+        gu->cloudParams1[ 0 ] = std::max( p.density, 0.0f );
+        gu->cloudParams1[ 1 ] = 1.0f / std::max( p.featureSize, 1.0f );
+        gu->cloudParams1[ 2 ] = std::clamp( p.detail, 0.0f, 1.0f );
+        gu->cloudParams1[ 3 ] = p.time;
+
+        gu->cloudParams2[ 0 ] = float( std::clamp( p.steps, 4u, 128u ) );
+        gu->cloudParams2[ 1 ] = float( std::clamp( p.lightSteps, 1u, 16u ) );
+        gu->cloudParams2[ 2 ] = std::max( p.horizonFade, 0.01f );
+        gu->cloudParams2[ 3 ] = std::clamp( p.historyBlend, 0.0f, 0.97f );
+
+        gu->cloudParams3[ 0 ] = std::clamp( p.transmitFloor, 0.0f, 1.0f );
+        gu->cloudParams3[ 1 ] = std::clamp( p.asymmetry, -0.95f, 0.95f );
+        gu->cloudParams3[ 2 ] = float( std::min( p.debugMode, 3u ) );
+        gu->cloudParams3[ 3 ] = p.wind.data[ 0 ];
+
+        gu->cloudTint[ 0 ] = std::max( p.tint.data[ 0 ], 0.0f );
+        gu->cloudTint[ 1 ] = std::max( p.tint.data[ 1 ], 0.0f );
+        gu->cloudTint[ 2 ] = std::max( p.tint.data[ 2 ], 0.0f );
+        gu->cloudTint[ 3 ] = p.wind.data[ 1 ];
+
+        // Normalised here, once; a zero vector becomes "straight up" rather
+        // than NaN in every texel.
+        {
+            float d[ 3 ] = { p.lightDir.data[ 0 ], p.lightDir.data[ 1 ], p.lightDir.data[ 2 ] };
+            float len    = std::sqrt( d[ 0 ] * d[ 0 ] + d[ 1 ] * d[ 1 ] + d[ 2 ] * d[ 2 ] );
+            if( len < 1e-6f )
+            {
+                d[ 0 ] = 0.0f;
+                d[ 1 ] = 1.0f;
+                d[ 2 ] = 0.0f;
+                len    = 1.0f;
+            }
+            gu->cloudLightDir[ 0 ] = d[ 0 ] / len;
+            gu->cloudLightDir[ 1 ] = d[ 1 ] / len;
+            gu->cloudLightDir[ 2 ] = d[ 2 ] / len;
+            gu->cloudLightDir[ 3 ] = std::max( p.underStrength, 0.0f );
+        }
+
+        for( int c = 0; c < 3; c++ )
+        {
+            gu->cloudLightColor[ c ] = std::max( p.lightColor.data[ c ], 0.0f );
+            gu->cloudUnderColor[ c ] = std::max( p.underColor.data[ c ], 0.0f );
+            gu->cloudAmbient[ c ]    = std::max( p.ambient.data[ c ], 0.0f );
+        }
+        // The spare .w lanes carry the directional-light occlusion (Light.h):
+        // lightColor.w = transmit of an opaque column, underColor.w = on/off,
+        // ambient.w = how much of the occlusion to apply.
+        gu->cloudLightColor[ 3 ] = std::clamp( p.lightTransmit, 0.0f, 1.0f );
+        gu->cloudUnderColor[ 3 ] = ( on && p.sunOcclusion ) ? 1.0f : 0.0f;
+        gu->cloudAmbient[ 3 ]    = std::clamp( p.lightOcclude, 0.0f, 1.0f );
+        for( int c = 0; c < 3; c++ )
+        {
+            gu->cloudBackColor[ c ] = std::max( p.backColor.data[ c ], 0.0f );
+        }
+        gu->cloudBackColor[ 3 ] = std::max( p.backStrength, 0.0f );
+        gu->cloudFireParams[ 0 ] = std::max( p.fireStrength, 0.0f );
+        gu->cloudFireParams[ 1 ] = 1.0f / std::max( p.fireScale, 1.0f );
+        gu->cloudFireParams[ 2 ] = 1.0f - std::clamp( p.fireCover, 0.0f, 1.0f );
+        gu->cloudFireParams[ 3 ] = std::max( p.fireLit, 0.0f );
+        gu->cloudLayerParams[ 0 ] = p.layers >= 2 ? 2.0f : 1.0f;
+        gu->cloudLayerParams[ 1 ] = std::clamp( p.gapFraction, 0.02f, 0.8f );
+        gu->cloudLayerParams[ 2 ] = std::max( p.sheetExtinction, 0.0f );
+        gu->cloudLayerParams[ 3 ] = 0.0f;
+        gu->cloudFireAnim[ 0 ] = std::clamp( p.firePulse, 0.0f, 1.0f );
+        gu->cloudFireAnim[ 1 ] = std::max( p.firePulseSpeed, 0.0f );
+        gu->cloudFireAnim[ 2 ] = std::clamp( p.fireFlicker, 0.0f, 1.0f );
+        gu->cloudFireAnim[ 3 ] = 1.0f / std::max( p.cascadeWidth, 1.0f );
+        gu->cloudCascade[ 0 ]  = std::max( p.cascadeStrength, 0.0f );
+        gu->cloudCascade[ 1 ]  = 1.0f / std::max( p.cascadeLength, 1.0f );
+        gu->cloudCascade[ 2 ]  = 1.0f - std::clamp( p.cascadeCover, 0.0f, 1.0f );
+        gu->cloudCascade[ 3 ]  = p.cascadeSpeed;
+    }
+
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;
 
     {
@@ -1176,11 +1263,19 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
         // draw rasterized sky to albedo before tracing primary rays
         if( uniform->GetData()->skyType == RG_SKY_TYPE_RASTERIZED_GEOMETRY )
         {
-            rasterizer->DrawSkyToCubemap( cmd, frameIndex, *textureManager, *uniform );
+            // Doom64-RT: the volumetric cloud map, marched once, read by both
+            // sky passes below.
+            volumetric->ProcessClouds( cmd, frameIndex, *uniform, *blueNoise );
+
+            rasterizer->DrawSkyToCubemap(
+                cmd, frameIndex, *textureManager, *uniform, *tonemapping, *volumetric );
             rasterizer->DrawSkyToAlbedo(
                 cmd,
                 frameIndex,
                 *textureManager,
+                *uniform,
+                *tonemapping,
+                *volumetric,
                 cameraInfo.view,
                 pnext::get< RgDrawFrameSkyParams >( drawInfo ).skyViewerPosition,
                 cameraInfo.projection,

@@ -654,7 +654,47 @@ ShHitInfo getHitInfoBounce(
             getTextureSampleLod( tr.emissiveTexture, texCoords[ 0 ], lod ).rgb;
     #endif
     #if defined( HITINFO_INL_INDIR )
-        emission *= tr.emissiveMult;
+        // Doom64-RT: a SCREEN_SCALED primitive's emissiveMult is what it LOOKS
+        // like; what it feeds the GI is a SEPARATE per-primitive value, because
+        // the two are animated on different clocks. The painted bulbs are held
+        // back to meet the light they cast (it arrives late through the
+        // denoiser history); the light itself must not be held back with them,
+        // or every frame of delay added to the bulbs moves the pool by the same
+        // amount and the gap never closes. A constant GI was tried in between
+        // and it was worse: the "real light turning" WAS this GI, so freezing
+        // it froze the chase. See RgMeshPrimitiveInfo::emissiveGi.
+        if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_EMIS_SCREEN_SCALED ) != 0 )
+        {
+            emission *= tr.emissiveMultGi;
+        }
+        else
+        {
+            emission *= tr.emissiveMult;
+        }
+    #else
+        // Doom64-RT: opt-in, so a fixture that is meant to SWITCH can.
+        //
+        // The rule above -- raw _e on screen, emissiveMult on the indirect path
+        // only -- means a caller can change how much a painted lamp feeds the GI
+        // and cannot change how bright it looks. For a fixture whose whole job is
+        // to turn on and off, that is the one thing it needs. MAP01's pre-exit
+        // pillar sweeps a light around four bulb panels; without this the painted
+        // bulbs stay lit through the entire cycle.
+        //
+        // One bit per primitive rather than a global change of the rule: every
+        // other emissive in the game was balanced against raw _e and must stay
+        // there. See RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED.
+        //
+        // On screen, emissiveMult is applied AS IS. The GI above does not use
+        // it at all for these primitives; it uses the constant. That split is
+        // the whole point: the screen value is animated (a bulb switching) and
+        // the GI must not follow it, or the fixture's bounce light chases its
+        // own bulbs and the two can never be lined up -- every frame of delay
+        // added to the bulbs moved the pool of light back by the same amount.
+        if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_EMIS_SCREEN_SCALED ) != 0 )
+        {
+            emission *= tr.emissiveMult;
+        }
     #endif
     }
     else

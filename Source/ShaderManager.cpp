@@ -85,6 +85,9 @@ static ShaderModuleDefinition G_SHADERS[] =
     { "FragWorld",                  "RsWorld_RT.frag.spv"                   },
     { "FragWorldClassic",           "RsWorld_Classic.frag.spv"              },
     { "FragSky",                    "RsSky.frag.spv"                        },
+    // Doom64-RT: the GI-cubemap twin of FragSky, and the volumetric cloud march.
+    { "FragSkyCubemap",             "RsSkyCubemap.frag.spv"                 },
+    { "CCloudMap",                  "CmCloudMap.comp.spv"                   },
     { "FragSwapchain",              "RsSwapchain.frag.spv"                  },
     { "VertDefault",                "RsRasterizer.vert.spv"                 },
     { "VertDefaultMultiview",       "RsRasterizerMultiview.vert.spv"        },

@@ -521,6 +521,7 @@ ShTriangle getTriangle
     tr.heightTexture = inst.texture_base_D;
 
     tr.emissiveMult = inst.emissiveMult;
+    tr.emissiveMultGi = inst.emissiveMultGi;
     tr.emissiveTexture = inst.texture_base_E;
 
     {

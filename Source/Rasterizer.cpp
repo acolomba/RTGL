@@ -39,6 +39,8 @@ struct RasterizedPushConst
     float    emissiveMult;
     uint32_t normalTextureIndex;
     uint32_t manualSrgb;
+    // Doom64-RT: volumetric cloud composite mode, sky draws only (RsSky.frag).
+    uint32_t skyCloudMode;
 
     explicit RasterizedPushConst( const RTGL1::RasterizedDataCollector::DrawInfo& info,
                                   const float*                                    defaultViewProj,
@@ -50,6 +52,7 @@ struct RasterizedPushConst
         , emissiveMult( info.emissive )
         , normalTextureIndex( info.texture_base_N )
         , manualSrgb( _manualSrgb )
+        , skyCloudMode( info.skyCloudMode )
     {
         float model[ 16 ] = RG_MATRIX_TRANSPOSED( info.transform );
         RTGL1::Matrix::Multiply(
@@ -63,7 +66,8 @@ static_assert( offsetof( RasterizedPushConst, textureIndex ) == 68 );
 static_assert( offsetof( RasterizedPushConst, emissiveTextureIndex ) == 72 );
 static_assert( offsetof( RasterizedPushConst, emissiveMult ) == 76 );
 static_assert( offsetof( RasterizedPushConst, normalTextureIndex ) == 80 );
-static_assert( sizeof( RasterizedPushConst ) == 88 );
+static_assert( offsetof( RasterizedPushConst, skyCloudMode ) == 88 );
+static_assert( sizeof( RasterizedPushConst ) == 92 );
 
 VkPipelineLayout CreatePipelineLayout( VkDevice                           device,
                                        std::span< VkDescriptorSetLayout > descs,
@@ -151,6 +155,8 @@ RTGL1::Rasterizer::Rasterizer( VkDevice                                _device,
                                                        _shaderManager,
                                                        *_textureManager,
                                                        _uniform,
+                                                       _tonemapping,
+                                                       _volumetric,
                                                        _samplerManager,
                                                        *cmdManager,
                                                        _instanceInfo );
@@ -222,11 +228,14 @@ void RTGL1::Rasterizer::SubmitForFrame( VkCommandBuffer cmd, uint32_t frameIndex
 void RTGL1::Rasterizer::DrawSkyToCubemap( VkCommandBuffer       cmd,
                                           uint32_t              frameIndex,
                                           const TextureManager& textureManager,
-                                          const GlobalUniform&  uniform )
+                                          const GlobalUniform&  uniform,
+                                          const Tonemapping&    tonemapping,
+                                          const Volumetric&     volumetric )
 {
     CmdLabel label( cmd, "Rasterized sky to cubemap" );
 
-    renderCubemap->Draw( cmd, frameIndex, *collector, textureManager, uniform );
+    renderCubemap->Draw(
+        cmd, frameIndex, *collector, textureManager, uniform, tonemapping, volumetric );
 }
 
 namespace RTGL1
@@ -333,6 +342,9 @@ void RTGL1::Rasterizer::DrawDecals( VkCommandBuffer               cmd,
 void RTGL1::Rasterizer::DrawSkyToAlbedo( VkCommandBuffer               cmd,
                                          uint32_t                      frameIndex,
                                          const TextureManager&         textureManager,
+                                         const GlobalUniform&          uniform,
+                                         const Tonemapping&            tonemapping,
+                                         const Volumetric&             volumetric,
                                          const float*                  view,
                                          const RgFloat3D&              skyViewerPos,
                                          const float*                  proj,
@@ -356,8 +368,13 @@ void RTGL1::Rasterizer::DrawSkyToAlbedo( VkCommandBuffer               cmd,
     Matrix::Multiply( defaultSkyViewProj, skyView, jitterredProj.data() );
 
 
+    // Doom64-RT: the full raster-pass layout, so RsSky.frag can reach the
+    // global uniform (set 1) and the cloud map in the volumetric set (set 3).
     VkDescriptorSet sets[] = {
         textureManager.GetDescSet( frameIndex ),
+        uniform.GetDescSet( frameIndex ),
+        tonemapping.GetDescSet(),
+        volumetric.GetDescSet( frameIndex ),
     };
 
     const RasterDrawParams params = {

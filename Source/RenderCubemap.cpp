@@ -38,13 +38,19 @@ namespace
         float    model[ 16 ];
         uint32_t packedColor;
         uint32_t textureIndex;
+        // Doom64-RT: volumetric cloud composite mode (RsSkyCubemap.frag).
+        uint32_t skyCloudMode;
 
         explicit RasterizedMultiviewPushConst( const RasterizedDataCollector::DrawInfo& info )
-            : model{}, packedColor( info.colorFactor_base ), textureIndex( info.texture_base )
+            : model{}
+            , packedColor( info.colorFactor_base )
+            , textureIndex( info.texture_base )
+            , skyCloudMode( info.skyCloudMode )
         {
             Matrix::ToMat4Transposed( model, info.transform );
         }
     };
+    static_assert( offsetof( RasterizedMultiviewPushConst, skyCloudMode ) == 72 );
 
     VkMemoryRequirements GetImageMemoryRequirements( VkDevice device, VkImage image )
     {
@@ -60,6 +66,8 @@ RTGL1::RenderCubemap::RenderCubemap( VkDevice                    _device,
                                      const ShaderManager&        _shaderManager,
                                      const TextureManager&       _textureManager,
                                      const GlobalUniform&        _uniform,
+                                     const Tonemapping&          _tonemapping,
+                                     const Volumetric&           _volumetric,
                                      const SamplerManager&       _samplerManager,
                                      CommandBufferManager&       _cmdManager,
                                      const RgInstanceCreateInfo& _instanceInfo )
@@ -74,7 +82,10 @@ RTGL1::RenderCubemap::RenderCubemap( VkDevice                    _device,
     , descPool( VK_NULL_HANDLE )
     , descSet( VK_NULL_HANDLE )
 {
-    CreatePipelineLayout( _textureManager.GetDescSetLayout(), _uniform.GetDescSetLayout() );
+    CreatePipelineLayout( _textureManager.GetDescSetLayout(),
+                          _uniform.GetDescSetLayout(),
+                          _tonemapping.GetDescSetLayout(),
+                          _volumetric.GetDescSetLayout() );
     CreateRenderPass();
     InitPipelines( _shaderManager, cubemapSize, _instanceInfo.rasterizedVertexColorGamma );
 
@@ -117,7 +128,9 @@ void RTGL1::RenderCubemap::Draw( VkCommandBuffer                cmd,
                                  uint32_t                       frameIndex,
                                  const RasterizedDataCollector& skyDataCollector,
                                  const TextureManager&          textureManager,
-                                 const GlobalUniform&           uniform )
+                                 const GlobalUniform&           uniform,
+                                 const Tonemapping&             tonemapping,
+                                 const Volumetric&              volumetric )
 {
     const auto& drawInfos = skyDataCollector.GetDrawInfos( GeometryRasterType::SKY );
     if( drawInfos.empty() )
@@ -125,9 +138,13 @@ void RTGL1::RenderCubemap::Draw( VkCommandBuffer                cmd,
         return;
     }
 
+    // Same set order as the raster pass, so RsSkyCubemap.frag finds the cloud
+    // map at the same set index RsSky.frag does.
     VkDescriptorSet descSets[] = {
         textureManager.GetDescSet( frameIndex ),
         uniform.GetDescSet( frameIndex ),
+        tonemapping.GetDescSet(),
+        volumetric.GetDescSet( frameIndex ),
     };
 
     VkClearValue clearValues[] = {
@@ -216,11 +233,15 @@ VkDescriptorSet RTGL1::RenderCubemap::GetDescSet() const
 }
 
 void RTGL1::RenderCubemap::CreatePipelineLayout( VkDescriptorSetLayout texturesSetLayout,
-                                                 VkDescriptorSetLayout uniformSetLayout )
+                                                 VkDescriptorSetLayout uniformSetLayout,
+                                                 VkDescriptorSetLayout tonemappingSetLayout,
+                                                 VkDescriptorSetLayout volumetricSetLayout )
 {
     VkDescriptorSetLayout setLayouts[] = {
         texturesSetLayout,
         uniformSetLayout,
+        tonemappingSetLayout,
+        volumetricSetLayout,
     };
 
     VkPushConstantRange pushConst = {
@@ -353,7 +374,9 @@ void RTGL1::RenderCubemap::InitPipelines( const ShaderManager& shaderManager,
                                                          multiviewRenderPass,
                                                          shaderManager,
                                                          "VertDefaultMultiview",
-                                                         "FragSky",
+                                                         // Doom64-RT: the GI-cubemap
+                                                         // twin of FragSky (clouds).
+                                                         "FragSkyCubemap",
                                                          0,
                                                          applyVertexColorGamma,
                                                          &viewport,

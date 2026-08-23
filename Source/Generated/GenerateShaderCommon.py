@@ -273,6 +273,13 @@ CONST = {
     # together, not just the top-level ILLUMINATION_VOLUME flag (2026-08-08).
     "BINDING_VOLUMETRIC_ILLUMINATION"           : 3,
     "BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER"   : 4,
+    # Doom64-RT: the volumetric CLOUD MAP -- a lat-long image of world
+    # directions, marched by CmCloudMap.comp and sampled by the sky fragment
+    # shaders. Lives in the volumetric set so the sky pipelines, which already
+    # carry that set in their layout, need no new descriptor plumbing.
+    "BINDING_VOLUMETRIC_CLOUDMAP_STORAGE"       : 5,
+    "BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER"       : 6,
+    "BINDING_VOLUMETRIC_CLOUDMAP_SAMPLER_PREV"  : 7,
     "BINDING_FLUID_PARTICLES_ARRAY"             : 0,
     "BINDING_FLUID_GENERATE_ID_TO_SOURCE"       : 1,
     "BINDING_FLUID_SOURCES"                     : 2,
@@ -347,7 +354,9 @@ CONST = {
     "GEOM_INST_FLAG_LIQUID_BIT1"            : BIT( 10 ),
     # Doom64-RT: lava surface. See RG_MESH_PRIMITIVE_LAVA.
     "GEOM_INST_FLAG_LAVA"                   : BIT( 11 ),
-    "GEOM_INST_FLAG_RESERVED_4"             : BIT( 12 ),
+    # Doom64-RT: scale on-screen emission by emissiveMult, as the indirect path
+    # already does. See RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED.
+    "GEOM_INST_FLAG_EMIS_SCREEN_SCALED"     : BIT( 12 ),
     "GEOM_INST_FLAG_GLASS_IF_SMOOTH"        : BIT( 13 ),
     "GEOM_INST_FLAG_MIRROR_IF_SMOOTH"       : BIT( 14 ),
     "GEOM_INST_FLAG_EXISTS_LAYER1"          : BIT( 15 ),
@@ -475,6 +484,15 @@ CONST = {
     "COMPUTE_VOLUMETRIC_GROUP_SIZE_X"       : 16,
     "COMPUTE_VOLUMETRIC_GROUP_SIZE_Y"       : 16,
     "COMPUTE_SCATTER_ACCUM_GROUP_SIZE_X"    : 16,
+
+    # Doom64-RT: the cloud map. Lat-long, u = azimuth over 360 degrees, v =
+    # altitude over the UPPER hemisphere only (clouds are never below the
+    # horizon), so 1024x256 is 2.8 texels per degree of azimuth and the same
+    # of altitude. The march cost is this many texels, whatever the screen is.
+    "CLOUDMAP_WIDTH"                        : 1024,
+    "CLOUDMAP_HEIGHT"                       : 256,
+    "COMPUTE_CLOUDMAP_GROUP_SIZE_X"         : 16,
+    "COMPUTE_CLOUDMAP_GROUP_SIZE_Y"         : 16,
 
     # Doom64-RT: capacity of the localised-smoke puff list. The puffs ride in
     # the global uniform rather than a storage buffer, so this is a hard limit
@@ -1442,6 +1460,46 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "svgfIndirMaxHist",                 1),
     (TYPE_UINT32,       1,      "svgfIndirAntilag",                 1),
 
+    # Doom64-RT: VOLUMETRIC CLOUDS (RgDrawFrameVolumetricCloudParams). All
+    # vec4s, so they sit after the scalar run and cannot disturb it.
+    #   cloudParams0: x enabled, y altitude (m), z thickness (m), w coverage
+    #   cloudParams1: x density /m, y 1/featureSize, z detail, w time (s)
+    #   cloudParams2: x steps, y lightSteps, z horizonFade (deg), w historyBlend
+    #   cloudParams3: x transmitFloor, y asymmetry, z debugMode, w wind.x (m/s)
+    #   cloudTint:    rgb albedo, w wind.y (m/s)
+    #   cloudLightDir: xyz toward the light, w underStrength
+    #   cloudLightColor / cloudUnderColor / cloudAmbient: rgb, w spare
+    (TYPE_FLOAT32,      4,      "cloudParams0",                     1),
+    (TYPE_FLOAT32,      4,      "cloudParams1",                     1),
+    (TYPE_FLOAT32,      4,      "cloudParams2",                     1),
+    (TYPE_FLOAT32,      4,      "cloudParams3",                     1),
+    (TYPE_FLOAT32,      4,      "cloudTint",                        1),
+    (TYPE_FLOAT32,      4,      "cloudLightDir",                    1),
+    (TYPE_FLOAT32,      4,      "cloudLightColor",                  1),
+    (TYPE_FLOAT32,      4,      "cloudUnderColor",                  1),
+    (TYPE_FLOAT32,      4,      "cloudAmbient",                     1),
+    # THE FIRE SKY. cloudBackColor: rgb = fire colour, w = strength of the
+    # glow BEHIND the slab (added as glow * T in the composite: thin cloud
+    # burns, dense cloud is a silhouette, clear sky is the glow).
+    # cloudFireParams: x = emission strength of FIRE POCKETS -- a second,
+    # sparse noise field inside the slab that glows along the ray and lights
+    # the cloud around it (the "fire between the clouds"); y = 1/pocket
+    # feature size; z = pocket threshold (1 - cover); w = how strongly a
+    # pocket lights the cloud near it.
+    (TYPE_FLOAT32,      4,      "cloudBackColor",                   1),
+    (TYPE_FLOAT32,      4,      "cloudFireParams",                  1),
+    # cloudLayerParams: x = layers (1 or 2), y = gap fraction of the slab
+    # between the two decks (the fire sheet lives in it), z = sheet
+    # extinction relative to the cloud's, w spare.
+    (TYPE_FLOAT32,      4,      "cloudLayerParams",                 1),
+    # cloudFireAnim: x = slow pulse amplitude (0..1), y = pulse speed, z =
+    # fast flicker amplitude, w = 1/streak width of the cascades (m).
+    # cloudCascade: FLAME CASCADES -- fire raining from the cloud base as
+    # vertical streaks. x = emission, y = 1/length below the base (m), z =
+    # streak threshold (1 - cover), w = fall speed (m/s). Time is cloudParams1.w.
+    (TYPE_FLOAT32,      4,      "cloudFireAnim",                    1),
+    (TYPE_FLOAT32,      4,      "cloudCascade",                     1),
+
     # xyz = centre in world space (metres, the same space as a light's position
     # and as volume_getCenter's output), w = radius in metres.
     (TYPE_FLOAT32,      4,      "smokePuffs",           CONST[ "SMOKE_PUFF_MAX" ]),
@@ -1502,6 +1560,14 @@ GEOM_INSTANCE_STRUCT = [
     (TYPE_UINT32,       1,      "firstVertex_Layer1",   1),
     (TYPE_UINT32,       1,      "firstVertex_Layer2",   1),
     (TYPE_UINT32,       1,      "firstVertex_Layer3",   1),
+
+    # Doom64-RT: GI emission for EMIS_SCREEN_SCALED instances, in the material's
+    # units, animated separately from emissiveMult (which is then screen-only).
+    # See RgMeshPrimitiveInfo::emissiveGi. Padded to a whole 16-byte row.
+    (TYPE_FLOAT32,      1,      "emissiveMultGi",       1),
+    (TYPE_UINT32,       1,      "_padGi0",              1),
+    (TYPE_UINT32,       1,      "_padGi1",              1),
+    (TYPE_UINT32,       1,      "_padGi2",              1),
 ]
 
 # TODO: make more compact

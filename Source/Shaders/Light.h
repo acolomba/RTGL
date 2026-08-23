@@ -22,6 +22,12 @@
 #define LIGHT_H_
 
 #include "Utils.h"
+// Doom64-RT: the volumetric cloud map, for occluding the directional light.
+// cloudSunAttenuation only exists where DESC_SET_VOLUMETRIC is bound; every
+// raygen defines it (set 11 of the one ray-tracing layout).
+#ifdef DESC_SET_GLOBAL_UNIFORM
+#include "Clouds.h"
+#endif
 
 struct DirectionalLight
 {
@@ -271,6 +277,12 @@ LightSample sampleDirectionalLight(const DirectionalLight l, const vec3 surfPosi
     r.position = surfPosition - lightNormal * MAX_RAY_LENGTH;
     r.color = l.color;
     r.dw = 1.0;
+
+#ifdef DESC_SET_VOLUMETRIC
+    // Doom64-RT: the volumetric clouds between this point and the light.
+    // Per ray, so a shaft has gaps where the cloud has gaps.
+    r.color *= cloudSunAttenuation( surfPosition, -lightNormal );
+#endif
 
     return r;
 }

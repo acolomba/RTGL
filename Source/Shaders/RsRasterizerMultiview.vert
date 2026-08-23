@@ -1,15 +1,15 @@
 // Copyright (c) 2021 Sultim Tsyrendashiev
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all
 // copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -31,8 +31,12 @@ layout (location = 2) in vec2 texCoord;
 
 layout (location = 0) out vec4 outColor;
 layout (location = 1) out vec2 outTexCoord;
+// Doom64-RT: sky-space position, for the volumetric cloud composite in
+// RsSkyCubemap.frag. The sky viewer is the origin of this space, so the
+// fragment's world direction is just the normalised position.
+layout (location = 2) out vec3 outSkyPos;
 
-layout(push_constant) uniform RasterizerVert_BT 
+layout(push_constant) uniform RasterizerVert_BT
 {
     layout(offset = 0) mat4 model;
 } rasterizerVertInfo;
@@ -52,6 +56,9 @@ void main()
 
     outTexCoord = texCoord;
 
+    const vec4 skyPos = rasterizerVertInfo.model * vec4(position, 1.0);
+    outSkyPos = skyPos.xyz;
+
     const mat4 viewProj = globalUniform.viewProjCubemap[gl_ViewIndex];
-    gl_Position = viewProj * rasterizerVertInfo.model * vec4(position, 1.0);
+    gl_Position = viewProj * skyPos;
 }

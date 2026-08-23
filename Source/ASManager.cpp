@@ -934,6 +934,11 @@ bool RTGL1::ASManager::AddMeshPrimitive( uint32_t                   frameIndex,
             .firstVertex_Layer1 = builtInstance->geometry.firstVertex_Layer1,
             .firstVertex_Layer2 = builtInstance->geometry.firstVertex_Layer2,
             .firstVertex_Layer3 = builtInstance->geometry.firstVertex_Layer3,
+
+            // Doom64-RT: only read under EMISSIVE_SCREEN_SCALED; see RTGL1.h.
+            // After the layer vertices: designators must follow the generated
+            // struct's order (GenerateShaderCommon.py GEOM_INSTANCE_STRUCT).
+            .emissiveMultGi = std::max( 0.0f, primitive.emissiveGi ),
         };
 
         // global geometry index -- for indexing in geom infos buffer

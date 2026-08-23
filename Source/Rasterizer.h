@@ -84,7 +84,9 @@ public:
     void DrawSkyToCubemap( VkCommandBuffer       cmd,
                            uint32_t              frameIndex,
                            const TextureManager& textureManager,
-                           const GlobalUniform&  uniform );
+                           const GlobalUniform&  uniform,
+                           const Tonemapping&    tonemapping,
+                           const Volumetric&     volumetric );
 
     void DrawDecals( VkCommandBuffer               cmd,
                      uint32_t                      frameIndex,
@@ -98,6 +100,9 @@ public:
     void DrawSkyToAlbedo( VkCommandBuffer               cmd,
                           uint32_t                      frameIndex,
                           const TextureManager&         textureManager,
+                          const GlobalUniform&          uniform,
+                          const Tonemapping&            tonemapping,
+                          const Volumetric&             volumetric,
                           const float*                  view,
                           const RgFloat3D&              skyViewerPos,
                           const float*                  proj,

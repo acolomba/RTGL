@@ -48,6 +48,8 @@
 #define DESC_SET_VERTEX_DATA 3
 #define DESC_SET_TEXTURES 4
 #define DESC_SET_RANDOM 5
+// Doom64-RT: the volumetric set (cloud map), for cloudSunAttenuation in Light.h.
+#define DESC_SET_VOLUMETRIC 11
 #define DESC_SET_LIGHT_SOURCES 6
 #define DESC_SET_CUBEMAPS 7
 #define DESC_SET_RENDER_CUBEMAP 8
