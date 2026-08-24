@@ -174,6 +174,35 @@ float sampleHeightMap( const uint textureIndex, const vec2 texCoords )
     return getTextureSampleLod( textureIndex, texCoords, 0 ).r;
 }
 
+// Doom64-RT: noise for the liquid flow. PROCEDURAL, and that is the fix, not a
+// style choice: the first advection sampled the water normal map's X channel,
+// and a normal map's X hugs 0.5 by construction -- the pattern moved and the
+// modulation it carried was a few percent, which is invisible at any speed.
+// (getLavaHeat samples the same channels; "the lava flow does not do much" is
+// almost certainly the same disease.) Value noise on a 256-periodic lattice:
+// periodic so the scrolled coordinate can wrap with NO seam, which also keeps
+// the hash's fract() inputs small enough for float32 over a long session.
+float d64_flowHash( vec2 cell )
+{
+    cell = fract( cell * vec2( 0.1031, 0.1972 ) );
+    cell += dot( cell, cell.yx + 33.33 );
+    return fract( ( cell.x + cell.y ) * cell.x );
+}
+
+float d64_flowNoise( vec2 p )
+{
+    vec2 i = mod( floor( p ), 256.0 );
+    vec2 f = fract( p );
+    vec2 s = f * f * ( 3.0 - 2.0 * f );
+
+    float a = d64_flowHash( i );
+    float b = d64_flowHash( mod( i + vec2( 1, 0 ), 256.0 ) );
+    float c = d64_flowHash( mod( i + vec2( 0, 1 ), 256.0 ) );
+    float d = d64_flowHash( mod( i + vec2( 1, 1 ), 256.0 ) );
+
+    return mix( mix( a, b, s.x ), mix( c, d, s.x ), s.y );
+}
+
 const int ParallaxLinearSteps       = 10;
 const int ParallaxBinarySearchSteps = 4;
 
@@ -508,20 +537,25 @@ ShHitInfo getHitInfoBounce(
     // with the albedo, parallax shift included -- this runs AFTER the block
     // above, so the flow follows the same displaced texel the colour does).
     //
-    // A detail texture is then advected along that direction. This is what
-    // makes liquid read as MOVING: the first version slid a brightness band
-    // along a baked phase, and a brightness band moving along a static vein is
-    // still just brightness changing in place -- the eye called it flicker.
-    // Here the texture itself travels down the channel.
+    // The detail is sampled in a VEIN-ALIGNED frame: u runs along the channel
+    // and SCROLLS, v runs across it at liquidFlowAspect times the frequency.
+    // That turns the noise into elongated streaks sliding lengthwise down the
+    // vein, which is the strongest "liquid running" cue there is. Two earlier
+    // versions failed short of it and are worth remembering:
+    //   1. a brightness band on a baked phase -- nothing in the picture is
+    //      displaced, the eye reads flicker;
+    //   2. round blobs advected from base UV with a ping-pong cross-fade --
+    //      isotropic blobs at vein scale read as shimmer, and the two blended
+    //      copies soften what little motion there was.
+    // No ping-pong here, and none needed: it existed to bound the distortion
+    // of an offset-from-base advection, but scrolling the wrapping noise's OWN
+    // coordinate is well-defined forever and never resets. Where the direction
+    // varies along a run the frame shears the noise slightly -- fine, liquid
+    // shears.
     //
-    // Two phases half a cycle apart, cross-faded (the Portal 2 flow-map
-    // trick). One phase alone has to snap back to zero every cycle, and a
-    // snap is visible; two phases with the blend weight at zero exactly when
-    // either one resets never show the reset.
-    //
-    // A DIRECTION, not a phase, and stored as a vector: bilinear filtering
-    // between two disagreeing texels shrinks it toward zero, so the flow FADES
-    // at a junction or a sign flip instead of tearing. Length gates it.
+    // The direction is a VECTOR, not an angle: bilinear filtering between two
+    // disagreeing texels shrinks it toward zero, so the flow FADES at a
+    // junction or a sign flip instead of tearing. Length gates it.
     if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_MEDIA_TYPE_WATER ) != 0 &&
         tr.heightTexture != MATERIAL_NO_TEXTURE )
     {
@@ -532,31 +566,24 @@ ShHitInfo getHitInfoBounce(
         if( len > 0.15 )
         {
             dir /= len;
+            const vec2 perp = vec2( -dir.y, dir.x );
 
-            const float t  = globalUniform.time * globalUniform.liquidFlowSpeed;
-            const float p0 = fract( t );
-            const float p1 = fract( t + 0.5 );
-            const float w  = abs( 1.0 - 2.0 * p0 );
+            // liquidFlowScale: detail tiles per liquid tile along the vein.
+            // liquidFlowSpeed: detail tiles scrolled per second.
+            const float u = dot( texCoords[ 0 ], dir ) * globalUniform.liquidFlowScale -
+                            globalUniform.time * globalUniform.liquidFlowSpeed;
+            const float v = dot( texCoords[ 0 ], perp ) * globalUniform.liquidFlowScale *
+                            globalUniform.liquidFlowAspect;
 
-            // liquidFlowScale: detail tiles per liquid tile. liquidFlowDist:
-            // how far the detail travels per cycle, in liquid-tile UV.
-            const vec2 base = texCoords[ 0 ] * globalUniform.liquidFlowScale;
-            const vec2 adv  = dir * globalUniform.liquidFlowScale * globalUniform.liquidFlowDist;
+            // Procedural, full-range noise -- see d64_flowNoise for why the
+            // water normal map could not be the source. mod() is seamless
+            // because the lattice itself is 256-periodic.
+            float d = d64_flowNoise( vec2( mod( u, 256.0 ), v ) );
 
-            // The water normal map is the detail source: tileable, already
-            // bound, and getLavaHeat already uses it as a noise field.
-            // getTextureSampleLod, not getTextureSample: a raygen shader has
-            // no quad derivatives.
-            const float d0 = getTextureSampleLod( globalUniform.waterNormalTextureIndex,
-                                                  base - adv * p0, 0 ).x;
-            const float d1 = getTextureSampleLod( globalUniform.waterNormalTextureIndex,
-                                                  base - adv * p1, 0 ).x;
-            float d = mix( d0, d1, w );
-
-            // a normal map's x channel hugs 0.5; stretch it into a usable range
-            d = clamp( ( d - 0.5 ) * 3.0 + 0.5, 0.0, 1.0 );
-            // and fade to neutral where the direction was uncertain
-            d = mix( 0.5, d, min( 1.0, len ) );
+            // shape into clots: plateaus of bright and dark with fast
+            // transitions, so what slides down the vein reads as blobs of
+            // liquid rather than as smooth static
+            d = smoothstep( 0.30, 0.70, d );
 
             // nudged off zero so that EXACTLY 0 keeps meaning "no flow here"
             liquidFlow = d * 0.998 + 0.001;

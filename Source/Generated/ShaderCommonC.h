@@ -361,10 +361,12 @@ struct ShGlobalUniform
     float stylizedLiquidCrest[16];
     float stylizedLiquidRelief[4];
     float stylizedLiquidFlow[4];
+    float stylizedLiquidRefl[4];
+    float stylizedLiquidRough[4];
     float stylizedLiquidCaustics[4];
     float liquidFlowSpeed;
     float liquidFlowScale;
-    float liquidFlowDist;
+    float liquidFlowAspect;
     float liquidFlowDebug;
     float lavaEmisBoost;
     float lavaFlowStrength;
@@ -375,7 +377,7 @@ struct ShGlobalUniform
     float lavaPulseSpeed;
     float lavaGiBoost;
     float lavaDebug;
-    float _padlava0;
+    float liquidNoSplit;
     float _padlava1;
     float _padlava;
     float lavaTint[4];

@@ -527,27 +527,33 @@ namespace detail
             .stylizedWaterCaustic                  = 1.5f,
             .stylizedWaterReflMax                  = 0.75f,
             .stylizedWaterRoughness                = 0.10f,
-            .stylizedWaterGlow                     = 0.15f,
+            .stylizedWaterGlow                     = 0.04f,
             .stylizedWaterVeinRef                  = 0.1f,
             // water / nukage / sludge / blood
             .stylizedLiquidTint                    = { { 1 / 255.f, 1 / 255.f, 15 / 255.f },
-                                                       { 2 / 255.f, 15 / 255.f, 4 / 255.f },
-                                                       { 15 / 255.f, 9 / 255.f, 2 / 255.f },
-                                                       { 15 / 255.f, 2 / 255.f, 2 / 255.f } },
+                                                       { 1 / 255.f, 5 / 255.f, 1 / 255.f },
+                                                       { 9 / 255.f, 3 / 255.f, 1 / 255.f },
+                                                       { 20 / 255.f, 1 / 255.f, 1 / 255.f } },
             .stylizedLiquidCrest                   = { { 0.55f, 0.80f, 1.00f },
-                                                       { 0.60f, 1.00f, 0.45f },
-                                                       { 1.00f, 0.80f, 0.45f },
+                                                       { 50 / 255.f, 150 / 255.f, 50 / 255.f },
+                                                       { 120 / 255.f, 78 / 255.f, 38 / 255.f },
                                                        { 1.00f, 0.45f, 0.40f } },
-            // Only blood has authored relief and a baked flow phase; the other
-            // three keep the wave and are bit-for-bit unchanged.
-            .stylizedLiquidRelief                  = { 0.0f, 0.0f, 0.0f, 1.0f },
-            .stylizedLiquidFlow                    = { 0.0f, 0.0f, 0.0f, 0.7f },
-            // Nukage and blood are opaque: they refract nothing, so they
-            // focus nothing. Water and sludge keep theirs.
-            .stylizedLiquidCaustics                = { 1.0f, 0.0f, 1.0f, 0.0f },
-            .liquidFlowSpeed                       = 0.15f,
+            // Blood and sludge have authored relief; only blood has a flow map.
+            // Water and nukage keep the wave and are bit-for-bit unchanged.
+            .stylizedLiquidRelief                  = { 0.0f, 0.0f, 1.0f, 1.0f },
+            .stylizedLiquidFlow                    = { 0.0f, 0.0f, 0.0f, 1.0f },
+            // Sludge is a mud bed, not a pool: NO mirror (0 also means no
+            // checkerboard split -- full-res, standard glossy specular), and
+            // rough. 1 / <=0 elsewhere is "unchanged".
+            .stylizedLiquidRefl                    = { 1.0f, 1.0f, 0.0f, 1.0f },
+            .stylizedLiquidRough                   = { 0.0f, 0.0f, 0.80f, 0.0f },
+            .liquidNoSplit                         = 0.0f,
+            // Nukage, sludge and blood are opaque: they refract nothing, so
+            // they focus nothing. Only water keeps its caustics.
+            .stylizedLiquidCaustics                = { 1.0f, 0.0f, 0.0f, 0.0f },
+            .liquidFlowSpeed                       = 0.5f,
             .liquidFlowScale                       = 6.0f,
-            .liquidFlowDist                        = 0.25f,
+            .liquidFlowAspect                      = 3.0f,
             .liquidFlowDebug                       = 0.0f,
             .lavaEmisBoost                         = 6.0f,
             .lavaFlowStrength                      = 0.45f,

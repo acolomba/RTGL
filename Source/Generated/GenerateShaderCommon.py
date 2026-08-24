@@ -898,17 +898,34 @@ GLOBAL_UNIFORM_STRUCT = [
     # in framebufAlbedo.a.
     (TYPE_FLOAT32,      4,      "stylizedLiquidRelief",             1),
     (TYPE_FLOAT32,      4,      "stylizedLiquidFlow",               1),
+
+    # refl: scales the remapped-Schlick reflection F, per liquid. 1 is the
+    # stylizedWaterRefl{Min,Max} curve untouched, which is what water gets and
+    # what every liquid used to get. Mud is not a mirror: the same mirror
+    # reflection that sells water is the single loudest thing saying "this is
+    # water with brown paint on it".
+    #
+    # rough: surface roughness override. <= 0 means "use stylizedWaterRoughness"
+    # (0.1, a near-mirror), so a liquid that does not set it is unchanged.
+    # Note this is the roughness the DENOISER and the G-buffer see -- the
+    # reflection RAY is a pure mirror off shadeNormal either way, so what
+    # actually scatters a rough liquid's reflection is its authored relief
+    # normal. The two are meant to be used together.
+    (TYPE_FLOAT32,      4,      "stylizedLiquidRefl",               1),
+    (TYPE_FLOAT32,      4,      "stylizedLiquidRough",              1),
     # Per-liquid scale on the caustics that liquid PROJECTS onto the geometry
     # around it. A caustic is light refracted through a fluid and focused on
     # what lies beyond it, so an opaque one makes none -- blood was throwing
     # swimming-pool light on its own walls. The probe is receiver-side, so
     # probeWaterBelow has to hand the liquid id back out for this.
     (TYPE_FLOAT32,      4,      "stylizedLiquidCaustics",           1),
-    # cycles per second of the ping-pong; detail tiles per liquid tile; how far
-    # the detail travels per cycle, in liquid-tile UV.
+    # The detail is sampled in a vein-aligned frame (u along the channel and
+    # scrolling, v across it): speed = detail tiles scrolled per second, scale =
+    # detail tiles per liquid tile, aspect = across-vein frequency multiplier
+    # that stretches the noise into lengthwise streaks.
     (TYPE_FLOAT32,      1,      "liquidFlowSpeed",                  1),
     (TYPE_FLOAT32,      1,      "liquidFlowScale",                  1),
-    (TYPE_FLOAT32,      1,      "liquidFlowDist",                   1),
+    (TYPE_FLOAT32,      1,      "liquidFlowAspect",                 1),
     # 1 = paint the advected detail. Flat blue means it never crossed
     # framebufAlbedo.a, which is indistinguishable from "too subtle" by eye and
     # cost nothing to make separable.
@@ -945,7 +962,12 @@ GLOBAL_UNIFORM_STRUCT = [
     # it must be a multiple of FOUR floats or every field after it -- including
     # the mat4s at the end -- reads shifted, and the frame comes out black with
     # only the HUD on top. Eleven floats here did exactly that. Count them.
-    (TYPE_FLOAT32,      1,      "_padlava0",                        1),
+    # Taken from the _padlava0 slot so std140 is unchanged. > 0.5: NO stylized
+    # liquid splits, whatever its refl says -- every liquid shaded on every
+    # pixel at full resolution, no mirror ray, sheen from its roughness. The
+    # Options > Quality "Liquid surfaces" item; see d64_noSplit in
+    # RaygenPrimary.inl for why the split is unstable on an authored normal.
+    (TYPE_FLOAT32,      1,      "liquidNoSplit",                    1),
     (TYPE_FLOAT32,      1,      "_padlava1",                        1),
     (TYPE_FLOAT32,      1,      "_padlava",                         1),
     # Hue of the heat, multiplying the lava's emission on BOTH the screen and

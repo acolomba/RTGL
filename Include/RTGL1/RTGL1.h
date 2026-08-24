@@ -2129,15 +2129,29 @@ typedef struct RgDrawFrameReflectRefractParams
     // advected along the vein direction baked into the height map's .g/.b, so
     // texture visibly travels down each channel. 0 = still.
     float           stylizedLiquidFlow[ 4 ];
+    // Doom64-RT: per-liquid scale on the stylized reflection F. 1 = the
+    // stylizedWaterRefl{Min,Max} curve untouched. Below 1 for an opaque bed
+    // like mud, where a mirror reflection is what makes it read as water.
+    // EXACTLY 0 = no mirror ray and no checkerboard split at all: the surface
+    // is shaded on every pixel and its sheen is the standard glossy specular.
+    float           stylizedLiquidRefl[ 4 ];
+    // Doom64-RT: per-liquid surface roughness. <= 0 = use
+    // stylizedWaterRoughness, so a liquid that does not set it is unchanged.
+    float           stylizedLiquidRough[ 4 ];
+    // Doom64-RT: != 0 forces the no-split path for EVERY stylized liquid,
+    // regardless of stylizedLiquidRefl. Full-res surface, no mirror ray.
+    float           liquidNoSplit;
     // Doom64-RT: per-liquid scale on the caustics this liquid PROJECTS onto the
     // geometry around it. A caustic is light refracted through a fluid and
     // focused beyond it, so an opaque liquid casts none. 1 = as before.
     float           stylizedLiquidCaustics[ 4 ];
-    // Cycles per second of the advection ping-pong; detail tiles per liquid
-    // tile; how far the detail travels per cycle in liquid-tile UV.
+    // The detail is sampled in a vein-aligned frame (u along the channel and
+    // scrolling, v across it): speed = detail tiles scrolled per second,
+    // scale = detail tiles per liquid tile, aspect = across-vein frequency
+    // multiplier that stretches the noise into lengthwise streaks.
     float           liquidFlowSpeed;
     float           liquidFlowScale;
-    float           liquidFlowDist;
+    float           liquidFlowAspect;
     // 1 = paint the advected detail on liquid surfaces. Flat blue = it never
     // arrived, which by eye is identical to "too subtle".
     float           liquidFlowDebug;

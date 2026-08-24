@@ -549,10 +549,15 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             gu->stylizedLiquidFlow[ i ] = std::max( 0.0f, params.stylizedLiquidFlow[ i ] );
             gu->stylizedLiquidCaustics[ i ] =
                 std::max( 0.0f, params.stylizedLiquidCaustics[ i ] );
+            gu->stylizedLiquidRefl[ i ] = std::max( 0.0f, params.stylizedLiquidRefl[ i ] );
+            // NOT clamped up from 0: <= 0 is the "use the global" sentinel.
+            gu->stylizedLiquidRough[ i ] =
+                std::min( params.stylizedLiquidRough[ i ], 1.0f );
         }
+        gu->liquidNoSplit   = params.liquidNoSplit != 0.0f ? 1.0f : 0.0f;
         gu->liquidFlowSpeed = params.liquidFlowSpeed;
-        gu->liquidFlowScale = std::max( 0.01f, params.liquidFlowScale );
-        gu->liquidFlowDist  = std::max( 0.0f, params.liquidFlowDist );
+        gu->liquidFlowScale  = std::max( 0.01f, params.liquidFlowScale );
+        gu->liquidFlowAspect = std::max( 0.1f, params.liquidFlowAspect );
         gu->liquidFlowDebug = params.liquidFlowDebug;
         gu->lavaEmisBoost          = std::max( 0.0f, params.lavaEmisBoost );
         gu->lavaFlowStrength       = std::clamp( params.lavaFlowStrength, 0.0f, 1.0f );

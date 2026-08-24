@@ -1059,10 +1059,43 @@ void main()
                 F                    = mix( globalUniform.stylizedWaterReflMin,
                                             globalUniform.stylizedWaterReflMax,
                                             curve );
+                // Doom64-RT: per-liquid reflection. A mirror is what sells
+                // WATER; on an opaque mud bed it is the single loudest thing
+                // saying "this is water with brown paint on it". Scaling F
+                // here does both halves of the checkerboard at once -- the
+                // even pixels' mirror ray is weighted by F and the odd
+                // pixels' surface by (1 - F) -- so the light the surface
+                // loses to the reflection comes straight back to the diffuse
+                // shading instead of vanishing.
+                F *= globalUniform.stylizedLiquidRefl[ d64_liquidId ];
                 F                    = clamp( F, 0.0, 1.0 );
             }
 
-            if( isPixOdd )
+            // Doom64-RT: an OPAQUE BED does not split. stylizedLiquidRefl 0
+            // means "no mirror at all": the surface is shaded on EVERY pixel,
+            // full resolution, no checkerboard, and its wet sheen comes from
+            // the standard glossy specular off the roughness written below --
+            // the lighter, dedicated reflection a mud bed wants.
+            //
+            // This is also a fix, not only a look. The split shades the lit
+            // surface on odd screen columns only and rebuilds the even ones as
+            // a 4-neighbour average, and the denoiser reprojects history in
+            // that half-resolution space. Stock water has a smooth wave normal
+            // and never noticed. On a high-contrast authored normal, every
+            // texel alternates between "shaded" and "averaged from its
+            // neighbours" as it crosses columns while the camera moves: a
+            // per-texel contrast pulse that scales with slope amplitude,
+            // survives the denoiser, ignores parallax and the upscaler, and
+            // freezes into a stable pattern the moment the camera stops.
+            // Which is exactly the flashlight bug, and every bisect arm
+            // (nomaps clean, softnormal halved, flat and nodlss unchanged,
+            // visible in denoised direct diffuse) agrees with it.
+            // liquidNoSplit is the Options > Quality "Liquid surfaces" item: it
+            // takes every liquid down this path, water's mirror included.
+            const bool d64_noSplit = globalUniform.liquidNoSplit > 0.5 ||
+                                     globalUniform.stylizedLiquidRefl[ d64_liquidId ] <= 0.0;
+
+            if( isPixOdd || d64_noSplit )
             {
                 float caustic;
                 // the base normal must be the one getNormal() actually built
@@ -1072,8 +1105,9 @@ void main()
                 const vec3 surfAlbedo = getStylizedWaterAlbedo(
                     h.albedo, normal, baseNormal, liquidId, liquidFlow, caustic );
 
-                // *2 compensates the split: this half covers two pixels
-                throughput *= ( 1.0 - F ) * 2.0;
+                // *2 compensates the split: this half covers two pixels.
+                // No split, no compensation and nothing given to a mirror.
+                throughput *= d64_noSplit ? 1.0 : ( 1.0 - F ) * 2.0;
 
                 // a little unlit sheen so the caustic pattern still reads in
                 // rooms the path tracer leaves nearly black (the original flat
@@ -1094,24 +1128,67 @@ void main()
                 // never crossed framebufAlbedo.a; either way, tuning cannot help.
                 if( globalUniform.liquidFlowDebug > 0.5 )
                 {
+                    // Instrumented after the advection measured DEAD STATIC in a
+                    // burst capture while every plumbing stage checked out:
+                    //   RED   = fract(time/4)  -- must visibly change second to
+                    //           second, or the time uniform itself is frozen
+                    //   GREEN = the advected detail (the actual flow debug)
+                    //   BLUE  = the speed the shader sees, /50 -- near-black at
+                    //           the shipping 0.3, saturated if a test "60" pin
+                    //           arrives. Tells "speed never arrived" from "time
+                    //           is dead" in one frame-pair.
+                    const float timeBeat = fract( globalUniform.time * 0.25 );
+                    const float speedTint =
+                        clamp( globalUniform.liquidFlowSpeed * 0.02, 0.0, 1.0 );
                     imageStore( framebufAlbedo, regPix, vec4( 0.0 ) );
                     imageStore( framebufScreenEmisRT,
                                 regPix,
-                                liquidFlow > 0.0 ? vec4( 0.0, liquidFlow, 0.0, 0.0 )
-                                                 : vec4( 0.0, 0.0, 0.25, 0.0 ) );
+                                liquidFlow > 0.0
+                                    ? vec4( timeBeat, liquidFlow, speedTint, 0.0 )
+                                    : vec4( timeBeat, 0.0, 0.15 + speedTint, 0.0 ) );
                     imageStoreNormal( pix, shadeNormal );
                     imageStore( framebufThroughput, pix, vec4( vec3( 1.0 ), -1.0 ) );
+                    imageStore( framebufReactivity, regPix, vec4( UPSCALER_REACTIVITY_REFLREFR ) );
                     return;
                 }
 
                 imageStore( framebufAlbedo, regPix, vec4( surfAlbedo, 0.0 ) );
                 imageStore( framebufScreenEmisRT, regPix, vec4( screenEmission + sheen, 0.0 ) );
                 imageStoreNormal( pix, shadeNormal );
-                imageStore( framebufMetallicRoughness,
-                            pix,
-                            vec4( 0.0, globalUniform.stylizedWaterRoughness, 0, 0 ) );
+                // Per-liquid roughness, <= 0 meaning "keep the global". The
+                // reflection RAY is a mirror off shadeNormal regardless; this
+                // is what the denoiser and any later bounce see, and it is
+                // what stops a rough liquid being resolved as a sharp one.
+                const float d64_rough = globalUniform.stylizedLiquidRough[ liquidId ] > 0.0
+                                            ? globalUniform.stylizedLiquidRough[ liquidId ]
+                                            : globalUniform.stylizedWaterRoughness;
+                imageStore( framebufMetallicRoughness, pix, vec4( 0.0, d64_rough, 0, 0 ) );
                 // alpha == 1: was refl/refr WITH a split -> resolve checkerboard
-                imageStore( framebufThroughput, pix, vec4( throughput, 1.0 ) );
+                // alpha == -1: no split -> CmCheckerboard leaves the pixel alone
+                imageStore( framebufThroughput, pix, vec4( throughput, d64_noSplit ? -1.0 : 1.0 ) );
+                // Doom64-RT: THE FIX. Every other exit from this shader marks
+                // its reactivity (see storeSky and the hitInfoWasOverwritten
+                // path at the bottom of this file); this early return was the
+                // one place that did not, and it is exactly the return this
+                // liquid surface always takes. Unmarked reads as "static,
+                // trust history" to DLSS's temporal upscaler, which is active
+                // in every configuration this was tested under (DLSS2 Super
+                // Resolution, independent of A-SVGF handling the denoise) --
+                // so a flow signal that changes COLOUR ONLY, with a static
+                // normal (relief pins it) and zero motion vector, gets
+                // averaged toward its time-mean before it reaches the screen.
+                // That average is a brighter, static crest: exactly the
+                // symptom reported, on both the phase-pulse and the flow-map
+                // versions, because neither ever set this.
+                //
+                // With no split and no flow this is an ordinary static opaque
+                // surface, and telling the upscaler to distrust its history
+                // would only cost it anti-aliasing. Mark it like one.
+                const bool d64_plainOpaque =
+                    d64_noSplit && globalUniform.stylizedLiquidFlow[ liquidId ] <= 0.0;
+                imageStore( framebufReactivity,
+                            regPix,
+                            vec4( d64_plainOpaque ? 0.0 : UPSCALER_REACTIVITY_REFLREFR ) );
                 return;
             }
 
