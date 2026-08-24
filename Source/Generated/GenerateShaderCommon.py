@@ -629,7 +629,12 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      4,      "cameraPositionPrev",           1),
 
     (TYPE_UINT32,       1,      "debugShowFlags",               1),
-    (TYPE_UINT32,       1,      "indirSecondBounce",            1),
+    # Doom64-RT: GI path depth -- vertices after the primary hit, [1..4].
+    # Was indirSecondBounce, which nothing read: the shader gate meant to
+    # consume it sat commented out in RtRaygenIndirect.inl ("diffuse very
+    # red"), so the second bounce always ran. Same slot, same type, so std140
+    # is untouched. rt_gi_bounces.
+    (TYPE_UINT32,       1,      "indirectBounces",              1),
     (TYPE_UINT32,       1,      "lightCount",                   1),
     (TYPE_UINT32,       1,      "lightCountPrev",               1),
 
@@ -877,6 +882,38 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      4,      "stylizedLiquidTint",               4),
     (TYPE_FLOAT32,      4,      "stylizedLiquidCrest",              4),
 
+    # ONE vec4 each, holding a SCALAR per liquid -- not four vec4s like the two
+    # colours above. Indexed the same way: stylizedLiquidRelief[liquidId].
+    #
+    # relief: how much of the authored _n survives against the animated water
+    # wave. getNormal() overwrites the normal-mapped normal with the wave for
+    # any water surface, so without this a liquid can never show an _n at all.
+    # 0 keeps the old behaviour exactly, which is what water/nukage/sludge use.
+    #
+    # flow: depth of the detail-texture advection along the veins -- a flow
+    # map. The vein DIRECTION is baked into the height map's .g/.b as a vector
+    # (a raw angle would tear at a junction under bilinear filtering; a vector
+    # merely shrinks toward zero and fades). HitInfo.inl advects a detail
+    # texture along it with a two-phase ping-pong and hands the result across
+    # in framebufAlbedo.a.
+    (TYPE_FLOAT32,      4,      "stylizedLiquidRelief",             1),
+    (TYPE_FLOAT32,      4,      "stylizedLiquidFlow",               1),
+    # Per-liquid scale on the caustics that liquid PROJECTS onto the geometry
+    # around it. A caustic is light refracted through a fluid and focused on
+    # what lies beyond it, so an opaque one makes none -- blood was throwing
+    # swimming-pool light on its own walls. The probe is receiver-side, so
+    # probeWaterBelow has to hand the liquid id back out for this.
+    (TYPE_FLOAT32,      4,      "stylizedLiquidCaustics",           1),
+    # cycles per second of the ping-pong; detail tiles per liquid tile; how far
+    # the detail travels per cycle, in liquid-tile UV.
+    (TYPE_FLOAT32,      1,      "liquidFlowSpeed",                  1),
+    (TYPE_FLOAT32,      1,      "liquidFlowScale",                  1),
+    (TYPE_FLOAT32,      1,      "liquidFlowDist",                   1),
+    # 1 = paint the advected detail. Flat blue means it never crossed
+    # framebufAlbedo.a, which is indistinguishable from "too subtle" by eye and
+    # cost nothing to make separable.
+    (TYPE_FLOAT32,      1,      "liquidFlowDebug",                  1),
+
     # --- Lava (Doom64-RT) ----------------------------------------------------
     # The lava's emission cannot be baked bright enough to bloom: _e is 8-bit so
     # it caps at 1.0, screen emission is _e * emissionMaxScreenColor (3), and
@@ -1004,7 +1041,12 @@ GLOBAL_UNIFORM_STRUCT = [
     # distance, not the camera's, so the beam further down the corridor -- the
     # look this is all for -- survives. 0 = physical behaviour.
     (TYPE_FLOAT32,      1,      "volumeLightNearFade",              1),
-    (TYPE_FLOAT32,      1,      "_padf2",                           1),
+    # Doom64-RT: 1 = reproduce the stock bounce>=2 weighting, which multiplied
+    # by 1/pdf (= pi/cos) and nothing else -- pi/cos too much for a cosine-
+    # sampled Lambertian, mean ~2pi. 0 = the correct throughput of exactly 1.
+    # Taken from the _padf2 slot: a uint is the same 4 bytes, so std140 is
+    # unchanged and check_uniform_layout.py stays silent. rt_gi_bounce_legacy.
+    (TYPE_UINT32,       1,      "indirectLegacyWeight",             1),
 
     # --- Localised smoke (Doom64-RT) -----------------------------------------
     # A separate group, appended AFTER the whole volume block rather than

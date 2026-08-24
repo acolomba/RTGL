@@ -266,7 +266,8 @@ JSON_TYPE( RTGL1::DevmodeSettings )
     , "materialStripOrm", &T::materialStripOrm
     , "ovrd_enable", &T::ovrd_enable
     , "ovrd_maxBounceShadows", &T::ovrd_maxBounceShadows
-    , "ovrd_enableSecondBounceForIndirect", &T::ovrd_enableSecondBounceForIndirect
+    , "ovrd_indirectBounces", &T::ovrd_indirectBounces
+    , "ovrd_indirectLegacyBounceWeight", &T::ovrd_indirectLegacyBounceWeight
     , "ovrd_directDiffuseSensitivityToChange", &T::ovrd_directDiffuseSensitivityToChange
     , "ovrd_indirectDiffuseSensitivityToChange", &T::ovrd_indirectDiffuseSensitivityToChange
     , "ovrd_specularSensitivityToChange", &T::ovrd_specularSensitivityToChange

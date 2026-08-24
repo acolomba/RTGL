@@ -77,7 +77,8 @@ auto CaptureDevmodeSettings( const RTGL1::Devmode& d ) -> RTGL1::DevmodeSettings
     const auto& m = d.drawInfoOvrd;
     s.ovrd_enable                        = m.enable;
     s.ovrd_maxBounceShadows              = m.maxBounceShadows;
-    s.ovrd_enableSecondBounceForIndirect = m.enableSecondBounceForIndirect;
+    s.ovrd_indirectBounces               = m.indirectBounces;
+    s.ovrd_indirectLegacyBounceWeight    = m.indirectLegacyBounceWeight;
     s.ovrd_directDiffuseSensitivityToChange   = m.directDiffuseSensitivityToChange;
     s.ovrd_indirectDiffuseSensitivityToChange = m.indirectDiffuseSensitivityToChange;
     s.ovrd_specularSensitivityToChange        = m.specularSensitivityToChange;
@@ -187,7 +188,8 @@ void ApplyDevmodeSettings( RTGL1::Devmode& d, const RTGL1::DevmodeSettings& s )
     // master switch that makes them replace the game's values does not.
     m.enable                        = false;
     m.maxBounceShadows              = s.ovrd_maxBounceShadows;
-    m.enableSecondBounceForIndirect = s.ovrd_enableSecondBounceForIndirect;
+    m.indirectBounces               = s.ovrd_indirectBounces;
+    m.indirectLegacyBounceWeight    = s.ovrd_indirectLegacyBounceWeight;
     m.directDiffuseSensitivityToChange   = s.ovrd_directDiffuseSensitivityToChange;
     m.indirectDiffuseSensitivityToChange = s.ovrd_indirectDiffuseSensitivityToChange;
     m.specularSensitivityToChange        = s.ovrd_specularSensitivityToChange;
@@ -620,14 +622,23 @@ void RTGL1::VulkanDevice::Dev_Draw() const
         {
             ImGui::Checkbox( "Anti-firefly", &devmode->antiFirefly );
             ImGui::TextDisabled( "A-SVGF Denoise path only (skipped when DLSS-RR is on)." );
+            // 0..8, not the old 0..2: that clamp encoded "only three bounce
+            // indices exist", which stopped being true with indirectBounces.
             ImGui::SliderInt( "Shadow rays max depth",
                               &modifiers.maxBounceShadows,
                               0,
-                              2,
+                              8,
                               "%d",
                               ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput );
-            ImGui::Checkbox( "Second bounce for indirect",
-                             &modifiers.enableSecondBounceForIndirect );
+            ImGui::TextDisabled( "A vertex at index >= this samples no analytic lights; depth N needs N+1." );
+            ImGui::SliderInt( "Indirect bounces",
+                              &modifiers.indirectBounces,
+                              1,
+                              4,
+                              "%d",
+                              ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput );
+            ImGui::Checkbox( "Legacy bounce weight (stock pi/cos overweight on bounce >= 2)",
+                             &modifiers.indirectLegacyBounceWeight );
             ImGui::SliderFloat( "Sensitivity to change: Diffuse Direct",
                                 &modifiers.directDiffuseSensitivityToChange,
                                 0.0f,
@@ -1937,7 +1948,8 @@ void RTGL1::VulkanDevice::Dev_Override( RgDrawFrameIlluminationParams& illuminat
         // apply modifiers
         {
             dst_illum.maxBounceShadows                 = modifiers.maxBounceShadows;
-            dst_illum.enableSecondBounceForIndirect    = modifiers.enableSecondBounceForIndirect;
+            dst_illum.indirectBounces                  = uint32_t( modifiers.indirectBounces );
+            dst_illum.indirectLegacyBounceWeight       = modifiers.indirectLegacyBounceWeight;
             dst_illum.directDiffuseSensitivityToChange = modifiers.directDiffuseSensitivityToChange;
             dst_illum.indirectDiffuseSensitivityToChange =
                 modifiers.indirectDiffuseSensitivityToChange;
@@ -1966,7 +1978,8 @@ void RTGL1::VulkanDevice::Dev_Override( RgDrawFrameIlluminationParams& illuminat
         // reset modifiers from game — do not clobber live RR/Denoise sticky knobs
         {
             modifiers.maxBounceShadows                 = int( src_illum.maxBounceShadows );
-            modifiers.enableSecondBounceForIndirect    = src_illum.enableSecondBounceForIndirect;
+            modifiers.indirectBounces                  = int( src_illum.indirectBounces );
+            modifiers.indirectLegacyBounceWeight       = !!src_illum.indirectLegacyBounceWeight;
             modifiers.directDiffuseSensitivityToChange = src_illum.directDiffuseSensitivityToChange;
             modifiers.indirectDiffuseSensitivityToChange =
                 src_illum.indirectDiffuseSensitivityToChange;

@@ -92,7 +92,8 @@ struct Devmode
         bool enable{ false };
 
         int   maxBounceShadows{ 0 };
-        bool  enableSecondBounceForIndirect{ true };
+        int   indirectBounces{ 2 };
+        bool  indirectLegacyBounceWeight{ true };
         float directDiffuseSensitivityToChange{ 1.f };
         float indirectDiffuseSensitivityToChange{ 1.f };
         float specularSensitivityToChange{ 1.f };

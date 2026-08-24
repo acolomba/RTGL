@@ -70,7 +70,8 @@ void main()
     // denoiser tuning can fix, because it is upstream of every denoiser.
     // Green ramp = M/32: black is M=1 (worst case, one sample), bright green is
     // a well-accumulated reservoir. Watch it while standing still, then move.
-    if (globalUniform.debugRestirM != 0)
+    // 1 = this, the direct reservoir. 2 = the indirect one (RtRaygenIndirect.inl).
+    if (globalUniform.debugRestirM == 1)
     {
         float mNorm = clamp(float(r.M) / 32.0, 0.0, 1.0);
         imageStoreUnfilteredDirect(pix, vec3(mNorm * 0.15, mNorm, mNorm * 0.15));

@@ -290,7 +290,8 @@ namespace detail
             .sType                                       = sType,
             .pNext                                       = nullptr,
             .maxBounceShadows                            = 2,
-            .enableSecondBounceForIndirect               = true,
+            .indirectBounces                             = 2,
+            .indirectLegacyBounceWeight                  = true,
             .cellWorldSize                               = 1.0f,
             .directDiffuseSensitivityToChange            = 0.5f,
             .indirectDiffuseSensitivityToChange          = 0.2f,
@@ -303,7 +304,7 @@ namespace detail
             .rrFireflyMinLum                             = 0.01f,
             .restirBlueNoise                             = true,
             .shadowSamples                               = 1,
-            .debugRestirM                                = false,
+            .debugRestirM                                = 0,
             .debugVisibility                             = 0,
             .restirTemporalJitter                        = 2.0f,
             .rrSpecularHitDistance                       = true,
@@ -537,6 +538,17 @@ namespace detail
                                                        { 0.60f, 1.00f, 0.45f },
                                                        { 1.00f, 0.80f, 0.45f },
                                                        { 1.00f, 0.45f, 0.40f } },
+            // Only blood has authored relief and a baked flow phase; the other
+            // three keep the wave and are bit-for-bit unchanged.
+            .stylizedLiquidRelief                  = { 0.0f, 0.0f, 0.0f, 1.0f },
+            .stylizedLiquidFlow                    = { 0.0f, 0.0f, 0.0f, 0.7f },
+            // Nukage and blood are opaque: they refract nothing, so they
+            // focus nothing. Water and sludge keep theirs.
+            .stylizedLiquidCaustics                = { 1.0f, 0.0f, 1.0f, 0.0f },
+            .liquidFlowSpeed                       = 0.15f,
+            .liquidFlowScale                       = 6.0f,
+            .liquidFlowDist                        = 0.25f,
+            .liquidFlowDebug                       = 0.0f,
             .lavaEmisBoost                         = 6.0f,
             .lavaFlowStrength                      = 0.45f,
             .lavaFlowSpeed                         = 0.03f,

@@ -466,7 +466,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
         gu->maxBounceShadowsLights     = params.maxBounceShadows;
         gu->polyLightSpotlightFactor   = std::max( 0.0f, params.polygonalLightSpotlightFactor );
-        gu->indirSecondBounce          = !!params.enableSecondBounceForIndirect;
+        // [1,4], not the API's advertised 8: emissionMapBoost runs at 200 in
+        // this game and emis * 200 * albedo^k compounding over depth is a
+        // firefly risk. Widen after measurement, not before.
+        gu->indirectBounces      = std::clamp( params.indirectBounces, 1u, 4u );
+        gu->indirectLegacyWeight = !!params.indirectLegacyBounceWeight;
         gu->lightIndexIgnoreFPVShadows = lightManager->GetLightIndexForShaders(
             currentFrameState.GetFrameIndex(), params.lightUniqueIdIgnoreFirstPersonViewerShadows );
         gu->cellWorldSize       = std::max( params.cellWorldSize, 0.001f );
@@ -537,7 +541,19 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
                     params.stylizedLiquidCrest[ i ].data,
                     3 * sizeof( float ) );
             gu->stylizedLiquidCrest[ i * 4 + 3 ] = 0.0f;
+
+            // These two are ONE vec4 each, holding a scalar per liquid -- not
+            // four vec4s. Indexed in the shader as stylizedLiquidRelief[id].
+            gu->stylizedLiquidRelief[ i ] =
+                std::clamp( params.stylizedLiquidRelief[ i ], 0.0f, 1.0f );
+            gu->stylizedLiquidFlow[ i ] = std::max( 0.0f, params.stylizedLiquidFlow[ i ] );
+            gu->stylizedLiquidCaustics[ i ] =
+                std::max( 0.0f, params.stylizedLiquidCaustics[ i ] );
         }
+        gu->liquidFlowSpeed = params.liquidFlowSpeed;
+        gu->liquidFlowScale = std::max( 0.01f, params.liquidFlowScale );
+        gu->liquidFlowDist  = std::max( 0.0f, params.liquidFlowDist );
+        gu->liquidFlowDebug = params.liquidFlowDebug;
         gu->lavaEmisBoost          = std::max( 0.0f, params.lavaEmisBoost );
         gu->lavaFlowStrength       = std::clamp( params.lavaFlowStrength, 0.0f, 1.0f );
         gu->lavaFlowSpeed          = params.lavaFlowSpeed;
@@ -1074,7 +1090,8 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->rrFireflyMinLum    = std::max( illum.rrFireflyMinLum, 0.0f );
         gu->restirBlueNoise    = !!illum.restirBlueNoise;
         gu->shadowSamples      = std::clamp( illum.shadowSamples, 1u, 8u );
-        gu->debugRestirM       = !!illum.debugRestirM;
+        // 1 = direct reservoir M, 2 = indirect reservoir M. Not a bool.
+        gu->debugRestirM       = std::min( illum.debugRestirM, 2u );
         gu->debugVisibility    = std::min( illum.debugVisibility, 2u );
 
         // Doom64-RT: make debugVisibility 1 self-sufficient, because it was NOT, and that
@@ -1408,19 +1425,29 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             // would leave the default path with no way to verify its own uniforms.
             {
                 static bool     s_rHave = false;
-                static uint32_t s_rPrev[ 2 ] = {};
+                static uint32_t s_rPrev[ 4 ] = {};
                 const uint32_t  init = uniform->GetData()->restirInitialSamples;
                 const uint32_t  spat = uniform->GetData()->restirSpatialSamples;
-                if( !s_rHave || s_rPrev[ 0 ] != init || s_rPrev[ 1 ] != spat )
+                // GI depth and the shadow depth it needs are part of the
+                // trigger: an arm that moves only rt_gi_bounces must still
+                // get its one printed proof that the value reached the shader.
+                const uint32_t  gib  = uniform->GetData()->indirectBounces;
+                const uint32_t  shd  = uniform->GetData()->maxBounceShadowsLights;
+                if( !s_rHave || s_rPrev[ 0 ] != init || s_rPrev[ 1 ] != spat ||
+                    s_rPrev[ 2 ] != gib || s_rPrev[ 3 ] != shd )
                 {
                     s_rHave      = true;
                     s_rPrev[ 0 ] = init;
                     s_rPrev[ 1 ] = spat;
+                    s_rPrev[ 2 ] = gib;
+                    s_rPrev[ 3 ] = shd;
                     debug::Warning( "ReSTIR: initialSamples={} (stock 8), "
                                     "spatialSamples={} (stock 8), spatialRadius={} "
                                     "(stock 30), temporalMCap={} (stock 20), "
                                     "temporalJitter={} (stock 2), shadowSamples={} "
-                                    "(stock 1), sppDirect={}, sppIndirect={}",
+                                    "(stock 1), sppDirect={}, sppIndirect={}, "
+                                    "giBounces={} (stock 2), giLegacyWeight={} (stock 1), "
+                                    "maxBounceShadows={} (vertex i lit iff i < this)",
                                     init,
                                     spat,
                                     uniform->GetData()->restirSpatialRadius,
@@ -1428,7 +1455,10 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                     uniform->GetData()->restirTemporalJitter,
                                     uniform->GetData()->shadowSamples,
                                     uniform->GetData()->directSamples,
-                                    uniform->GetData()->indirectSamples );
+                                    uniform->GetData()->indirectSamples,
+                                    gib,
+                                    uniform->GetData()->indirectLegacyWeight,
+                                    shd );
                 }
             }
 

@@ -1146,12 +1146,21 @@ typedef struct RgDrawFrameIlluminationParams
     void*           pNext;
     // Shadow rays are cast, if illumination bounce index is in [0, maxBounceShadows).
     uint32_t        maxBounceShadows;
-    // If false, only one bounce will be cast from a primary surface.
-    // If true, a bounce of that bounce will be also cast.
-    // If false, reflections and indirect diffuse might appear darker,
-    // since inside of them, shadowed areas are just pitch black.
-    // Default: true
-    RgBool32        enableSecondBounceForIndirect;
+    // Doom64-RT: number of path vertices after the primary hit for indirect
+    // diffuse, clamped to [1..4] inside. 1 = a single bounce, 2 = the stock
+    // two. A vertex at index >= maxBounceShadows samples NO analytic lights
+    // (RaygenCommon.h isDirectIlluminationValid), so to light depth N pass
+    // maxBounceShadows >= N + 1 -- the caller owns that coupling.
+    // Replaces enableSecondBounceForIndirect, which nothing ever read.
+    // Default: 2
+    uint32_t        indirectBounces;
+    // Doom64-RT: if true, bounces >= 2 keep the stock weighting -- radiance
+    // multiplied by 1/pdf alone, which for a cosine-sampled Lambertian is
+    // pi/cos too much (mean ~2pi): the second bounce came out bright,
+    // saturated and firefly-prone. False applies the correct throughput of
+    // exactly 1. Default: true, so the shipped image does not move until the
+    // fix has been judged on its own.
+    RgBool32        indirectLegacyBounceWeight;
     // Size of the side of a cell for the light grid. Use RG_DEBUG_DRAW_LIGHT_GRID_BIT for the debug view.
     // Each cell is used to store a fixed amount of light samples that are important for the cell's center and radius.
     // Default: 1.0
@@ -1228,8 +1237,11 @@ typedef struct RgDrawFrameIlluminationParams
     // unfiltered-direct buffer instead of radiance (green ramp, M/32). ReSTIR
     // at 1 spp only converges because temporal reuse grows M; if M collapses
     // under camera motion the raw signal is genuinely noisier while moving,
-    // upstream of any denoiser. Default: false
-    RgBool32        debugRestirM;
+    // upstream of any denoiser. 1 = the DIRECT reservoir (RtRaygenDirect.rgen),
+    // 2 = the INDIRECT reservoir, painted into the unfiltered-indirect buffer
+    // (RtRaygenIndirect.inl) -- view it with the unfiltered-indirect debug
+    // layer. Default: 0
+    uint32_t        debugRestirM;
     // Debug: write the shadow-ray visibility term into the unfiltered-direct
     // buffer. The final image cannot separate "the occluder never blocked the
     // ray" from "the shadow is cast but drowned in fill light or smeared by the
@@ -2104,6 +2116,31 @@ typedef struct RgDrawFrameReflectRefractParams
     //            NOT white: white crests read as foam/plastic)
     RgFloat3D       stylizedLiquidTint[ 4 ];
     RgFloat3D       stylizedLiquidCrest[ 4 ];
+    // Doom64-RT: how much of the MATERIAL normal survives on a liquid surface,
+    // per liquid id. 0 = the animated water wave, exactly as before. 1 = the
+    // authored _n only, i.e. a still surface with real relief -- which is what
+    // a coagulated blood pool is, and what the ripple cannot be.
+    //
+    // The wave is not merely cosmetic here: getNormal() OVERWRITES the
+    // normal-mapped normal with it for any water surface, so without this a
+    // liquid can never show an _n map at all.
+    float           stylizedLiquidRelief[ 4 ];
+    // Doom64-RT: depth of the FLOW MAP on each liquid -- a detail texture
+    // advected along the vein direction baked into the height map's .g/.b, so
+    // texture visibly travels down each channel. 0 = still.
+    float           stylizedLiquidFlow[ 4 ];
+    // Doom64-RT: per-liquid scale on the caustics this liquid PROJECTS onto the
+    // geometry around it. A caustic is light refracted through a fluid and
+    // focused beyond it, so an opaque liquid casts none. 1 = as before.
+    float           stylizedLiquidCaustics[ 4 ];
+    // Cycles per second of the advection ping-pong; detail tiles per liquid
+    // tile; how far the detail travels per cycle in liquid-tile UV.
+    float           liquidFlowSpeed;
+    float           liquidFlowScale;
+    float           liquidFlowDist;
+    // 1 = paint the advected detail on liquid surfaces. Flat blue = it never
+    // arrived, which by eye is identical to "too subtle".
+    float           liquidFlowDebug;
     // Doom64-RT lava. Screen-emission multiplier for lava surfaces, on top of
     // emissionMaxScreenColor -- this is what lets the cracks reach the bloom
     // threshold. The rest animate the heat: a slowly drifting field that is

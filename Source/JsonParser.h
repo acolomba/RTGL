@@ -162,7 +162,8 @@ struct DevmodeSettings
     // drawInfoOvrd
     bool  ovrd_enable                          = false;
     int   ovrd_maxBounceShadows                = 0;
-    bool  ovrd_enableSecondBounceForIndirect   = true;
+    int   ovrd_indirectBounces                 = 2;
+    bool  ovrd_indirectLegacyBounceWeight      = true;
     float ovrd_directDiffuseSensitivityToChange   = 1.f;
     float ovrd_indirectDiffuseSensitivityToChange = 1.f;
     float ovrd_specularSensitivityToChange        = 1.f;

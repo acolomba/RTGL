@@ -257,11 +257,19 @@ vec3 sanitizeNormal( const vec3 triangleNormal, //
 #if defined(HITINFO_INL_PRIM)
 
 ShHitInfo getHitInfoPrimaryRay(
-    const ShPayload pl, 
-    const vec3 rayOrigin, const vec3 viewDir, const vec3 rayDirAX, const vec3 rayDirAY, 
-    out vec2 motion, out float motionDepthLinear, 
+    const ShPayload pl,
+    const vec3 rayOrigin, const vec3 viewDir, const vec3 rayDirAX, const vec3 rayDirAY,
+    out vec2 motion, out float motionDepthLinear,
     out vec2 gradDepth, out float depthNDC, out float depthLinear,
-    out vec3 emission)
+    out vec3 emission,
+    // Doom64-RT: the liquid FLOW DETAIL, 0..1 -- a noise texture advected along
+    // the vein direction baked into the height map's .g/.b. It has to be built
+    // HERE and handed onward: the stylized liquid surface is shaded in the
+    // refl/refr pass, which restores its hit from the G-buffer and has no
+    // ShTriangle, so it can never sample a material texture of its own.
+    // Exactly 0 means "no flow here" (not a liquid, no height map, or a texel
+    // the bake left still).
+    out float liquidFlow)
 
 #elif defined(HITINFO_INL_RFL)
 
@@ -283,6 +291,10 @@ ShHitInfo getHitInfoBounce(
 #endif
 {
     ShHitInfo h;
+
+#if defined( HITINFO_INL_PRIM )
+    liquidFlow = 0.0;
+#endif
 
     int instanceId, instCustomIndex;
     int geomIndex, primIndex;
@@ -488,6 +500,69 @@ ShHitInfo getHitInfoBounce(
                                             viewDirInTextureSpace,
                                             globalUniform.parallaxMaxDepth );
     }
+
+#if defined( HITINFO_INL_PRIM )
+    // Doom64-RT: the flow map. The height map's .g/.b carry the vein's tangent
+    // DIRECTION in texture space (sampleHeightMap() reads .r and nothing else,
+    // so they are free on a map we already author, and they are registered
+    // with the albedo, parallax shift included -- this runs AFTER the block
+    // above, so the flow follows the same displaced texel the colour does).
+    //
+    // A detail texture is then advected along that direction. This is what
+    // makes liquid read as MOVING: the first version slid a brightness band
+    // along a baked phase, and a brightness band moving along a static vein is
+    // still just brightness changing in place -- the eye called it flicker.
+    // Here the texture itself travels down the channel.
+    //
+    // Two phases half a cycle apart, cross-faded (the Portal 2 flow-map
+    // trick). One phase alone has to snap back to zero every cycle, and a
+    // snap is visible; two phases with the blend weight at zero exactly when
+    // either one resets never show the reset.
+    //
+    // A DIRECTION, not a phase, and stored as a vector: bilinear filtering
+    // between two disagreeing texels shrinks it toward zero, so the flow FADES
+    // at a junction or a sign flip instead of tearing. Length gates it.
+    if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_MEDIA_TYPE_WATER ) != 0 &&
+        tr.heightTexture != MATERIAL_NO_TEXTURE )
+    {
+        vec2 dir =
+            getTextureSampleLod( tr.heightTexture, texCoords[ 0 ], 0 ).gb * 2.0 - vec2( 1.0 );
+        const float len = length( dir );
+        // 0.15: above the noise of two blended texels. Cells bake to (0,0).
+        if( len > 0.15 )
+        {
+            dir /= len;
+
+            const float t  = globalUniform.time * globalUniform.liquidFlowSpeed;
+            const float p0 = fract( t );
+            const float p1 = fract( t + 0.5 );
+            const float w  = abs( 1.0 - 2.0 * p0 );
+
+            // liquidFlowScale: detail tiles per liquid tile. liquidFlowDist:
+            // how far the detail travels per cycle, in liquid-tile UV.
+            const vec2 base = texCoords[ 0 ] * globalUniform.liquidFlowScale;
+            const vec2 adv  = dir * globalUniform.liquidFlowScale * globalUniform.liquidFlowDist;
+
+            // The water normal map is the detail source: tileable, already
+            // bound, and getLavaHeat already uses it as a noise field.
+            // getTextureSampleLod, not getTextureSample: a raygen shader has
+            // no quad derivatives.
+            const float d0 = getTextureSampleLod( globalUniform.waterNormalTextureIndex,
+                                                  base - adv * p0, 0 ).x;
+            const float d1 = getTextureSampleLod( globalUniform.waterNormalTextureIndex,
+                                                  base - adv * p1, 0 ).x;
+            float d = mix( d0, d1, w );
+
+            // a normal map's x channel hugs 0.5; stretch it into a usable range
+            d = clamp( ( d - 0.5 ) * 3.0 + 0.5, 0.0, 1.0 );
+            // and fade to neutral where the direction was uncertain
+            d = mix( 0.5, d, min( 1.0, len ) );
+
+            // nudged off zero so that EXACTLY 0 keeps meaning "no flow here"
+            liquidFlow = d * 0.998 + 0.001;
+        }
+    }
+#endif
 
 
     if( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE )

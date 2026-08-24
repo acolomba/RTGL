@@ -249,7 +249,7 @@ struct ShGlobalUniform
     vec4 cameraPosition;
     vec4 cameraPositionPrev;
     uint debugShowFlags;
-    uint indirSecondBounce;
+    uint indirectBounces;
     uint lightCount;
     uint lightCountPrev;
     float emissionMapBoost;
@@ -354,6 +354,13 @@ struct ShGlobalUniform
     float stylizedWaterReflMin;
     vec4 stylizedLiquidTint[4];
     vec4 stylizedLiquidCrest[4];
+    vec4 stylizedLiquidRelief;
+    vec4 stylizedLiquidFlow;
+    vec4 stylizedLiquidCaustics;
+    float liquidFlowSpeed;
+    float liquidFlowScale;
+    float liquidFlowDist;
+    float liquidFlowDebug;
     float lavaEmisBoost;
     float lavaFlowStrength;
     float lavaFlowSpeed;
@@ -384,7 +391,7 @@ struct ShGlobalUniform
     float volumeScatteringFar;
     float volumeDensityCurve;
     float volumeLightNearFade;
-    float _padf2;
+    uint indirectLegacyWeight;
     uint smokeCount;
     float smokeLightNearFade;
     float smokeIllumBlend;
