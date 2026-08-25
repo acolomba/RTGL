@@ -1038,10 +1038,11 @@ void main()
             // written to the G-buffer, and then thrown away here. h.normal still
             // holds it, which is what makes this recoverable at all.
             //
-            // relief 0 = the wave, untouched, which is what water, nukage and
-            // sludge use. 1 = the authored relief alone: a still surface with
-            // real ridges, which is what a coagulated blood pool is and what a
-            // ripple can never be.
+            // relief 0 = the wave, untouched, which is what water and nukage
+            // use -- nukage on purpose: poison has no authored _n to give back.
+            // 1 = the authored relief alone: a still surface with real ridges,
+            // which is what a coagulated blood pool is and what a ripple can
+            // never be. Blood and sludge both ship at 1.
             const uint  d64_liquidId = getLiquidId( h.geometryInstanceFlags );
             const float d64_relief   = globalUniform.stylizedLiquidRelief[ d64_liquidId ];
             const vec3  d64_matN     = isBackface( h.normal, rayDir ) ? -h.normal : h.normal;
