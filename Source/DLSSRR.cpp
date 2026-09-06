@@ -77,6 +77,7 @@ RTGL1::DLSSRR::DLSSRR( VkDevice device, bool ngxAlreadyInitialized ) : m_device{
         return;
     }
 
+#ifdef _WIN32
     const auto binFolder = Utils::FindBinFolder();
     if( !exists( binFolder / "nvngx_dlssd.dll" ) )
     {
@@ -84,6 +85,33 @@ RTGL1::DLSSRR::DLSSRR( VkDevice device, bool ngxAlreadyInitialized ) : m_device{
                         ( binFolder / "nvngx_dlssd.dll" ).string() );
         return;
     }
+#else
+    // Linux ships the Ray Reconstruction runtime as libnvidia-ngx-dlssd.so.*
+    // next to the renderer, found the same way DLSS2's runtime is; without it
+    // NGX fails at feature creation with nothing in the log.
+    {
+        const auto      moduleDir = Utils::GetModuleDirectory();
+        bool            found     = false;
+        std::error_code ec;
+        for( const auto& entry : std::filesystem::directory_iterator{ moduleDir, ec } )
+        {
+            const auto name = entry.path().filename().string();
+            if( name.find( "nvngx_dlssd" ) != std::string::npos ||
+                name.find( "nvidia-ngx-dlssd" ) != std::string::npos )
+            {
+                found = true;
+                break;
+            }
+        }
+        if( !found )
+        {
+            debug::Warning( "DLSSRR: Disabled, as the Ray Reconstruction runtime (nvngx_dlssd / "
+                            "libnvidia-ngx-dlssd) was not found in {}",
+                            moduleDir.string() );
+            return;
+        }
+    }
+#endif
 
     NVSDK_NGX_Result r = NVSDK_NGX_VULKAN_GetCapabilityParameters( &m_params );
     if( NVSDK_NGX_FAILED( r ) || !m_params )
