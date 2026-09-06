@@ -258,6 +258,11 @@ target_include_directories(RayTracedGL1 PUBLIC "Include")
 
 # Vulkan
 target_link_libraries(RayTracedGL1 PRIVATE Vulkan)
+if (UNIX AND NOT APPLE)
+    # A shared library links fine with a symbol missing and only dlopen in the
+    # game reports it; fail the build instead (found via Dev_SaveSettings).
+    target_link_options(RayTracedGL1 PRIVATE -Wl,--no-undefined)
+endif()
 
 # DirectX
 if (RG_WITH_DX12)
