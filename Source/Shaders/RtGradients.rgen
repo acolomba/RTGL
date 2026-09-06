@@ -33,6 +33,8 @@
 #define DESC_SET_VERTEX_DATA 3
 #define DESC_SET_TEXTURES 4
 #define DESC_SET_RANDOM 5
+// Doom64-RT: the volumetric set (cloud map), for cloudSunAttenuation in Light.h.
+#define DESC_SET_VOLUMETRIC 11
 #define DESC_SET_LIGHT_SOURCES 6
 #define LIGHT_SAMPLE_METHOD (LIGHT_SAMPLE_METHOD_GRADIENTS)
 #include "RaygenCommon.h"
@@ -80,6 +82,21 @@ void main()
             // done this way, so there are no duplicates in a strata (b)
             const ivec2 iter_curPix = gradPix * COMPUTE_ASVGF_STRATA_SIZE + ivec2(xx, yy);
             const ivec2 iter_prevPix = ivec2(floor(getPrevScreenPos(framebufMotion_Sampler, iter_curPix)));
+
+            // Doom64-RT: never measure the lighting change ON THE WEAPON. At a
+            // pixel the gun just uncovered the previous pixel IS the gun, and
+            // its lighting delta (muzzle glow, its own motion) would be blurred
+            // over the wall by the gradient a-trous. The weapon's own pixels are
+            // skipped too: the world under them is not there to compare.
+            if (globalUniform.svgfFpGrad != 0)
+            {
+                const uint ciPrev = floatBitsToUint(texelFetch(framebufSurfacePosition_Prev_Sampler, iter_prevPix, 0).a);
+                const uint ciCur  = floatBitsToUint(texelFetch(framebufSurfacePosition_Sampler,      iter_curPix,  0).a);
+                if (((ciPrev | ciCur) & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON) != 0)
+                {
+                    continue;
+                }
+            }
 
             const vec2 iter_prevLuminance = imageLoad(framebufGradientInputs_Prev, iter_prevPix).xy;
 
@@ -149,8 +166,13 @@ void main()
         float normFactor = max( forwardProjectedLuminance.x, prevLuminance.x );
 
         // if it's bright enough, don't drop history
-        float brightness = getLuminance( texelFetchIndirAccum_Prev( prevShadingPix ) );
-        gradSample *= 1.0 - smoothstep( 0.0, 0.5, brightness );
+        // Doom64-RT: this suppression protected the brightest ghosts -- the
+        // stale bounce of a dead rocket flash is exactly what is "bright".
+        if (globalUniform.svgfIndirAntilag == 0)
+        {
+            float brightness = getLuminance( texelFetchIndirAccum_Prev( prevShadingPix ) );
+            gradSample *= 1.0 - smoothstep( 0.0, 0.5, brightness );
+        }
 
         gradDIS[ 1 ] = getAntilagAlpha( gradSample, normFactor );
     }

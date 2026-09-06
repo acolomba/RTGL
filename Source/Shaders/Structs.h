@@ -50,6 +50,7 @@ struct ShTriangle
     
     float   emissiveMult;
     uint    emissiveTexture;                    // layerTexCoord[ 0 ]
+    float   emissiveMultGi;                     // Doom64-RT, EMIS_SCREEN_SCALED only
     
     uint    portalIndex;
 };

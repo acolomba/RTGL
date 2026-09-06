@@ -136,7 +136,23 @@ uint getReflectionRefractionCullMask(uint surfInstCustomIndex, uint geometryInst
 
 uint getShadowCullMask(uint surfInstCustomIndex)
 {
-    const uint world = globalUniform.rayCullMaskWorld_Shadow;
+    uint world = globalUniform.rayCullMaskWorld_Shadow;
+
+    // Doom64-RT: a surface flagged IGNORE_SHADOW_PROXY does not see shadow-only
+    // geometry at all -- set on alpha-tested instances, i.e. sprites.
+    //
+    // A sprite's shadow proxies are planes through its own axis, so a proxy that
+    // is not edge-on to the light shadows the half of its own billboard behind
+    // it; and with a light along the sprite's normal (the flashlight, which sits
+    // at the camera the billboard is facing) the perpendicular proxy projects to
+    // a line straight down the sprite's middle. Removing the proxies from the
+    // sprite's own shadow test removes both, and costs only that one actor's
+    // proxy no longer darkens another actor -- which Doom's flat-lit sprites do
+    // not show anyway.
+    if ((surfInstCustomIndex & INSTANCE_CUSTOM_INDEX_FLAG_IGNORE_SHADOW_PROXY) != 0)
+    {
+        world &= ~INSTANCE_MASK_RESERVED_0;
+    }
 
     if ((surfInstCustomIndex & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON) != 0)
     {
@@ -322,7 +338,7 @@ vec3 getSky( vec3 direction )
 bool traceShadowRay(uint surfInstCustomIndex, vec3 start, vec3 end, bool ignoreFirstPersonViewer /* = false */)
 {
     // prepare shadow payload
-    g_payloadShadow.isShadowed = 1;  
+    g_payloadShadow.isShadowed = 1;
 
     uint cullMask = getShadowCullMask(surfInstCustomIndex);
 
@@ -331,19 +347,80 @@ bool traceShadowRay(uint surfInstCustomIndex, vec3 start, vec3 end, bool ignoreF
         cullMask &= ~INSTANCE_MASK_FIRST_PERSON_VIEWER;
     }
 
+    uint sbtOffset = 0;
+
+#if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
+    // Doom64-RT: THIS IS A MEDIA RAY -- it asks what shadows the FOG, not what
+    // shadows a surface -- and sprites must not be part of that answer.
+    // Billboards are camera-facing cutouts: their "shadow" through a volume is
+    // a sheet that rotates with the view, and their axis-plane shadow proxies
+    // (INSTANCE_MASK_RESERVED_0) are solid rectangles -- the shell casing
+    // stamped exactly that into the muzzle smoke, and on a stormy map every
+    // monster strobes plane-shadows through the lightning shafts. So, unless
+    // rt_volume_spriteshadow asks for the old behaviour:
+    //   * the proxies are masked out entirely, and
+    //   * the ray is routed through the MEDIA hit groups, whose any-hit
+    //     discards GEOM_INST_FLAG_SPRITE geometry -- billboards vanish for
+    //     this ray while grates and fences still alpha-cut their shafts.
+    // This #if resolves per shader, so only RtVolumetric.rgen pays it.
+    if( globalUniform.volumeSpriteShadow == 0 )
+    {
+        cullMask &= ~INSTANCE_MASK_RESERVED_0;
+        sbtOffset = SBT_RAY_OFFSET_MEDIA;
+    }
+#endif
+
     vec3 l = end - start;
     float maxDistance = length(l);
     l /= maxDistance;
 
     traceRayEXT(
-        topLevelAS, 
-        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(), 
-        cullMask, 
-        0, 0, 	// sbtRecordOffset, sbtRecordStride
+        topLevelAS,
+        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(),
+        cullMask,
+        sbtOffset, 0, 	// sbtRecordOffset, sbtRecordStride
         SBT_INDEX_MISS_SHADOW, 		// shadow missIndex
-        start, 0.001, l, maxDistance - SHADOW_RAY_EPS, 
+        start, 0.001, l, maxDistance - SHADOW_RAY_EPS,
         PAYLOAD_INDEX_SHADOW);
 
+    return g_payloadShadow.isShadowed == 1;
+}
+
+// Doom64-RT: does this point actually see the SKY along the light direction?
+//
+// The problem this exists for: traceShadowRay returns "lit" on a MISS, because
+// RtMissShadowCheck.rmiss sets isShadowed = 0. That is correct for a sealed
+// world and wrong for a Doom map, which has no geometry above a ceiling and is
+// full of T-junctions at wall/ceiling seams. Rays leak out of the level, hit
+// nothing, and are scored as seeing the sun -- so the sun washes rooms that
+// have no opening anywhere near them. No aperture rule can catch that, because
+// nothing is squeezing through anything: the ray simply left the map.
+//
+// In a Doom map the sky is the only legitimate way out, and GZDoom already
+// hands us that geometry: sky portals arrive as RG_MESH_PRIMITIVE_SKY_VISIBILITY
+// and live in INSTANCE_MASK_WORLD_2, which is excluded from the normal shadow
+// mask. So probing WORLD_2 alone answers "did the ray get out through the sky,
+// or through a crack?".
+//
+// Only called when the ordinary shadow ray already MISSED, i.e. only for points
+// that are currently considered lit -- so the cost is bounded by how much of the
+// screen the sun touches, not by the frame.
+bool traceSunReachesSky(vec3 start, vec3 dirToLight)
+{
+    g_payloadShadow.isShadowed = 1;
+
+    traceRayEXT(
+        topLevelAS,
+        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(),
+        INSTANCE_MASK_WORLD_2,
+        0, 0,
+        SBT_INDEX_MISS_SHADOW,
+        start, 0.001, dirToLight, globalUniform.sunSkyProbeMaxDist,
+        PAYLOAD_INDEX_SHADOW);
+
+    // isShadowed == 1 means the probe HIT sky geometry, which is what we want:
+    // the ray reached the sky. A miss means it found no sky at all on its way
+    // out of the world.
     return g_payloadShadow.isShadowed == 1;
 }
 
@@ -398,7 +475,10 @@ float targetPdfForLightSample(uint lightIndex, const Surface surf, const vec2 po
 
 Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const vec2 pointRnd)
 {
-    #define INITIAL_SAMPLES 8
+    // RIS candidate count. Traces no rays outside the INITIAL pass (see the
+    // LIGHT_SAMPLE_METHOD_INITIAL guard below), so raising it buys better light
+    // importance sampling almost for free. Clamped C++-side to [1,64].
+    const uint INITIAL_SAMPLES = max(globalUniform.restirInitialSamples, 1u);
     
     Reservoir regularReservoir = emptyReservoir();
 #if LIGHT_GRID_ENABLED
@@ -407,7 +487,7 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
         vec3 gridWorldPos = jitterPositionForLightGrid(surf.position, rnd8_4(seed, salt++).xyz);
         int lightGridBase = cellToArrayIndex(worldToCell(gridWorldPos));
 
-        for (int i = 0; i < INITIAL_SAMPLES; i++)
+        for (uint i = 0; i < INITIAL_SAMPLES; i++)
         {
             // uniform distribution as a coarse source pdf
             float rnd = rnd16(seed, salt++);
@@ -433,7 +513,7 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
     else
 #endif // LIGHT_GRID_ENABLED
     {      
-        for (int i = 0; i < INITIAL_SAMPLES; i++)
+        for (uint i = 0; i < INITIAL_SAMPLES; i++)
         {
             // uniform distribution as a coarse source pdf
             float rnd = rnd16(seed, salt++);
@@ -450,8 +530,44 @@ Reservoir calcInitialReservoir(uint seed, uint salt, const Surface surf, const v
     normalizeReservoir(regularReservoir, 1);
 
 
+    // Doom64-RT: sunSplit -- take the directional light OUT of the lottery.
+    //
+    // Below, the sun's reservoir is merged into the regular one stochastically
+    // (updateCombinedReservoir with a random number), so ONE light wins per
+    // pixel. That is correct importance sampling and it has a specific
+    // consequence for a weak-but-huge light: with the moon at intensity 90
+    // against a level's own lamps and emissives, the moon wins on a minority of
+    // pixels, so its shadow is resolved on a sparse random subset of the image
+    // and the denoiser flattens what is left. Symptom: sprites cast no moon
+    // shadow while the same sprites shadow perfectly from a muzzle flash, which
+    // wins selection nearly always because it dominates the pixels it touches
+    // (screen/moon_shadow_limit.png, 2026-08-13).
+    //
+    // rt_shadow_samples cannot fix that -- it averages visibility for the light
+    // ALREADY CHOSEN, so it only sharpens the moon where the moon was picked.
+    //
+    // With sunSplit on, the sun is excluded here and shaded separately and
+    // deterministically in processDirectIllumination: every pixel facing it gets
+    // exactly one sun shadow ray. Unbiased, because the light is removed from
+    // the candidate set rather than counted twice, and cheaper than raising
+    // directSamples, which multiplies rays for EVERY light to fix one.
+    //
+    // DIRECT and INITIAL only. INITIAL is not optional: it writes the reservoir
+    // image that DIRECT's sample 0 loads, so leaving the sun in there would put
+    // it back into the lottery through the stored reservoir. Indirect and
+    // volumetric keep the stock behaviour, so bounce light and fog shafts are
+    // bit-identical either way.
+    bool includeDirectional = globalUniform.directionalLightExists != 0;
+#if (LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT) || \
+    (LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_INITIAL)
+    if (globalUniform.sunSplit > 0.5)
+    {
+        includeDirectional = false;
+    }
+#endif
+
     Reservoir dirLightReservoir = emptyReservoir();
-    if (globalUniform.directionalLightExists != 0)
+    if (includeDirectional)
     {
         uint xi = LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET;
         float oneOverSourcePdf_xi = 1;
@@ -504,23 +620,48 @@ bool testSurfaceForReuse(
         (dot(curNormal, otherNormal) > NormalThreshold);
 }
 
-// Select light in screen-space for direct illumination
-Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, const vec2 pointRnd)
+// Select light in screen-space for direct illumination.
+//
+// saltBase offsets every random draw so the caller can run this more than once
+// per pixel and get independent selections (multi-sample-per-pixel loop in
+// processDirectIllumination). initReservoir is supplied by the caller rather
+// than loaded here: sample 0 passes the stored one from the initial-reservoir
+// pass (so N=1 is bit-identical to stock), later samples pass fresh RIS
+// candidates from calcInitialReservoir, which costs no rays.
+Reservoir selectLight_Direct(const ivec2 pix, uint seed, uint saltBase,
+                             const Surface surf, const vec2 pointRnd,
+                             const Reservoir initReservoir)
 {
     #define TEMPORAL_SAMPLES 1
     #define TEMPORAL_RADIUS 2
-    #define SPATIAL_SAMPLES 8
-    #define SPATIAL_RADIUS 30
+    // Spatial reuse: image reads only, no rays. More taps / wider radius = a
+    // better-converged reservoir at the cost of bandwidth and (at large radii)
+    // more rejected taps from testSurfaceForReuse. Clamped C++-side.
+    const uint  SPATIAL_SAMPLES = globalUniform.restirSpatialSamples;
+    const float SPATIAL_RADIUS  = globalUniform.restirSpatialRadius;
 
     const ivec3 chRenderArea = getCheckerboardedRenderArea(pix); // assuming that pix is checkerboarded
     const float motionZ = texelFetch(framebufMotion_Sampler, pix, 0).z;
     const float depthCur = texelFetch(framebufDepthWorld_Sampler, pix, 0).r;
     const vec2 posPrev = getPrevScreenPos(framebufMotion_Sampler, pix);
-    uint salt = RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE;
+    uint salt = saltBase;
+
+    // Blue-noise seed for reuse-tap placement (the "TODO: need low discrepancy
+    // noise" below). Tiled by REGULAR pixel so adjacent pixels get adjacent
+    // texels; see getBlueNoiseSeed(). With white noise the 8 spatial taps clump,
+    // neighbouring pixels reuse overlapping neighbourhoods, and their estimates
+    // end up correlated -- which shows as low-frequency blotching that no
+    // denoiser can separate from signal. Blue noise spreads the taps and makes
+    // the residual high-frequency and spatially even, which is also what
+    // DLSS-RR asks for (decorrelated reservoirs, RR guide 3.5).
+    const bool useBlueNoise = (globalUniform.restirBlueNoise != 0);
+    // saltBase folded in so each sample of the multi-sample loop gets a
+    // different blue-noise slice -- otherwise every sample would place its reuse
+    // taps identically and averaging them would reduce no variance at all.
+    const uint bnSeed = getBlueNoiseSeed(getRegularPixFromCheckerboardPix(pix),
+                                         globalUniform.frameId + saltBase);
 
 
-    Reservoir initReservoir = imageLoadReservoirInitial(pix);
-    
     Reservoir combined;
     initCombinedReservoir(
         combined, 
@@ -530,9 +671,13 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
     // temporal
     for (int pixIndex = 0; pixIndex < TEMPORAL_SAMPLES; pixIndex++)
     {
-        // TODO: need low discrepancy noise
-        vec2 rndOffset = rnd8_4(seed, salt++).xy * 2.0 - 1.0;
-        ivec2 pp = ivec2(floor(posPrev + rndOffset * TEMPORAL_RADIUS));
+        vec2 rndOffset = (useBlueNoise ? rndBlueNoise8(bnSeed, salt) : rnd8_4(seed, salt)).xy * 2.0 - 1.0;
+        salt++;
+        // Jitter radius is a uniform: at 0 this reprojects exactly. See
+        // restirTemporalJitter -- on grazing surfaces the stock 2px offset moves
+        // depth well past the flat 10% reuse threshold, the tap is rejected, and
+        // M collapses to 1 precisely where variance is already worst.
+        ivec2 pp = ivec2(floor(posPrev + rndOffset * globalUniform.restirTemporalJitter));
 
         {
             const float depthPrev = texelFetch(framebufDepthWorld_Prev_Sampler, pp, 0).r;
@@ -548,7 +693,7 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
 
         Reservoir temporal = imageLoadReservoir_Prev(pp);
         // renormalize to prevent precision problems
-        normalizeReservoir(temporal, initReservoir.M * 20);
+        normalizeReservoir(temporal, initReservoir.M * max(globalUniform.restirTemporalMCap, 1u));
 
         float temporalTargetPdf_curSurf = 0.0;
         if (temporal.selected != LIGHT_INDEX_NONE)
@@ -568,10 +713,10 @@ Reservoir selectLight_Direct(const ivec2 pix, uint seed, const Surface surf, con
             temporal, temporalTargetPdf_curSurf, rnd);
     } 
 
-    for (int pixIndex = 0; pixIndex < SPATIAL_SAMPLES; pixIndex++)
+    for (uint pixIndex = 0; pixIndex < SPATIAL_SAMPLES; pixIndex++)
     {
-        // TODO: need low discrepancy noise
-        vec2 rndOffset = rnd8_4(seed, salt++).xy * 2.0 - 1.0;
+        vec2 rndOffset = (useBlueNoise ? rndBlueNoise8(bnSeed, salt) : rnd8_4(seed, salt)).xy * 2.0 - 1.0;
+        salt++;
         ivec2 pp = pix + ivec2(rndOffset * SPATIAL_RADIUS);
 
         {
@@ -631,6 +776,47 @@ vec2 getLightPointRnd(uint seed)
     return rnd16_2(seed, RANDOM_SALT_LIGHT_POINT) * 0.99;
 }
 
+// Point on the light for sample i of the multi-sample loop. Sample 0 must match
+// getLightPointRnd() exactly so N=1 stays bit-identical to stock.
+vec2 getLightPointRndForSample(uint seed, uint sampleIndex)
+{
+    return sampleIndex == 0u
+               ? getLightPointRnd(seed)
+               : rnd16_2(seed, RANDOM_SALT_LIGHT_POINT + sampleIndex) * 0.99;
+}
+
+// Last visibility term computed by traceDirectIllumination, for debugVisibility.
+// A file-scope value rather than another out-parameter so the debug path adds
+// nothing to the signature every caller has to thread through. Seeded to 1.0
+// (fully lit) so a pixel whose direct lighting never ran -- no light chosen, or
+// bounceIndex past maxBounceShadowsLights -- reads as "not shadowed" instead of
+// as a false umbra, which would be exactly the wrong answer for this debug view.
+float g_debugVisibility = 1.0;
+
+#if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
+// Doom64-RT: the near-light fade radius in force for the froxel being shaded.
+//
+// It is a file-scope value rather than the uniform read directly because
+// localised smoke needs a DIFFERENT fade from the fog, and needs it per cell:
+// the fog wants the fade (a carried light must not white out the screen) while
+// a smoke puff wants the opposite (the muzzle flash lighting the puff at the
+// barrel is the whole effect). Choosing per frame instead would retune the
+// shipped fog every time the player fired.
+//
+// GLSL requires a constant initializer on a global, so the "use the fog's
+// value" state is the sentinel -1 rather than the uniform itself. A caller that
+// never assigns it -- which is every caller except RtVolumetric.rgen's main()
+// -- therefore behaves exactly as it did before smoke existed.
+float g_volumeLightNearFade = -1.0;
+
+// Doom64-RT: the matching FAR cutoff, and smoke-only for the same reason the
+// near one is per cell. Fog wants every light in the level -- a lamp down the
+// corridor IS the effect. Smoke is a small object running the all-lights
+// estimate at one sample per froxel, so a saturated emissive across the room
+// wins the reservoir often enough to tint the whole puff. 0 = no limit.
+float g_volumeLightFarFade = 0.0;
+#endif
+
 #if LIGHT_SAMPLE_METHOD != LIGHT_SAMPLE_METHOD_NONE
 bool isDirectIlluminationValid(int bounceIndex)
 {
@@ -641,7 +827,8 @@ bool isDirectIlluminationValid(int bounceIndex)
     return v;
 }
 
-void traceDirectIllumination( const Surface   surf,
+void traceDirectIllumination( uint            seed,
+                              const Surface   surf,
                               const Reservoir reservoir,
                               const vec2      pointRnd,
                               int             bounceIndex,
@@ -655,6 +842,58 @@ void traceDirectIllumination( const Surface   surf,
 {    
     const LightSample light = sampleLight(lightSources[reservoir.selected], surf.position, pointRnd);
     shade(surf, light, calcSelectedSampleWeight(reservoir), out_diffuse, out_specular);
+
+#if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
+    // Doom64-RT: near-field fade, FOG ONLY.
+    //
+    // A light standing inside the medium lights the froxels around it by
+    // inverse square, so a light at ~0 m -- the flashlight, a muzzle flash,
+    // anything carried -- puts an enormous in-scattered term into the froxels
+    // right in front of the camera and the screen whites out. That is what a
+    // headlight in fog physically does, and it is unplayable: the flashlight
+    // becomes a switch that blinds you.
+    //
+    // So scattering is faded out within g_volumeLightNearFade metres OF THE
+    // LIGHT -- the uniform's value in fog, smokeLightNearFade inside a puff.
+    // It is deliberately keyed off the light's distance rather than the
+    // camera's, because the thing to remove is glare from a light you are
+    // holding, not the fog near the camera -- the beam's shaft further down the
+    // corridor is exactly the look this feature is for, and it survives.
+    //
+    // Directional lights are unaffected: sampleLight puts their position far
+    // away, so the fade never triggers on the moon or a lightning strike.
+    // 0 disables it and restores the physical behaviour.
+    const float nearFade = g_volumeLightNearFade >= 0.0 ? g_volumeLightNearFade
+                                                        : globalUniform.volumeLightNearFade;
+    const float dToLight = length( light.position - surf.position );
+
+    if( nearFade > 0.001 )
+    {
+        out_diffuse *= smoothstep( 0.0, nearFade, dToLight );
+    }
+
+    // ...and the far cutoff, faded over the last quarter of the range so a light
+    // does not switch off as the puff drifts. Only smoke ever sets this.
+    //
+    // NOT ON A DIRECTIONAL LIGHT, and this is the bug that made smoke black in a
+    // moon shaft. The near fade above is safe from it by luck -- its comment even
+    // says so, "sampleLight puts their position far away, so the fade never
+    // triggers on the moon" -- but the FAR fade reads the same dToLight, and a
+    // position placed far away by construction is exactly what that test culls.
+    // The moon was therefore multiplied to ZERO in every smoke cell while fog,
+    // which never sets this value, kept its shafts. Reported as smoke staying
+    // black inside a visibly lit moonbeam.
+    //
+    // A directional light has no position to be far from: its distance term is
+    // meaningless, so it must be exempt rather than clamped.
+    if( g_volumeLightFarFade > 0.001 &&
+        reservoir.selected != LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET )
+    {
+        out_diffuse *= 1.0 - smoothstep( g_volumeLightFarFade * 0.75,
+                                         g_volumeLightFarFade,
+                                         dToLight );
+    }
+#endif
     
     if (getLuminance(out_diffuse + out_specular) <= 0.0)
     {
@@ -664,7 +903,102 @@ void traceDirectIllumination( const Surface   surf,
 
     if (bounceIndex < globalUniform.maxBounceShadowsLights)
     {
-        float visibility = traceVisibility(surf, light.position, reservoir.selected);
+        // Visibility is the dominant variance term at 1 spp: a single shadow ray
+        // makes this a binary 0/1 multiply, so a pixel is either fully lit or
+        // fully black regardless of how well ReSTIR chose the light. That floor
+        // is what survives into the unfiltered signal, and no amount of reuse
+        // decorrelation touches it (measured 2026-08-07: blue-noise reuse taps
+        // changed nothing).
+        //
+        // Averaging visibility over N independently sampled points on the SAME
+        // chosen light turns it into a fraction -> real soft shadow, variance
+        // ~1/sqrt(N). Only the visibility factor is averaged; shading keeps the
+        // reservoir's own sample, so the RIS weight and the light-selection
+        // estimator are untouched and energy is unchanged in expectation.
+        //
+        // DIRECT only: secondary bounces stay at one ray, where the extra cost
+        // would not pay for itself.
+        float visibility;
+    #if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT
+        const uint shadowN = clamp(globalUniform.shadowSamples, 1u, 8u);
+        if (shadowN > 1u)
+        {
+            visibility = 0.0;
+            for (uint si = 0; si < shadowN; si++)
+            {
+                // si == 0 reuses the reservoir's point so N=1 is bit-identical
+                // to the stock path; later taps get fresh points on the light.
+                vec2 prnd = (si == 0u)
+                                ? pointRnd
+                                : rnd16_2(seed, RANDOM_SALT_SHADOW_SAMPLES_BASE + si);
+
+                const LightSample ls =
+                    (si == 0u) ? light
+                               : sampleLight(lightSources[reservoir.selected], surf.position, prnd);
+
+                visibility += traceVisibility(surf, ls.position, reservoir.selected);
+            }
+            visibility /= float(shadowN);
+        }
+        else
+        {
+            visibility = traceVisibility(surf, light.position, reservoir.selected);
+        }
+    #else
+        visibility = traceVisibility(surf, light.position, reservoir.selected);
+    #endif
+
+        // Doom64-RT: the sky-reach test, applied HERE rather than in the direct
+        // pass, because this function is the one choke point every path shares --
+        // surface, indirect AND volumetric. Putting it in selectLight_Direct only
+        // covered surface shading, which is why the visible shafts (volumetric
+        // scattering, a different LIGHT_SAMPLE_METHOD) never turned red and why
+        // rt_sun_require_sky appeared to do nothing to them.
+        //
+        // Only for the directional light, and only where the shadow ray already
+        // said "lit" -- so no extra ray is traced for anything already in shadow.
+        if (visibility > 0.0 &&
+            reservoir.selected == LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET &&
+            (globalUniform.sunRequireSky > 0.5 || globalUniform.sunLeakDebug > 0.5))
+        {
+            const vec3 probeStart = surf.position + surf.toViewerDir * RAY_ORIGIN_LEAK_BIAS;
+            const bool reachedSky =
+                traceSunReachesSky(probeStart,
+                                   safeNormalize2(light.position - surf.position, vec3(0)));
+
+            g_sunLeakClass = reachedSky ? 1 : 2;
+
+            // The fix runs FIRST, so the debug views show the result of it rather
+            // than replacing it. With require_sky and colour mode both on, every
+            // surviving shaft is red -- an all-red screen IS the confirmation the
+            // fix worked. Making these mutually exclusive (the first attempt)
+            // meant the fix could never be seen, only trusted.
+            if (globalUniform.sunRequireSky > 0.5 && !reachedSky)
+            {
+                visibility = 0.0;
+            }
+
+            // mode 1: isolate the leak -- drop everything legitimate
+            if (globalUniform.sunLeakDebug > 0.5 && globalUniform.sunLeakDebug < 1.5 && reachedSky)
+            {
+                visibility = 0.0;
+            }
+
+            // mode 2: colour whatever survived. Re-shade, because out_diffuse
+            // above was computed from the moon's real colour.
+            if (globalUniform.sunLeakDebug > 1.5 && visibility > 0.0)
+            {
+                LightSample dbg = light;
+                dbg.color = (reachedSky ? vec3(1.0, 0.02, 0.02) : vec3(0.05, 1.0, 0.10))
+                            * max(globalUniform.sunLeakDebugMul, 0.001);
+                vec3 d2, s2;
+                shade(surf, dbg, calcSelectedSampleWeight(reservoir), d2, s2);
+                out_diffuse  = d2;
+                out_specular = s2;
+            }
+        }
+
+        g_debugVisibility = visibility;
 
         out_diffuse  *= visibility;
         out_specular *= visibility;
@@ -681,6 +1015,35 @@ void traceDirectIllumination( const Surface   surf,
 
 
 #if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT
+// Doom64-RT: the sun's own single-light reservoir, for sunSplit.
+//
+// Deliberately built exactly as calcInitialReservoir builds dirLightReservoir --
+// one candidate, oneOverSourcePdf 1, normalized to 1 -- so the weight
+// calcSelectedSampleWeight() hands to shade() is the same one the stochastic
+// path would have used had the sun won. That is what makes this a split rather
+// than a second, differently-scaled copy of the light: sun-lit surfaces are the
+// SAME brightness with sunSplit on or off, only less noisy.
+//
+// It returns a reservoir rather than shading here so the caller can pass it
+// straight to traceDirectIllumination, which owns every piece of sun-specific
+// logic -- sunRequireSky, the red/green leak debug, g_debugVisibility, the
+// volumetric fades. Duplicating any of that here is how those get out of step.
+Reservoir calcSunOnlyReservoir(const Surface surf, const vec2 pointRnd)
+{
+    Reservoir r = emptyReservoir();
+
+    const uint  xi         = LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET;
+    LightSample lightSample = sampleLight(lightSources[xi], surf.position, pointRnd);
+    const float targetPdf   = targetPdfForLightSample(lightSample, surf);
+
+    // rndRis 0: a single candidate is always accepted, so no random draw is
+    // needed and none is spent.
+    updateReservoir(r, xi, targetPdf, 1.0, 0.0);
+    normalizeReservoir(r, 1);
+
+    return r;
+}
+
 Reservoir processDirectIllumination(uint seed, const ivec2 pix, const Surface surf, out float out_distance, out vec3 out_diffuse, out vec3 out_specular)
 {
     out_diffuse = out_specular = vec3(0.0);
@@ -690,16 +1053,136 @@ Reservoir processDirectIllumination(uint seed, const ivec2 pix, const Surface su
     {
         return emptyReservoir();
     }
-    const vec2 pointRnd = getLightPointRnd(seed);
-    
-    const Reservoir reservoir = selectLight_Direct(pix, seed, surf, pointRnd);
-    if (!isReservoirValid(reservoir))
+    // Multi-sample direct lighting.
+    //
+    // The path tracer is 1 spp and only converges through temporal accumulation,
+    // which camera motion legitimately destroys -- so the raw signal is what
+    // shows through while moving. N independent estimates, averaged, reduce that
+    // variance at the SOURCE (~1/sqrt(N)), upstream of the denoiser, so A-SVGF
+    // and DLSS-RR benefit equally.
+    //
+    // Each sample draws its own light point, its own RIS candidates and its own
+    // reuse taps, so the estimates are genuinely independent rather than N
+    // copies of one answer. Sample 0 reproduces the stock path exactly, which is
+    // what makes N=1 a guaranteed no-op.
+    const uint N = max(globalUniform.directSamples, 1u);
+
+    Reservoir firstReservoir = emptyReservoir();
+    vec3      accumDiffuse   = vec3(0.0);
+    vec3      accumSpecular  = vec3(0.0);
+    uint      validCount     = 0;
+
+    for (uint si = 0; si < N; si++)
+    {
+        const uint saltBase = (si == 0u)
+                                  ? RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE
+                                  : (RANDOM_SALT_DIRECT_SPP_BASE + si * RANDOM_SALT_SPP_STRIDE);
+
+        const vec2 pointRnd = getLightPointRndForSample(seed, si);
+
+        // sample 0 reuses the stored initial reservoir (stock); later samples
+        // draw fresh RIS candidates in-shader, which traces no rays here
+        const Reservoir initial =
+            (si == 0u)
+                ? imageLoadReservoirInitial(pix)
+                : calcInitialReservoir(seed, saltBase + RANDOM_SALT_SPP_INITIAL_OFFSET, surf, pointRnd);
+
+        const Reservoir reservoir =
+            selectLight_Direct(pix, seed, saltBase, surf, pointRnd, initial);
+
+        if (si == 0u)
+        {
+            // the temporal chain, ASVGF gradients and the specular hit distance
+            // guide must stay single-valued -- always sample 0's
+            firstReservoir = reservoir;
+        }
+
+        if (!isReservoirValid(reservoir))
+        {
+            continue;
+        }
+
+        float sampleDist;
+        vec3  sampleDiffuse;
+        vec3  sampleSpecular;
+        traceDirectIllumination(seed, surf, reservoir, pointRnd, 0,
+                                sampleDist, sampleDiffuse, sampleSpecular);
+
+        accumDiffuse  += sampleDiffuse;
+        accumSpecular += sampleSpecular;
+        validCount++;
+
+        if (si == 0u)
+        {
+            out_distance = sampleDist;
+        }
+    }
+
+    // Divide by N, not validCount: an invalid reservoir is a legitimate zero
+    // contribution for that sample, not a sample that did not happen. Dividing
+    // by validCount would bias the estimate brighter wherever some samples miss.
+    if (validCount > 0)
+    {
+        accumDiffuse  /= float(N);
+        accumSpecular /= float(N);
+    }
+    else
+    {
+        accumDiffuse = accumSpecular = vec3(0.0);
+    }
+
+    // Doom64-RT: sunSplit -- the directional light, shaded deterministically.
+    //
+    // ONE shadow ray per pixel that faces the sun, added to the ReSTIR estimate
+    // over every other light rather than competing with it. See the long note in
+    // calcInitialReservoir for why the stochastic merge loses a weak sun's
+    // shadows.
+    //
+    // This runs even when validCount == 0, and that is not an edge case: a room
+    // lit only by the moon has no regular lights to build a valid reservoir
+    // from, and the early-out that used to sit here would have returned black
+    // for exactly the surfaces this feature exists to light. That would have
+    // read as "sunSplit makes outdoor areas darker", which is the kind of
+    // regression that gets a fix reverted rather than debugged.
+    if (globalUniform.sunSplit > 0.5 && globalUniform.directionalLightExists != 0)
+    {
+        const vec2      sunRnd = getLightPointRndForSample(seed, 0);
+        const Reservoir sunRes = calcSunOnlyReservoir(surf, sunRnd);
+
+        if (isReservoirValid(sunRes))
+        {
+            float sunDist;
+            vec3  sunDiffuse;
+            vec3  sunSpecular;
+            traceDirectIllumination(seed, surf, sunRes, sunRnd, 0,
+                                    sunDist, sunDiffuse, sunSpecular);
+
+            accumDiffuse  += sunDiffuse;
+            accumSpecular += sunSpecular;
+
+            // Only claim the distance if nothing else did. out_distance feeds the
+            // specular hit-distance guide, and a directional light's "position"
+            // is a construction far outside the map -- handing that to the
+            // denoiser as a hit distance would be a lie about where the highlight
+            // lives (see rt_rr_spechitdist).
+            if (validCount == 0)
+            {
+                out_distance = MAX_RAY_LENGTH;
+            }
+
+            validCount++;
+        }
+    }
+
+    if (validCount == 0)
     {
         return emptyReservoir();
-    } 
+    }
 
-    traceDirectIllumination(surf, reservoir, pointRnd, 0, out_distance, out_diffuse, out_specular);
-    return reservoir;
+    out_diffuse  = accumDiffuse;
+    out_specular = accumSpecular;
+
+    return firstReservoir;
 }
 #endif
 
@@ -727,7 +1210,7 @@ vec3 processDirectIllumination( uint          seed,
     vec3 out_diffuse;
     vec3 unusedv; float unusedf;
     traceDirectIllumination(
-        surf, reservoir, pointRnd, bounceIndex, unusedf, out_diffuse, unusedv
+        seed, surf, reservoir, pointRnd, bounceIndex, unusedf, out_diffuse, unusedv
     #if LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_VOLUME
         , out_lightdirection
     #endif
@@ -761,7 +1244,7 @@ void processDirectIllumination(uint seed, const Surface surf, const Reservoir re
     } 
     
     float unusedf;
-    traceDirectIllumination(surf, reservoir, pointRnd, 0, unusedf, out_diffuse, out_specular);
+    traceDirectIllumination(seed, surf, reservoir, pointRnd, 0, unusedf, out_diffuse, out_specular);
 }
 #endif
 

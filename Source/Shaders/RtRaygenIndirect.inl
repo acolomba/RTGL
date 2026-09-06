@@ -38,6 +38,8 @@ layout (constant_id = 1) const uint lightmapLayerIndex = 3;
 #define DESC_SET_VERTEX_DATA 3
 #define DESC_SET_TEXTURES 4
 #define DESC_SET_RANDOM 5
+// Doom64-RT: the volumetric set (cloud map), for cloudSunAttenuation in Light.h.
+#define DESC_SET_VOLUMETRIC 11
 #define DESC_SET_LIGHT_SOURCES 6
 #define DESC_SET_CUBEMAPS 7
 #define DESC_SET_RENDER_CUBEMAP 8
@@ -125,29 +127,27 @@ Surface traceBounce(const vec3 originPosition, float originRoughness, uint origi
         bounceDir);
 }
 
-vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 bounceDir, float oneOverPdf)
+// Doom64-RT: seed for bounce vertex b of one indirect path.
+//
+// Two things go wrong past depth 2 on the stock seed. RANDOM_SALT_DIFF_BOUNCE
+// (Random.h) has one free index before it runs into the specular band, and
+// processDirectIllumination draws its light-selection numbers from the SAME
+// salts at every vertex -- so every vertex on a path picks its light with the
+// same random numbers, which at depth 3+ correlates the whole path into
+// structured blotches no denoiser averages out.
+//
+// b <= 2 returns the stock seed untouched, so depth 2 is bit-identical to the
+// unrolled pair this replaced. Deeper vertices get the "virtual frame"
+// treatment the multi-sample loop in main() already uses: getRandomSeed
+// murmur-hashes the RAW (pix, frame) input before reducing it, so any distinct
+// input is an independent seed. si*7919 + b*24593 is distinct for every
+// (si, b) with si < 8, b <= 4 -- a collision needs 7919*dsi == 24593*db.
+uint bounceSeed( const ivec2 pix, uint virtualFrame, uint seed, uint b )
 {
-    vec3 emis;
-    const Surface hitSurf = traceBounce(surf.position + surf.normal * 0.01,
-                                        surf.roughness,
-                                        surf.instCustomIndex,
-                                        bounceDir,
-                                        SECOND_BOUNCE_MIP_BIAS,
-                                        emis);
-    emis *= globalUniform.emissionMapBoost;
-
-    if (hitSurf.isSky)
-    {
-        return getSky(bounceDir) * oneOverPdf;
-    }
-
-    // calculate direct illumination in a hit position
-    const vec3 diffuse = processDirectIllumination(seed, hitSurf, 2);
-
-    return (emis + diffuse) * hitSurf.albedo * oneOverPdf;
+    return ( b <= 2u ) ? seed : getRandomSeed( pix, virtualFrame + b * 24593u );
 }
 
-SampleIndirect processIndirect( const uint seed, const Surface surf, out float oneOverSourcePdf )
+SampleIndirect processIndirect( const ivec2 pix, uint virtualFrame, const uint seed, const Surface surf, out float oneOverSourcePdf )
 {
     vec3 bounceDir;
 
@@ -195,16 +195,61 @@ SampleIndirect processIndirect( const uint seed, const Surface surf, out float o
     // calculate direct diffuse illumination in a hit position
     vec3 diffuse = processDirectIllumination(seed, hitSurf, 1);
 
-    // TODO: investigate why uncommenting this makes diffuse very red
-    // if( globalUniform.indirSecondBounce != 0 )
-    {
-        float oneOverPdf_Second;
-        const vec3 bounceDir_Second = getDiffuseBounce(seed, 2, hitSurf.normal, oneOverPdf_Second);
+    // Doom64-RT: vertices 2..N. This replaces the unrolled second bounce that
+    // sat behind a commented-out gate ("TODO: investigate why uncommenting this
+    // makes diffuse very red"), so it always ran and its API flag was inert.
+    //
+    // The stored SampleIndirect stays vertex 1 -- position, normal, and the
+    // reservoir weight oneOverSourcePdf all belong to the first hit, because
+    // the spatial-reuse Jacobian and shade() reconnect to THAT vertex. Deeper
+    // bounces have nowhere to live but vertex 1's radiance, so they are folded
+    // in here with their own throughput, exactly as the old second bounce was.
+    //
+    // Why the second bounce was "very red": for a cosine-sampled Lambertian
+    // the per-bounce throughput is BRDF(1/pi) * cos * (pi/cos) = exactly 1,
+    // albedo applied separately. The stock code multiplied by 1/pdf alone,
+    // i.e. pi/cos too much -- mean ~2pi under the cosine density, with a 1/cos
+    // tail -- so bounce 2 arrived ~6x too bright, ~6x too saturated (it is
+    // then multiplied by albedo), and firefly-prone. And because the RIS
+    // target pdf is the sample's luminance, those samples WON the reservoir
+    // and were held by temporal reuse. indirectLegacyWeight reproduces that,
+    // and only that, so depth 2 ships unchanged until the fix is judged.
+    Surface prev       = hitSurf;
+    vec3    throughput = vec3( 1.0 ); // demodulated, relative to vertex 1
 
-        diffuse += processSecondDiffuseBounce(seed, 
-                                              hitSurf,
-                                              bounceDir_Second,
-                                              oneOverPdf_Second);
+    for( uint b = 2u; b <= globalUniform.indirectBounces; b++ )
+    {
+        const uint bseed = bounceSeed( pix, virtualFrame, seed, b );
+
+        // min(b, 3): salt index 2 at b == 2 (stock), index 3 reused for every
+        // deeper vertex under a DIFFERENT seed -- index 4 would alias the
+        // specular band (RANDOM_SALT_SPEC_BOUNCE(0) == 12).
+        float      oneOverPdf_b;
+        const vec3 dir = getDiffuseBounce( bseed, min( b, 3u ), prev.normal, oneOverPdf_b );
+        const float w  = ( globalUniform.indirectLegacyWeight != 0u ) ? oneOverPdf_b : 1.0;
+
+        vec3 emis_b;
+        const Surface hit = traceBounce( prev.position + prev.normal * 0.01,
+                                         prev.roughness,
+                                         prev.instCustomIndex,
+                                         dir,
+                                         SECOND_BOUNCE_MIP_BIAS,
+                                         emis_b );
+
+        if( hit.isSky )
+        {
+            diffuse += throughput * w * getSky( dir );
+            break;
+        }
+
+        emis_b *= globalUniform.emissionMapBoost;
+
+        // calculate direct diffuse illumination in the hit position
+        const vec3 Lout = ( emis_b + processDirectIllumination( bseed, hit, int( b ) ) ) * hit.albedo;
+
+        diffuse    += throughput * w * Lout;
+        throughput *= w * hit.albedo;
+        prev        = hit;
     }
 
     SampleIndirect s = createSampleIndirect( //
@@ -284,10 +329,57 @@ void main()
         return;
     }
 
-    float          oneOverSourcePdf;
-    SampleIndirect initial = processIndirect( seed, surf, oneOverSourcePdf );
+    // Multi-sample indirect (GI).
+    //
+    // One path per pixel is the dominant GI noise source, and like direct
+    // lighting it is only hidden by temporal accumulation -- which motion
+    // destroys. N independent paths, RIS-combined, cut that variance at the
+    // source for both denoisers.
+    //
+    // RIS rather than a plain average because the storage format holds exactly
+    // one (sample, weight) pair, and neighbours read this image during spatial
+    // reuse -- so it must stay a single well-formed sample, not a blend of
+    // several with mismatched positions/normals.
+    const uint N = max( globalUniform.indirectSamples, 1u );
 
-    restirIndirect_StoreInitialSample( pix, initial, oneOverSourcePdf );
+    if( N == 1u )
+    {
+        // stock path, kept verbatim so N=1 is bit-identical
+        float          oneOverSourcePdf;
+        SampleIndirect initial = processIndirect( pix, globalUniform.frameId, seed, surf, oneOverSourcePdf );
+
+        restirIndirect_StoreInitialSample( pix, initial, oneOverSourcePdf );
+        return;
+    }
+
+    ReservoirIndirect ris = emptyReservoirIndirect();
+
+    for( uint si = 0; si < N; si++ )
+    {
+        // A fresh well-formed seed per sample rather than arithmetic on the
+        // packed one: getRandomSeed re-hashes through murmur, so a "virtual
+        // frame" index gives an independent path without corrupting the
+        // blue-noise texture index/offset packing. si == 0 reuses the real seed.
+        const uint virtualFrame = globalUniform.frameId + si * 7919u;
+        const uint sampleSeed   = ( si == 0u ) ? seed : getRandomSeed( pix, virtualFrame );
+
+        float          oneOverSourcePdf;
+        SampleIndirect s = processIndirect( pix, virtualFrame, sampleSeed, surf, oneOverSourcePdf );
+
+        const float targetPdf = targetPdfForIndirectSample( s );
+        const float rndRis    = rnd16( seed, RANDOM_SALT_INDIRECT_SPP_BASE + si );
+
+        updateReservoirIndirect( ris, s, targetPdf, oneOverSourcePdf, rndRis );
+    }
+
+    // Collapse the N-candidate reservoir back into the (sample, weight) pair the
+    // storage format holds. The final pass rebuilds an M=1 reservoir whose
+    // estimator evaluates to radiance * storedWeight, so the stored weight must
+    // be the RIS weight -- (1/targetPdf_selected) * weightSum / N. Storing a raw
+    // oneOverSourcePdf here instead would bias GI brightness with N.
+    const float risWeight = calcSelectedSampleWeightIndirect( ris );
+
+    restirIndirect_StoreInitialSample( pix, ris.selected, risWeight );
 }
 #endif // RT_RAYGEN_INDIRECT_INIT
 
@@ -367,13 +459,23 @@ void main()
             }
         }
         {
-            const float antilagAlpha_Indir = texelFetch(
-                framebufDISGradientHistory_Sampler, pp / COMPUTE_ASVGF_STRATA_SIZE, 0 )[ 1 ];
-
-            // if there's too much difference, don't use a temporal sample
-            if( antilagAlpha_Indir > 0.25 )
+            // framebufDISGradientHistory is written ONLY by CmASVGFGradientAtrous,
+            // which runs only inside Denoiser::Denoise(). DLSS-RR skips Denoise()
+            // and calls ComposeNoisy() instead, so under RR this gate reads a
+            // buffer that nothing updates -- and rejecting on a stale value would
+            // kill indirect temporal reuse outright, leaving GI at 1 spp with no
+            // accumulation. restirIndirAntilag 0 ignores the gate; see the uniform
+            // comment in GenerateShaderCommon.py.
+            if( globalUniform.restirIndirAntilag != 0 )
             {
-                continue;
+                const float antilagAlpha_Indir = texelFetch(
+                    framebufDISGradientHistory_Sampler, pp / COMPUTE_ASVGF_STRATA_SIZE, 0 )[ 1 ];
+
+                // if there's too much difference, don't use a temporal sample
+                if( antilagAlpha_Indir > 0.25 )
+                {
+                    continue;
+                }
             }
         }
 
@@ -471,6 +573,18 @@ void main()
     }
 
     restirIndirect_StoreReservoir( pix, combined );
+
+    // Doom64-RT: rt_debug_restir_m 2 -- the INDIRECT reservoir's M, the same
+    // green ramp RtRaygenDirect.rgen paints for the direct one at 1. Exists so
+    // a change to the GI path can PROVE it left the reuse contract alone: depth
+    // touches radiance only, never the stored position/normal, so M must not
+    // move with it. Read it on the unfiltered-indirect debug layer.
+    if( globalUniform.debugRestirM == 2u )
+    {
+        const float mNorm = clamp( float( combined.M ) / 32.0, 0.0, 1.0 );
+        imageStoreUnfilteredIndir( pix, vec3( mNorm * 0.15, mNorm, mNorm * 0.15 ) );
+        return;
+    }
 
 
 

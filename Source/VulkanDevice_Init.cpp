@@ -305,7 +305,7 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         amdFsr3dx12,
         gpuLuid );
     
-    if( LibConfig().developerMode )
+    if( LibConfig().developerMode && LibConfig().debugWindows )
     {
 #ifdef RG_USE_IMGUI
         debugWindows = std::make_shared< DebugWindows >( 
@@ -316,8 +316,16 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
             queues->GetGraphics(),
             cmdManager );
         debugWindows->Init( debugWindows );
+        debugWindows->SetIniFilename( ovrdFolder / "imgui.ini" );
 
         devmode = std::make_unique<Devmode>();
+        if( auto loaded =
+                json_parser::ReadFileAs< DevmodeSettings >( ovrdFolder / "devmode_settings.json" ) )
+        {
+            // ApplyDevmodeSettings is in VulkanDevice_Dev.cpp anonymous namespace — call via
+            // a small public helper instead.
+            Dev_LoadSettings( *loaded );
+        }
 
         observer = std::make_unique< FolderObserver >( ovrdFolder );
 #endif
@@ -336,6 +344,9 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         ovrdFolder / "BlueNoise_LDR_RGBA_128.ktx2", 
         memAllocator, 
         *cmdManager );
+
+    // Doom64-RT: decide the texture-array size before anything allocates it.
+    InitTextureCountMax( physDevice->Get() );
 
     textureManager = std::make_shared< TextureManager >(
         device, 
@@ -524,6 +535,8 @@ RTGL1::VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
             appGuid.c_str(),
             dlssSearchPaths );
     }
+    // Ray Reconstruction shares NGX init owned by DLSS2
+    nvDlssRr = DLSSRR::MakeInstance( device, nvDlss2.get() );
 #endif
 
     sharpening = std::make_shared< Sharpening >( 
@@ -622,6 +635,22 @@ RTGL1::VulkanDevice::~VulkanDevice()
 {
     vkDeviceWaitIdle( device );
 
+    // Doom64-RT: MUST be destroyed here, in the body, while the VkDevice is
+    // alive -- NRDIntegration's teardown calls back into the device through
+    // NRI (destroy pipelines / free pools / unwrap the device). Every other
+    // subsystem is reset explicitly below for the same reason; this one was
+    // missed, so its IMPLICIT member destructor ran after vkDestroyDevice and
+    // NRI dispatched into a dead device -- an access violation inside
+    // nvoglv64.dll on every quit with rt_nrd enabled (CrashReport.zip,
+    // 2026-08-17, stack: RTGL1 -> NRI -> driver). The wait-idle above makes
+    // the destroy safe despite autoWaitForIdle being off.
+    nrdDenoiser.reset();
+
+    if( devmode )
+    {
+        Dev_SaveSettings( true );
+    }
+
     observer.reset();
     physDevice.reset();
     queues.reset();
@@ -636,6 +665,7 @@ RTGL1::VulkanDevice::~VulkanDevice()
     bloom.reset();
     amdFsr2.reset();
     amdFsr3dx12.reset();
+    nvDlssRr.reset();
     nvDlss2.reset();
     nvDlss3dx12.reset();
     sharpening.reset();
@@ -894,6 +924,10 @@ void RTGL1::VulkanDevice::CreateInstance( const RgInstanceCreateInfo& info )
     VkResult r = vkCreateInstance( &instanceInfo, nullptr, &instance );
     VK_CHECKERROR( r );
 
+    // Doom64-RT: retained for NRD/NRI (NrdDenoiser) -- NRI wraps this instance
+    // and must be told exactly which extensions it was created with.
+    vkEnabledInstanceExtensions.assign( extensions.begin(), extensions.end() );
+
 
     if( LibConfig().vulkanValidation )
     {
@@ -1057,9 +1091,30 @@ void RTGL1::VulkanDevice::CreateDevice()
         .storageBuffer16BitAccess = 1,
     };
 
+    // Doom64-RT: the two features below are enabled solely for NRI, which
+    // wraps this device for the NRD denoiser lane and hard-requires
+    // extendedDynamicState + dynamicRendering + synchronization2
+    // (deps/NRI Source/VK/DeviceVK.hpp "Check hard requirements"; sync2 was
+    // already on). Both are additive -- nothing in RTGL1 changes behaviour by
+    // enabling them -- and universally supported on RT-capable drivers (core
+    // in Vulkan 1.3; this device is created as 1.2, so extension + feature
+    // must be stated explicitly or NRI's wrapped-device probe reads them as
+    // absent and refuses to create).
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extDynStateFeatures = {
+        .sType                = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
+        .pNext                = &storage16,
+        .extendedDynamicState = 1,
+    };
+
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynRenderingFeatures = {
+        .sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+        .pNext            = &extDynStateFeatures,
+        .dynamicRendering = 1,
+    };
+
     VkPhysicalDeviceSynchronization2FeaturesKHR sync2Features = {
         .sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
-        .pNext            = &storage16,
+        .pNext            = &dynRenderingFeatures,
         .synchronization2 = 1,
     };
 
@@ -1103,6 +1158,9 @@ void RTGL1::VulkanDevice::CreateDevice()
         VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
         VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
         VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+        // for NRI (NRD lane) -- see the feature structs above
+        VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+        VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
 #ifdef RG_USE_DX12
         VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
         VK_KHR_EXTERNAL_FENCE_WIN32_EXTENSION_NAME,
@@ -1171,6 +1229,9 @@ void RTGL1::VulkanDevice::CreateDevice()
 
     VkResult r = vkCreateDevice( physDevice->Get(), &deviceCreateInfo, nullptr, &device );
     VK_CHECKERROR( r );
+
+    // Doom64-RT: retained for NRD/NRI (NrdDenoiser) -- same as the instance list.
+    vkEnabledDeviceExtensions.assign( deviceExtensions.begin(), deviceExtensions.end() );
 
     InitDeviceExtensionFunctions( device );
 

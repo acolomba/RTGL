@@ -283,6 +283,12 @@ void RTGL1::RasterizedDataCollector::AddPrimitive( uint32_t                   fr
 
         .emissive = Utils::Saturate( info.emissive ),
 
+        // 1 and 2 are CLOUD_MODE_BACK / CLOUD_MODE_BEHIND in Clouds.h. The
+        // backdrop wins if a caller sets both.
+        .skyCloudMode = ( info.flags & RG_MESH_PRIMITIVE_SKY_CLOUDS )          ? 1u
+                        : ( info.flags & RG_MESH_PRIMITIVE_SKY_BEHIND_CLOUDS ) ? 2u
+                                                                               : 0u,
+
         .viewProj = IfNotNull( pViewProjection, Float16D( pViewProjection ) ),
         .viewport = IfNotNull( pViewport, ToVk( *pViewport ) ),
 

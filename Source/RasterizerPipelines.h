@@ -40,7 +40,8 @@ public:
                                   bool                 notOnlyColorAttachment,
                                   bool                 applyVertexColorGamma,
                                   const VkViewport*    pViewport = nullptr,
-                                  const VkRect2D*      pScissors = nullptr );
+                                  const VkRect2D*      pScissors = nullptr,
+                                  bool                 coverageAlphaAttch0 = false );
     ~RasterizerPipelines();
 
     RasterizerPipelines( const RasterizerPipelines& other )                = delete;
@@ -81,6 +82,11 @@ private:
 
     uint32_t applyVertexColorGamma;
     bool     onlyColorAttachment;
+    // Doom64-RT: attachment 0 is the DLSS-RR transparency layer, whose alpha
+    // is NGX's occlusion of the denoised background -- blend alpha as true
+    // coverage ('over') or not at all (additive), instead of reusing the
+    // colour factors.
+    bool     coverageAlphaAttch0;
 };
 
 }

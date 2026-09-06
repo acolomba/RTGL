@@ -60,10 +60,19 @@ static ShaderModuleDefinition G_SHADERS[] =
     { "RMissShadow",                "RtMissShadowCheck.rmiss.spv"           },
     { "RClsOpaque",                 "RtClsOpaque.rchit.spv"                 },
     { "RAlphaTest",                 "RtAlphaTest.rahit.spv"                 },
+    // Doom64-RT: any-hit for MEDIA shadow rays -- alpha test plus "sprites do
+    // not occlude the medium". See RtAlphaTestMedia.rahit.
+    { "RAlphaTestMedia",            "RtAlphaTestMedia.rahit.spv"            },
 #if LIGHT_GRID_ENABLED
     { "CLightGridBuild",            "CmLightGridBuild.comp.spv"             },
 #endif
     { "CPrepareFinal",              "CmPrepareFinal.comp.spv"               },
+    { "CVolumeCompose",             "CmVolumeCompose.comp.spv"              },
+    // Doom64-RT: exposure + screen emissive after DLSS-RR (pre-exposure reorder)
+    { "CRrPostExposure",            "CmRrPostExposure.comp.spv"             },
+    { "CNrdPack",                   "CmNrdPack.comp.spv"                    },
+    { "CNrdCompose",                "CmNrdCompose.comp.spv"                 },
+    { "CNoisyCompose",              "CmNoisyCompose.comp.spv"               },
     { "CLuminanceHistogram",        "CmLuminanceHistogram.comp.spv"         },
     { "CLuminanceAvg",              "CmLuminanceAvg.comp.spv"               },
     { "CVolumetricProcess",         "CmVolumetricProcess.comp.spv"          },
@@ -76,6 +85,9 @@ static ShaderModuleDefinition G_SHADERS[] =
     { "FragWorld",                  "RsWorld_RT.frag.spv"                   },
     { "FragWorldClassic",           "RsWorld_Classic.frag.spv"              },
     { "FragSky",                    "RsSky.frag.spv"                        },
+    // Doom64-RT: the GI-cubemap twin of FragSky, and the volumetric cloud march.
+    { "FragSkyCubemap",             "RsSkyCubemap.frag.spv"                 },
+    { "CCloudMap",                  "CmCloudMap.comp.spv"                   },
     { "FragSwapchain",              "RsSwapchain.frag.spv"                  },
     { "VertDefault",                "RsRasterizer.vert.spv"                 },
     { "VertDefaultMultiview",       "RsRasterizerMultiview.vert.spv"        },

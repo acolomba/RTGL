@@ -23,6 +23,8 @@
 #include "Const.h"
 #include "Utils.h"
 
+#include <algorithm>
+
 
 namespace
 {
@@ -275,7 +277,19 @@ bool RTGL1::TextureMetaManager::Modify(
             prim.flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
         }
 
-        prim.emissive = Utils::Saturate( meta->emissiveMult );
+        // Do NOT Saturate to [0,1] — world mats use emissiveMult > 1 for INDIR GI
+        // (_e * mult * mapboost). Clamping made 2.1 and 4.2 identical (=1).
+        //
+        // RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE keeps whatever the caller passed. Without
+        // it this assignment is unconditional, so a caller cannot ask for a specific
+        // SURFACE to be dimmer than its material — the material overwrites it a moment
+        // later. That is the case of a texture used both as a lamp pane (lit by real
+        // point lights, so its glow is turned down to a bloom residue) and as a wall
+        // light strip (where the glow is the whole fixture); see the note in RTGL1.h.
+        if( !( prim.flags & RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE ) )
+        {
+            prim.emissive = std::max( 0.0f, meta->emissiveMult );
+        }
 
         refPbr = RgMeshPrimitivePBREXT{
             .sType            = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_PBR_EXT,

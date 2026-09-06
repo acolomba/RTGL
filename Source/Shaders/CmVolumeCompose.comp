@@ -1,0 +1,191 @@
+// Copyright (c) 2021 Sultim Tsyrendashiev
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#version 460
+
+// Doom64-RT: THE MEDIUM, APPLIED AFTER THE UPSCALER.
+//
+// WHY THIS PASS EXISTS. The thin dark line around everything seen through smoke
+// or fog is drawn by the temporal upscaler -- measured on MAP93, where DLSS and
+// FSR both off removes it completely while every froxel knob (depth gate,
+// dither, blur, depth bias, scattering history, slice thickness) moves it by
+// 0.3 luminance levels or less. docs/rt-volumetric-edge-outlines.md.
+//
+// The cause is ordering. CmPrepareFinal composites  hdr*T + S  at RENDER
+// resolution, per pixel, at the JITTERED surface depth. At a silhouette T and S
+// step hard -- the two sides have very different path lengths through the
+// medium -- and under jitter the edge pixel's medium term flickers between the
+// two. The upscaler then reconstructs that stepped, flickering, luminance-
+// weighted signal as if it were surface detail, and biases dark along the edge.
+// Nothing in its inputs says the discontinuity belongs to the medium; by the
+// time it sees the frame, surface and medium have already been added together.
+//
+// So: don't hand it the sum. CmPrepareFinal leaves the surface image alone, the
+// upscaler reconstructs an ordinary game image -- which is what it is good at --
+// and the veil goes on afterwards, here, at output resolution.
+//
+// THE ALGEBRA IS EXACTLY PRESERVED, and that is checkable term by term:
+//
+//     before:  out = (surf*T + S)*exp + emis*emisMax*T
+//     after:   Final = surf*exp + emis*emisMax          (CmPrepareFinal)
+//              out   = Final*T + S*exp                  (here)
+//            =  surf*exp*T + emis*emisMax*T + S*exp     -- identical.
+//
+// The one case it cannot express is rt_volume_occlude_emis 0 (stock RTGL1's
+// unoccluded screen emissive, which leaks panel lights through smoke); that
+// ships at 1 and postcomp forces it.
+
+#define DESC_SET_FRAMEBUFFERS 0
+#define DESC_SET_GLOBAL_UNIFORM 1
+#define DESC_SET_TONEMAPPING 2
+#include "ShaderCommonGLSLFunc.h"
+#include "Exposure.h"
+
+layout( local_size_x = 16, local_size_y = 16, local_size_z = 1 ) in;
+
+layout( push_constant ) uniform VolumeComposePush_BT
+{
+    // Which image `accum` currently is. The post-upscale chain ping-pongs, and
+    // with no upscaler at all it is still FINAL at render size, so the target
+    // cannot be baked into the shader. 0 = Final, 1 = UpscaledPing,
+    // 2 = UpscaledPong.
+    uint target;
+    uint width;
+    uint height;
+    uint pad;
+}
+push;
+
+vec3 loadTarget( const ivec2 p )
+{
+    if( push.target == 0 )
+    {
+        return imageLoad( framebufFinal, p ).rgb;
+    }
+    if( push.target == 1 )
+    {
+        return imageLoad( framebufUpscaledPing, p ).rgb;
+    }
+    return imageLoad( framebufUpscaledPong, p ).rgb;
+}
+
+void storeTarget( const ivec2 p, const vec3 c )
+{
+    if( push.target == 0 )
+    {
+        imageStore( framebufFinal, p, vec4( c, 0 ) );
+        return;
+    }
+    if( push.target == 1 )
+    {
+        imageStore( framebufUpscaledPing, p, vec4( c, 0 ) );
+        return;
+    }
+    imageStore( framebufUpscaledPong, p, vec4( c, 0 ) );
+}
+
+void main()
+{
+    const ivec2 pix = ivec2( gl_GlobalInvocationID.xy );
+
+    if( pix.x >= int( push.width ) || pix.y >= int( push.height ) )
+    {
+        return;
+    }
+
+    // IN PLACE. Every invocation reads and writes exactly its own pixel, so
+    // there is no hazard and no need for a ping-pong target of our own -- which
+    // matters, because the post chain's ping/pong pair is already spoken for by
+    // sharpening and bloom.
+    vec3 c = loadTarget( pix );
+
+    // Sampled by NORMALISED coordinate, so this works whatever the ratio
+    // between render and output resolution -- including 1:1, where there is no
+    // upscaler at all and `accum` is still FINAL at render size.
+    //
+    // BILINEAR, and that is the whole reason FB_IMAGE_INDEX_SCATTERING carries
+    // FRAMEBUF_FLAGS_BILINEAR_SAMPLER now. The medium is a low-frequency field:
+    // interpolating it is right, and it is exactly what the upscaler was doing
+    // badly on the composed image, because there it was interpolating the
+    // medium and the surface together.
+    //
+    // AND UNJITTERED, which is not a detail -- it is the difference between
+    // this pass helping and hurting.
+    //
+    // The scattering buffer is indexed by RENDER pixel, and render pixel (i,j)
+    // was traced through (i + 0.5 + jitter) / renderSize: the primary ray is
+    // jittered every frame so the upscaler has sub-pixel samples to reconstruct
+    // from. The upscaled image is UNjittered -- that is what the upscaler
+    // resolved. So sampling the veil at the plain output uv lines the medium's
+    // step up half a pixel away from the surface's step, and a band one pixel
+    // wide gets the transmittance belonging to the other side of the
+    // silhouette. Which is a dark line at every silhouette: the artefact this
+    // pass exists to remove, reintroduced by the pass itself.
+    //
+    // Solving (r + 0.5 + jitter)/renderSize == (p + 0.5)/outSize for the render
+    // texel r gives the shift below. It is in RENDER texels, so it is the same
+    // correction whatever the upscale ratio -- including 1:1, where it is the
+    // only misalignment there is, and where leaving it in made DLAA the worst
+    // arm of the whole ladder.
+    // BOTH SIGNS WERE MEASURED AND NEITHER RESCUES THIS PASS. The derivation
+    // says subtract, and that is what is here. On the shipping balanced arm
+    // subtracting is the better of the two (-0.6 against -0.9); on DLAA -- where
+    // render and output resolution are equal, so this shift is the pass's only
+    // misalignment and the sign shows up cleanly -- it is the worse (-2.1
+    // against -1.5), and both are worse than not running the pass at all
+    // (-1.3). So the misalignment is real and is NOT the artefact. See section
+    // 7.2 of docs/rt-volumetric-edge-outlines.md: postcomp is a dead end, and
+    // the jitter correction was the last thing that could have saved it.
+    const vec2 uv = ( vec2( pix ) + 0.5 ) / vec2( push.width, push.height ) -
+                    vec2( globalUniform.jitterX, globalUniform.jitterY ) /
+                        vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+
+    vec4 v = textureLod( framebufScattering_Sampler, uv, 0.0 );
+
+    // Doom64-RT: NO FOG ON THE GUN -- the postcomp twin of the override in
+    // CmPrepareFinal. The scattering buffer under a first-person pixel holds
+    // the WORLD's fog on purpose (accumulator continuity); it must not be
+    // composited over the viewmodel.
+    if( globalUniform.volumeFp > 0.5 )
+    {
+        const ivec2 rpix = ivec2( uv * vec2( globalUniform.renderWidth,
+                                             globalUniform.renderHeight ) );
+        const uint  ci   = floatBitsToUint(
+            texelFetch( framebufSurfacePosition_Sampler,
+                        getCheckerboardPix( clamp( rpix,
+                                                   ivec2( 0 ),
+                                                   ivec2( int( globalUniform.renderWidth ) - 1,
+                                                          int( globalUniform.renderHeight ) - 1 ) ) ),
+                        0 )
+                .a );
+        if( ( ci & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON ) != 0 )
+        {
+            v = vec4( 0, 0, 0, 1 );
+        }
+    }
+
+    // v.a = transmittance, v.rgb = in-scattering. The exposure that
+    // CmPrepareFinal applied to the surface has to be applied to the in-scatter
+    // too, or the veil would be the only thing in the frame that is not exposed
+    // -- it would go black in a bright room and blow out in a dark one.
+    c = c * v.a + v.rgb * ev100ToLuminousExposure( getCurrentEV100() );
+
+    storeTarget( pix, c );
+}

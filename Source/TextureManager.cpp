@@ -20,6 +20,8 @@
 
 #include "TextureManager.h"
 
+#include <cstdlib>
+
 #include "Const.h"
 #include "DrawFrameInfo.h"
 #include "JsonParser.h"
@@ -102,6 +104,78 @@ VkFormat getVkFormat( const RgOriginalTextureDetailsEXT* details, VkFormat fallb
 }
 
 
+namespace
+{
+uint32_t g_textureCountMax = RTGL1::TEXTURE_COUNT_MAX;
+}
+
+uint32_t RTGL1::GetTextureCountMax()
+{
+    return g_textureCountMax;
+}
+
+// Doom64-RT: do not ask the GPU for an array it cannot give.
+//
+// The textures binding is a plain COMBINED_IMAGE_SAMPLER with descriptorCount =
+// maxTextureCount and stageFlags = VK_SHADER_STAGE_ALL, and it carries no
+// UPDATE_AFTER_BIND flag -- so the limits that apply are the ordinary
+// maxPerStageDescriptorSampledImages and maxDescriptorSetSampledImages, in every
+// stage. Exceeding them does not degrade: vkCreateDescriptorSetLayout fails,
+// VK_CHECKERROR aborts, and the game does not start. On the machine this was
+// developed on the limit is over a million and the question never arises; on a
+// weaker or older card it can be far lower, and that is somebody else's launch.
+//
+// The floor is the old 4096, because that value shipped and worked -- a device
+// that cannot spare more than that gets exactly what it had before, never less.
+void RTGL1::InitTextureCountMax( VkPhysicalDevice physDevice )
+{
+    VkPhysicalDeviceProperties props = {};
+    vkGetPhysicalDeviceProperties( physDevice, &props );
+
+    const uint32_t avail = std::min( props.limits.maxPerStageDescriptorSampledImages,
+                                     props.limits.maxDescriptorSetSampledImages );
+
+    // Headroom for every other sampled image bound at the same time. Per-stage
+    // limits are shared across all bound sets, not per set.
+    constexpr uint32_t kReserve = 1024;
+
+    uint32_t allowed = avail > kReserve ? avail - kReserve : avail;
+
+    allowed = std::max( allowed, 4096u );
+    allowed = std::min( allowed, TEXTURE_COUNT_MAX );
+
+    // Doom64-RT: one binary, both answers. D64RT_TEXCOUNT overrides the result so
+    // "is the black screen my 16384, or is it my local build differing from the
+    // CI one?" can be answered by relaunching, not by waiting for a rebuild.
+    // Still clamped by the device limit above -- an override cannot ask for more
+    // than the GPU can give.
+    if( const char* env = std::getenv( "D64RT_TEXCOUNT" ) )
+    {
+        const long v = std::strtol( env, nullptr, 10 );
+        if( v >= 256 && uint32_t( v ) <= allowed )
+        {
+            allowed = uint32_t( v );
+            debug::Warning( "Texture array forced to {} by D64RT_TEXCOUNT", allowed );
+        }
+    }
+
+    g_textureCountMax = allowed;
+
+    if( allowed < TEXTURE_COUNT_MAX )
+    {
+        debug::Info( "Texture array clamped to {} (wanted {}); device reports "
+                     "maxPerStageDescriptorSampledImages={}, maxDescriptorSetSampledImages={}",
+                     allowed,
+                     TEXTURE_COUNT_MAX,
+                     props.limits.maxPerStageDescriptorSampledImages,
+                     props.limits.maxDescriptorSetSampledImages );
+    }
+    else
+    {
+        debug::Info( "Texture array size: {}", allowed );
+    }
+}
+
 TextureManager::TextureManager( VkDevice                                _device,
                                 std::shared_ptr< MemoryAllocator >      _memAllocator,
                                 std::shared_ptr< SamplerManager >       _samplerMgr,
@@ -134,10 +208,10 @@ TextureManager::TextureManager( VkDevice                                _device,
     , forceNormalMapFilterLinear{ _forceNormalMapFilterLinear }
 {
     textureDesc = std::make_shared< TextureDescriptors >(
-        device, samplerMgr, TEXTURE_COUNT_MAX, BINDING_TEXTURES );
+        device, samplerMgr, GetTextureCountMax(), BINDING_TEXTURES );
     textureUploader = std::make_shared< TextureUploader >( device, memAllocator );
 
-    textures.resize( TEXTURE_COUNT_MAX );
+    textures.resize( GetTextureCountMax() );
 
     // submit cmd to create empty texture
     {

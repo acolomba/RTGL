@@ -70,6 +70,8 @@ set(Sources
     "Source/Bloom.cpp"
     "Source/Sharpening.cpp"
     "Source/DLSS2.cpp"
+    "Source/DLSSRR.cpp"
+    "Source/NrdDenoiser.cpp"
     "Source/HaltonSequence.cpp"
     "Source/LensFlares.cpp"
     "Source/DecalManager.cpp"
@@ -127,6 +129,12 @@ option(RG_WITH_SURFACE_XLIB     "Build with Xlib VkSurfaceKHR support"      OFF)
 option(RG_WITH_IMGUI            "Build RTGL1 with ImGui debug windows"      ON)
 option(RG_WITH_DX12             "Build RTGL1 with DX12 features"            ON)
 option(RG_WITH_NATIVE_DLSS      "Build RTGL1 with native DLSS2"             ON)
+# OFF by default: A-SVGF is the shipping baseline denoiser, and NRD needs an
+# SDK that is not in the repo (deps/NRD + deps/NRI, built by
+# tools/build-nrd-deps.cmd). Defaulting ON made a clean checkout -- the CI
+# release runner included -- fail configure with the FATAL_ERROR below rather
+# than build the baseline. Turn it ON to work on the NRD lane.
+option(RG_WITH_NRD              "Build RTGL1 with the NVIDIA NRD denoiser lane (NRI-wrapped)" OFF)
 
 option(RG_WITH_EXAMPLES         "Build with examples executable"            ON)
 
@@ -266,20 +274,144 @@ target_include_directories(RayTracedGL1 PRIVATE "Source/KTX/include" "Source/KTX
 
 # DLSS
 target_include_directories(RayTracedGL1 PRIVATE "Source/Streamline/include")
-if (RG_WITH_NATIVE_DLSS AND DEFINED ENV{DLSS_SDK_PATH})
-    message(STATUS "Found Native DLSS SDK: $ENV{DLSS_SDK_PATH}")
-    target_include_directories(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/include")
+
+# Accept the SDK location from EITHER the environment or -DDLSS_SDK_PATH=...
+# Previously this tested `DEFINED ENV{DLSS_SDK_PATH}` only, so configuring with
+# -DDLSS_SDK_PATH silently skipped this whole block: native DLSS2 AND DLSS Ray
+# Reconstruction were compiled out (DLSSRR.cpp falls through to its empty stub,
+# nvDlssRr is always null), with no error and no runtime log line -- because the
+# log strings themselves were compiled out. Worse, CMake cached the -D value, so
+# every later rebuild reused the poisoned cache. Cost a full debugging session:
+# every RR cvar and guide fix appeared to do nothing because there was no RR.
+if (NOT DEFINED DLSS_SDK_PATH AND DEFINED ENV{DLSS_SDK_PATH})
+    set(DLSS_SDK_PATH "$ENV{DLSS_SDK_PATH}")
+endif()
+
+if (RG_WITH_NATIVE_DLSS AND DLSS_SDK_PATH)
+    if (NOT EXISTS "${DLSS_SDK_PATH}/include/nvsdk_ngx.h")
+        message(FATAL_ERROR
+            "RG_WITH_NATIVE_DLSS=ON and DLSS_SDK_PATH='${DLSS_SDK_PATH}', but "
+            "${DLSS_SDK_PATH}/include/nvsdk_ngx.h is missing. Fix the path or set "
+            "RG_WITH_NATIVE_DLSS=OFF; do not build silently without Ray Reconstruction.")
+    endif()
+    message(STATUS "Found Native DLSS SDK: ${DLSS_SDK_PATH}")
+    target_include_directories(RayTracedGL1 PRIVATE "${DLSS_SDK_PATH}/include")
     add_definitions(-DRG_USE_NATIVE_DLSS2)
     if (WIN32)
+        # NVIDIA/DLSS layout uses lib/Windows_x86_64/x64 (older trees used x86_64)
+        set(_NGX_LIB_DIR "${DLSS_SDK_PATH}/lib/Windows_x86_64/x64")
+        if (NOT EXISTS "${_NGX_LIB_DIR}/nvsdk_ngx_d.lib")
+            set(_NGX_LIB_DIR "${DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64")
+        endif()
         if (BUILD_TYPE STREQUAL "DEBUG")
-            target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64/nvsdk_ngx_d_dbg.lib")
+            target_link_libraries(RayTracedGL1 PRIVATE "${_NGX_LIB_DIR}/nvsdk_ngx_d_dbg.lib")
         else()
-            target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Windows_x86_64/x86_64/nvsdk_ngx_d.lib")
+            target_link_libraries(RayTracedGL1 PRIVATE "${_NGX_LIB_DIR}/nvsdk_ngx_d.lib")
         endif()
     else()
-        target_link_libraries(RayTracedGL1 PRIVATE "$ENV{DLSS_SDK_PATH}/lib/Linux_x86_64/libnvsdk_ngx.a")
+        target_link_libraries(RayTracedGL1 PRIVATE "${DLSS_SDK_PATH}/lib/Linux_x86_64/libnvsdk_ngx.a")
         target_link_libraries(RayTracedGL1 PRIVATE ${CMAKE_DL_LIBS})
     endif()
+elseif (RG_WITH_NATIVE_DLSS)
+    # Loud, because the resulting DLL is indistinguishable at a glance from a
+    # working one -- it just has no DLSS-RR in it at all.
+    message(WARNING
+        "RG_WITH_NATIVE_DLSS=ON but DLSS_SDK_PATH is not set (neither as an "
+        "environment variable nor -DDLSS_SDK_PATH=...). Native DLSS2 and DLSS "
+        "Ray Reconstruction WILL BE COMPILED OUT of RTGL1.dll: rt_rayreconstr "
+        "will appear to work but nvDlssRr is always null and no DLSSRR: log "
+        "lines will ever be printed.")
+endif()
+
+# NRD + NRI (Doom64-RT: the third denoiser lane, docs/plan-nrd-denoiser.md).
+# Duke-RT's pattern: NRD's seven sources are compiled straight into this
+# target with the embedded pre-generated SPIR-V headers (deps/NRD/_Shaders,
+# produced once by tools/build-nrd-deps.cmd); NRI is a VK-only static build
+# from its own CMake (same script). The NRD_* definitions here MUST match
+# deps/NRD/Shaders/NRDConfig.hlsli or the C++ side and the shaders disagree
+# about the data layout silently.
+if (RG_WITH_NRD)
+    if (NOT DEFINED NRD_DEPS_PATH)
+        # deps/RTGL's siblings in the Doom64-RT layout
+        get_filename_component(NRD_DEPS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    endif()
+
+    set(_NRD_DIR  "${NRD_DEPS_PATH}/NRD")
+    set(_NRI_DIR  "${NRD_DEPS_PATH}/NRI")
+    set(_ML_DIR   "${NRD_DEPS_PATH}/MathLib")
+    set(_SM_DIR   "${NRD_DEPS_PATH}/ShaderMake")
+    # NRI is a SHARED library on purpose: its VK backend embeds its own
+    # VulkanMemoryAllocator implementation, and RTGL1.dll already embeds one --
+    # two static VMA implementation TUs in one binary are LNK2005 across every
+    # Vma* class. Duke-RT ships NRI as runtime DLLs for the same reason.
+    # NRI.dll must be staged next to RTGL1.dll (tools/build-rtgl.cmd does).
+    set(_NRI_LIBS "${_NRI_DIR}/_Bin/Release/NRI.lib")
+
+    if (NOT EXISTS "${_NRD_DIR}/Include/NRD.h" OR NOT EXISTS "${_NRD_DIR}/_Shaders")
+        message(FATAL_ERROR
+            "RG_WITH_NRD=ON but '${_NRD_DIR}' is missing NRD or its pre-generated "
+            "_Shaders headers. Run tools/build-nrd-deps.cmd first, or configure with "
+            "-DRG_WITH_NRD=OFF; do not build silently without the NRD lane.")
+    endif()
+    if (NOT EXISTS "${_NRI_DIR}/_Bin/Release/NRI.lib")
+        message(FATAL_ERROR
+            "RG_WITH_NRD=ON but NRI is not built ('${_NRI_DIR}/_Bin/Release/NRI.lib' "
+            "missing). Run tools/build-nrd-deps.cmd first.")
+    endif()
+
+    message(STATUS "RG_WITH_NRD enabled: NRD at ${_NRD_DIR}, NRI at ${_NRI_DIR}")
+
+    target_sources(RayTracedGL1 PRIVATE
+        "${_SM_DIR}/ShaderMake/ShaderBlob.cpp"
+        "${_NRD_DIR}/Source/Wrapper.cpp"
+        "${_NRD_DIR}/Source/InstanceImpl.cpp"
+        "${_NRD_DIR}/Source/Reblur.cpp"
+        "${_NRD_DIR}/Source/Relax.cpp"
+        "${_NRD_DIR}/Source/Sigma.cpp"
+        "${_NRD_DIR}/Source/Reference.cpp"
+        "${_NRD_DIR}/Source/Timer.cpp"
+    )
+    target_include_directories(RayTracedGL1 PRIVATE
+        "${_NRD_DIR}/Include"
+        "${_NRD_DIR}/Integration"
+        "${_NRD_DIR}/_Shaders"
+        "${_ML_DIR}"
+        "${_NRI_DIR}/Include"
+        "${_SM_DIR}"
+    )
+    target_link_libraries(RayTracedGL1 PRIVATE ${_NRI_LIBS})
+    # DELAY-LOADED, and this is load-bearing: the app loads rt/bin/RTGL1.dll
+    # with plain LoadLibraryA (rgLoadLibraryAndCreate), so a STATIC import of
+    # NRI.dll would be resolved against the EXE's directory and PATH -- not
+    # rt/bin -- and RTGL1.dll itself would fail to load ("RTGL1.dll not
+    # found", with NRI.dll never mentioned). Delay-loading defers resolution
+    # until the first NRI call; NrdDenoiser::EnsureReady explicitly loads
+    # NRI.dll from RTGL1.dll's own directory before that call. Bonus: NRI.dll
+    # is not even mapped unless rt_nrd is actually enabled.
+    target_link_options(RayTracedGL1 PRIVATE "/DELAYLOAD:NRI.dll")
+    target_link_libraries(RayTracedGL1 PRIVATE delayimp)
+    # Must mirror deps/NRD/Shaders/NRDConfig.hlsli exactly (one deliberate
+    # divergence from Duke-RT there: ANTIFIREFLY=1, documented in the file).
+    target_compile_definitions(RayTracedGL1 PRIVATE
+        RG_USE_NRD
+        NRD_STATIC_LIBRARY=1
+        NRD_NORMAL_ENCODING=2
+        NRD_ROUGHNESS_ENCODING=1
+        NRD_SUPPORTS_VIEWPORT_OFFSET=0
+        NRD_SUPPORTS_CHECKERBOARD=0
+        NRD_SUPPORTS_HISTORY_CONFIDENCE=0
+        NRD_SUPPORTS_DISOCCLUSION_THRESHOLD_MIX=0
+        NRD_SUPPORTS_BASECOLOR_METALNESS=1
+        NRD_SUPPORTS_ANTIFIREFLY=1
+        REBLUR_PERFORMANCE_MODE=0
+        NRD_EMBEDS_SPIRV_SHADERS=1
+        NRD_EMBEDS_DXIL_SHADERS=0
+        NRD_EMBEDS_DXBC_SHADERS=0
+        SPIRV_SREG_OFFSET=0
+        SPIRV_BREG_OFFSET=2
+        SPIRV_UREG_OFFSET=3
+        SPIRV_TREG_OFFSET=20
+    )
 endif()
 
 # FSR2
@@ -319,6 +451,8 @@ if (MSVC AND WIN32 AND NOT MSVC_VERSION VERSION_LESS 142)
     target_link_options(RayTracedGL1 PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
     target_compile_options(RayTracedGL1 PRIVATE $<$<CONFIG:Debug>:/ZI>)
 
-    target_link_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
-    target_compile_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/ZI>)
+    if (TARGET RtglExample)
+        target_link_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
+        target_compile_options(RtglExample PRIVATE $<$<CONFIG:Debug>:/ZI>)
+    endif()
 endif()

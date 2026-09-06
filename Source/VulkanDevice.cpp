@@ -144,7 +144,8 @@ VkCommandBuffer RTGL1::VulkanDevice::BeginFrame( const RgStartFrameInfo& info )
                                 swapchain->WithFSR3FrameGeneration() ? amdFsr3dx12.get() : nullptr,
                                 nvDlss2.get(),
                                 swapchain->WithDLSS3FrameGeneration() ? nvDlss3dx12.get()
-                                                                      : nullptr );
+                                                                      : nullptr,
+                                nvDlssRr.get() );
 
         framebuffers->PrepareForSize( renderResolution.GetResolutionState(),
                                       ( swapchain->WithDXGI() ) );
@@ -347,6 +348,21 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->skyColorMultiplier = std::max( 0.0f, params.skyColorMultiplier );
         gu->skyColorSaturation = std::max( 0.0f, params.skyColorSaturation );
 
+        // Doom64-RT: sky-reach test for the directional light. See
+        // traceSunReachesSky() in RaygenCommon.h.
+        gu->sunRequireSky      = params.sunRequireSky > 0.5f ? 1.0f : 0.0f;
+        // Pass the MODE through, do not collapse it to a flag: 0 off, 1 isolate
+        // the leak, 2 colour by reason. A `> 0.5f ? 1 : 0` here silently turned
+        // every request for mode 2 into mode 1, so the colour path was
+        // unreachable no matter what the cvar said.
+        gu->sunLeakDebug       = std::clamp( params.sunLeakDebug, 0.0f, 2.0f );
+        gu->sunLeakDebugMul    = std::max( 0.0f, params.sunLeakDebugMul );
+        gu->sunSkyProbeMaxDist = params.sunSkyProbeMaxDist < 0.001f
+                                     ? float( MAX_RAY_LENGTH )
+                                     : params.sunSkyProbeMaxDist;
+        // Doom64-RT: shade the directional light outside ReSTIR's lottery.
+        gu->sunSplit           = params.sunSplit > 0.5f ? 1.0f : 0.0f;
+
         switch( params.skyType )
         {
             case RG_SKY_TYPE_COLOR: {
@@ -396,7 +412,57 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         gu->emissionMapBoost       = std::max( params.emissionMapBoost, 0.0f );
         gu->emissionMaxScreenColor = std::max( params.emissionMaxScreenColor, 0.0f );
         gu->minRoughness           = std::clamp( params.minRoughness, 0.0f, 1.0f );
+        // Doom64-RT metalness fail-safes. Defaults (1, 0, small) are inert, so a
+        // caller that never sets them behaves exactly as before.
+        gu->metallicMax       = std::clamp( params.metallicMax, 0.0f, 1.0f );
+        gu->spritePbr            = std::clamp( params.spritePbr, 0.0f, 1.0f );
+        gu->spriteMetallicMax    = std::clamp( params.spriteMetallicMax, 0.0f, 1.0f );
+        gu->spriteRoughMin       = std::clamp( params.spriteRoughMin, 0.0f, 1.0f );
+        gu->spriteNormalStrength = std::clamp( params.spriteNormalStrength, 0.0f, 4.0f );
+        gu->worldPbr             = std::clamp( params.worldPbr, 0.0f, 1.0f );
+        gu->metallicRoughCut  = std::clamp( params.metallicRoughCut, 0.0f, 1.0f );
+        gu->metallicRoughBand = std::clamp( params.metallicRoughBand, 0.0f, 1.0f );
         gu->parallaxMaxDepth       = std::max( params.heightMapDepth, 0.0f );
+    }
+
+    // Dev Materials A/B — also force uniforms even if Override did not rewrite draw params.
+    // Flags: bit0=N, bit1=emis, bit2=metallic, bit3=H, bit4=roughness
+    {
+        uint32_t stripFlags = 0;
+        if( devmode && devmode->materialStripNormals )
+        {
+            stripFlags |= 1u;
+            gu->normalMapStrength = 0.0f;
+        }
+        if( devmode && devmode->materialStripEmissives )
+        {
+            stripFlags |= 2u;
+            gu->emissionMapBoost       = 0.0f;
+            gu->emissionMaxScreenColor = 0.0f;
+        }
+        if( devmode && devmode->materialStripMetallic )
+        {
+            stripFlags |= 4u;
+        }
+        // Doom64-RT: the same strip, but requested by the application rather than
+        // by the Dev window, so gzdoom can put it behind a cvar (rt_metallic 0).
+        if( pnext::get< RgDrawFrameTexturesParams >( drawInfo ).forceNonMetallic )
+        {
+            stripFlags |= 4u;
+        }
+        if( devmode && devmode->materialStripHeight )
+        {
+            stripFlags |= 8u;
+            gu->parallaxMaxDepth = 0.0f;
+        }
+        if( devmode && devmode->materialStripRoughness )
+        {
+            stripFlags |= 16u;
+        }
+        gu->materialStripFlags = stripFlags;
+
+        gu->materialRoughnessTowardMatte =
+            ( devmode ? std::clamp( devmode->roughnessTowardMatte, 0.0f, 1.0f ) : 0.0f );
     }
 
     {
@@ -404,7 +470,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
         gu->maxBounceShadowsLights     = params.maxBounceShadows;
         gu->polyLightSpotlightFactor   = std::max( 0.0f, params.polygonalLightSpotlightFactor );
-        gu->indirSecondBounce          = !!params.enableSecondBounceForIndirect;
+        // [1,4], not the API's advertised 8: emissionMapBoost runs at 200 in
+        // this game and emis * 200 * albedo^k compounding over depth is a
+        // firefly risk. Widen after measurement, not before.
+        gu->indirectBounces      = std::clamp( params.indirectBounces, 1u, 4u );
+        gu->indirectLegacyWeight = !!params.indirectLegacyBounceWeight;
         gu->lightIndexIgnoreFPVShadows = lightManager->GetLightIndexForShaders(
             currentFrameState.GetFrameIndex(), params.lightUniqueIdIgnoreFirstPersonViewerShadows );
         gu->cellWorldSize       = std::max( params.cellWorldSize, 0.001f );
@@ -455,6 +525,65 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
             params.waterTextureAreaScale < 0.0001f ? 1.0f : params.waterTextureAreaScale;
 
         gu->twirlPortalNormal = !!params.portalNormalTwirl;
+
+        // Doom64-RT: stylized water
+        gu->stylizedWaterStrength  = std::max( 0.0f, params.stylizedWaterStrength );
+        gu->stylizedWaterCaustic   = std::max( 0.0f, params.stylizedWaterCaustic );
+        gu->stylizedWaterReflMax   = std::clamp( params.stylizedWaterReflMax, 0.0f, 1.0f );
+        gu->stylizedWaterRoughness = std::clamp( params.stylizedWaterRoughness, 0.0f, 1.0f );
+        gu->stylizedWaterGlow      = std::max( 0.0f, params.stylizedWaterGlow );
+        gu->stylizedWaterVeinRef   = std::max( 0.0001f, params.stylizedWaterVeinRef );
+        // vec4 in std140: copy the 3 colour floats, zero the pad.
+        for( int i = 0; i < 4; i++ )
+        {
+            memcpy( &gu->stylizedLiquidTint[ i * 4 ],
+                    params.stylizedLiquidTint[ i ].data,
+                    3 * sizeof( float ) );
+            gu->stylizedLiquidTint[ i * 4 + 3 ] = 0.0f;
+
+            memcpy( &gu->stylizedLiquidCrest[ i * 4 ],
+                    params.stylizedLiquidCrest[ i ].data,
+                    3 * sizeof( float ) );
+            gu->stylizedLiquidCrest[ i * 4 + 3 ] = 0.0f;
+
+            // These two are ONE vec4 each, holding a scalar per liquid -- not
+            // four vec4s. Indexed in the shader as stylizedLiquidRelief[id].
+            gu->stylizedLiquidRelief[ i ] =
+                std::clamp( params.stylizedLiquidRelief[ i ], 0.0f, 1.0f );
+            gu->stylizedLiquidFlow[ i ] = std::max( 0.0f, params.stylizedLiquidFlow[ i ] );
+            gu->stylizedLiquidCaustics[ i ] =
+                std::max( 0.0f, params.stylizedLiquidCaustics[ i ] );
+            gu->stylizedLiquidRefl[ i ] = std::max( 0.0f, params.stylizedLiquidRefl[ i ] );
+            // NOT clamped up from 0: <= 0 is the "use the global" sentinel.
+            gu->stylizedLiquidRough[ i ] =
+                std::min( params.stylizedLiquidRough[ i ], 1.0f );
+        }
+        gu->liquidNoSplit   = params.liquidNoSplit != 0.0f ? 1.0f : 0.0f;
+        gu->liquidFlowSpeed = params.liquidFlowSpeed;
+        gu->liquidFlowScale  = std::max( 0.01f, params.liquidFlowScale );
+        gu->liquidFlowAspect = std::max( 0.1f, params.liquidFlowAspect );
+        gu->liquidFlowDebug = params.liquidFlowDebug;
+        gu->lavaEmisBoost          = std::max( 0.0f, params.lavaEmisBoost );
+        gu->lavaFlowStrength       = std::clamp( params.lavaFlowStrength, 0.0f, 1.0f );
+        gu->lavaFlowSpeed          = params.lavaFlowSpeed;
+        gu->lavaFlowScale          = std::max( 0.0f, params.lavaFlowScale );
+        gu->lavaFlowPixel          = std::max( 0.0f, params.lavaFlowPixel );
+        gu->lavaPulse              = std::clamp( params.lavaPulse, 0.0f, 1.0f );
+        gu->lavaPulseSpeed         = params.lavaPulseSpeed;
+        gu->lavaGiBoost            = std::max( 0.0f, params.lavaGiBoost );
+        gu->lavaDebug              = std::max( 0.0f, params.lavaDebug );
+
+        memcpy( gu->lavaTint, params.lavaTint.data, 3 * sizeof( float ) );
+        gu->lavaTint[ 3 ] = 0.0f;
+        gu->stylizedWaterDebug     = std::max( 0.0f, params.stylizedWaterDebug );
+        gu->stylizedWaterReflMin   = std::clamp( params.stylizedWaterReflMin, 0.0f, 1.0f );
+        gu->waterCausticGain       = std::max( 0.0f, params.waterCausticGain );
+        gu->waterCausticScale      = std::max( 0.0f, params.waterCausticScale );
+        gu->waterCausticSpeed      = params.waterCausticSpeed;
+        gu->waterCausticDist       = std::max( 0.0f, params.waterCausticDist );
+        gu->waterCausticRise       = std::max( 0.0f, params.waterCausticRise );
+        gu->waterCausticSlant      = std::max( 0.0f, params.waterCausticSlant );
+        gu->waterCausticWallBoost  = std::max( 0.0f, params.waterCausticWallBoost );
     }
 
     gu->rayCullBackFaces  = rayCullBackFacingTriangles ? 1 : 0;
@@ -468,7 +597,11 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         // skip shadows for:
         // WORLD_1 - 'no shadows' geometry
         // WORLD_2 - 'sky' geometry
-        gu->rayCullMaskWorld_Shadow = INSTANCE_MASK_WORLD_0;
+        //
+        // Doom64-RT: RESERVED_0 is 'shadow only' -- geometry that exists ONLY
+        // here. It is absent from rayCullMaskWorld above, so no other ray can
+        // see it; this line is the single place it is switched on.
+        gu->rayCullMaskWorld_Shadow = INSTANCE_MASK_WORLD_0 | INSTANCE_MASK_RESERVED_0;
     }
 
     gu->waterNormalTextureIndex = textureManager->GetWaterNormalTextureIndex();
@@ -537,6 +670,98 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
 
             gu->volumeLightMult = std::max( 0.0f, params.lightMultiplier );
 
+            // Doom64-RT: illuminated fog. The all-lights froxel estimate lives
+            // in the ILLUMINATION_VOLUME branch of RtVolumetric.rgen, so it is
+            // only available when RTGL was built with that on.
+#if ILLUMINATION_VOLUME
+            gu->volumeAllLights = params.illuminateFromAllLights;
+#else
+            gu->volumeAllLights = 0;
+#endif
+            RG_SET_VEC3_A( gu->volumeMediaColor, params.mediaColor.data );
+            RG_MAX_VEC3( gu->volumeMediaColor, 0.0f );
+            RG_SET_VEC3_A( gu->volumeMediaColorFar, params.mediaColorFar.data );
+            RG_MAX_VEC3( gu->volumeMediaColorFar, 0.0f );
+            // Negative farScattering means "uniform": the caller did not ask for
+            // a ramp, so the far end is the near end. Cheaper to answer here
+            // than to make every caller restate the density twice.
+            gu->volumeScatteringFar =
+                params.farScattering < 0.0f ? gu->volumeScattering : params.farScattering;
+            gu->volumeDensityCurve   = std::max( 0.01f, params.densityCurve );
+            gu->volumeLightNearFade  = std::max( 0.0f, params.lightNearFade );
+            gu->volumeSpatialBlur    = std::clamp( params.spatialBlur, 0.0f, 1.0f );
+            gu->volumeDither         = std::max( 0.0f, params.ditherRadius );
+            gu->volumeDitherZ        = std::max( 0.0f, params.ditherRadiusZ );
+            gu->volumeOccludeEmis    = params.occludeEmission;
+
+            // Doom64-RT: the froxel depth gate. See volume_depthGate() in
+            // RtVolumetric.rgen -- this stops the volume lighting air the camera
+            // cannot see, which is what the trilinear read of a prefix sum
+            // otherwise smears through every wall.
+            gu->volumeDepthGate     = params.depthGate > 0.5f ? 1.0f : 0.0f;
+            gu->volumeDepthGateBias = params.depthGateBias;
+            // Clamped ABOVE zero: a feather of exactly 0 is a hard binary cut
+            // and paints the froxel grid onto every surface, which is the
+            // artefact this feature is supposed to remove rather than draw.
+            gu->volumeDepthGateFeather = std::max( 0.01f, params.depthGateFeather );
+            // 1 or 5, nothing between: the shader's tap array is fixed-size and
+            // a value it does not recognise must not silently mean "centre
+            // only", which would look like the gate being too aggressive.
+            gu->volumeDepthGateTaps = params.depthGateTaps >= 5 ? 5u : 1u;
+
+            // Doom64-RT: the upscaler bias mask (CmPrepareFinal writes it into
+            // FB_IMAGE_INDEX_REACTIVITY, DLSS2/FSR2 hand it to the upscaler).
+            // Clamped to 0..1 because both APIs read the mask as an alpha and a
+            // value outside that range is undefined rather than merely strong.
+            gu->volumeUpscaleBias      = std::clamp( params.volumeUpscaleBias, 0.0f, 1.0f );
+            // Clamped ABOVE zero: this is a divisor in the shader, and an edge
+            // scale of 0 would mark every pixel with any transmittance gradient
+            // at all -- i.e. the whole veil, which is the noisy arm.
+            gu->volumeUpscaleBiasEdge  = std::max( 0.001f, params.volumeUpscaleBiasEdge );
+            gu->volumeUpscaleBiasFloor = std::clamp( params.volumeUpscaleBiasFloor, 0.0f, 1.0f );
+            gu->volumeUpscaleBiasDebug = params.volumeUpscaleBiasDebug ? 1u : 0u;
+
+            // Doom64-RT: post-upscale composite, GATED HOST-SIDE.
+            //
+            // Two paths must keep the old ordering or they break rather than
+            // improve:
+            //
+            //   DLSS RAY RECONSTRUCTION denoises from the composed radiance --
+            //   handing it a frame with no medium in it changes what it is
+            //   denoising, not just when the veil lands.
+            //
+            //   FRAME GENERATION interpolates frames inside its own technique,
+            //   after this. Only the real frames would come through this pass,
+            //   so every generated frame would be missing its fog and the whole
+            //   image would strobe at half the frame rate.
+            //
+            // The gate is here rather than in the shader so the flag the shader
+            // reads and the pass the device runs cannot disagree.
+            const bool postCompOk = !renderResolution.IsNvDlssRayReconstructionEnabled() &&
+                                    !swapchain->WithDLSS3FrameGeneration() &&
+                                    !swapchain->WithFSR3FrameGeneration();
+
+            gu->volumePostComp = ( params.volumePostComp && postCompOk ) ? 1u : 0u;
+            gu->volumeEdgeSoft = std::max( 0.0f, params.volumeEdgeSoft );
+            // Clamped above zero: this is the upper end of a smoothstep whose
+            // lower end is half of it, and a threshold of 0 would mark every
+            // pixel in the frame as a silhouette.
+            gu->volumeEdgeSoftEdge = std::max( 0.001f, params.volumeEdgeSoftEdge );
+            gu->volumeFp           = std::clamp( params.volumeFp, 0.0f, 2.0f );
+            gu->volumeReproj       = params.volumeReproj ? 1u : 0u;
+            gu->volumeSpriteShadow = params.volumeSpriteShadow ? 1u : 0u;
+            gu->volumeGridHistory  = std::clamp( params.volumeGridHistory, 0.0f, 64.0f );
+            // Doom64-RT: rrGlowPre took the volumeReserved3 spare. Only read by
+            // the shaders when rrPreExposure is active, so the raw request is
+            // fine here (no host gate needed). 0=post-add, 1=/exposure,
+            // 2=fixed rrGlowScale ("glow as light").
+            {
+                const auto& illumGlow =
+                    pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+                gu->rrGlowPre   = std::min( illumGlow.rrGlowPre, 2u );
+                gu->rrGlowScale = std::max( illumGlow.rrGlowScale, 0.0f );
+            }
+
             gu->volumeAllowTintUnderwater = params.allowTintUnderwater;
             RG_SET_VEC3_A( gu->volumeUnderwaterColor, params.underwaterColor.data );
             RG_MAX_VEC3( gu->volumeUnderwaterColor, 0.0f );
@@ -559,7 +784,443 @@ void RTGL1::VulkanDevice::FillUniform( RTGL1::ShGlobalUniform* gu,
         }
     }
 
+    // Doom64-RT: LOCALISED SMOKE. A separate block after the volumetric one, and
+    // a separate pNext struct, so a frame that never links it -- which is every
+    // frame on every map until someone fires a gun -- lands on puffCount 0 and
+    // the froxel shader collapses back to the fog's arithmetic exactly.
+    {
+        const auto& params = pnext::get< RgDrawFrameSmokeParams >( drawInfo );
+
+        const uint32_t count = params.pPuffs && params.pAlbedoDensity
+                                   ? std::min( params.puffCount,
+                                               uint32_t{ SMOKE_PUFF_MAX } )
+                                   : 0u;
+
+        gu->smokeCount = count;
+
+        for( uint32_t i = 0; i < count; i++ )
+        {
+            // xyz = centre in metres, w = radius. A radius of 0 would divide by
+            // zero in smoke_evalAt; the shader guards it, but drop it here too
+            // so a bad puff costs nothing rather than costing a branch per cell.
+            RG_SET_VEC3_A( &gu->smokePuffs[ i * 4 ], params.pPuffs[ i ].data );
+            gu->smokePuffs[ i * 4 + 3 ] = std::max( 0.0f, params.pPuffs[ i ].data[ 3 ] );
+
+            RG_SET_VEC3_A( &gu->smokeAlbedoDensity[ i * 4 ], params.pAlbedoDensity[ i ].data );
+            RG_MAX_VEC3( &gu->smokeAlbedoDensity[ i * 4 ], 0.0f );
+            gu->smokeAlbedoDensity[ i * 4 + 3 ] =
+                std::max( 0.0f, params.pAlbedoDensity[ i ].data[ 3 ] );
+
+            // Across-view radius. Falls back to the along-view one, which makes
+            // the puff a sphere and is what every caller that does not set
+            // pShape gets.
+            gu->smokeShape[ i * 4 ] =
+                params.pShape ? std::max( 0.001f, params.pShape[ i ].data[ 0 ] )
+                              : std::max( 0.001f, params.pPuffs[ i ].data[ 3 ] );
+        }
+        // Doom64-RT: proves the pNext link and the uniform copy, which is the one
+        // step the engine-side log cannot see. If stage C says "sent" and this
+        // never prints, the struct is not reaching the library.
+        //
+        // AFTER the writes, deliberately. Placed before them it read the
+        // PREVIOUS frame's uniform and reported puff0 as all zeros on the first
+        // line -- an artifact of the instrumentation that looked exactly like
+        // the bug it was meant to find.
+        {
+            // GATED ON params.debugMode, which is rt_smoke_debug. It was not, and
+            // that made these three unstoppable: the only condition was "smoke
+            // exists", so the normal launcher printed D/received and E/space every
+            // 60 frames for the whole game and rt_smoke_debug 0 did nothing about
+            // it -- the cvar the player would reach for lives in the engine, and
+            // this instrumentation is in the library. Reported from play.
+            //
+            // The F/layout canary below is gated too. It is one-shot and genuinely
+            // useful (it catches the stale-.obj trap), but a one-shot line nobody
+            // asked for is still a line nobody asked for, and build-rtgl.cmd now
+            // clears objects anyway.
+            static uint32_t s_dbg = 0;
+            if( params.debugMode > 0 && count > 0 && ( s_dbg++ % 60 ) == 0 )
+            {
+                debug::Warning( "rt_smoke D/received: count={} puff0=({:.2f},{:.2f},{:.2f}) "
+                                "r={:.2f} density={:.1f} allLights={} nearFade={:.2f} "
+                                "blend={:.2f} | volumeNear={:.2f} volumeFar={:.2f} "
+                                "enableType={} scattering={:.3f} || UNIFORM: count={} "
+                                "debug={} allLights={} puff0=({:.2f},{:.2f},{:.2f},{:.2f}) "
+                                "albden0=({:.2f},{:.2f},{:.2f},{:.1f})",
+                                count,
+                                params.pPuffs[ 0 ].data[ 0 ],
+                                params.pPuffs[ 0 ].data[ 1 ],
+                                params.pPuffs[ 0 ].data[ 2 ],
+                                params.pPuffs[ 0 ].data[ 3 ],
+                                params.pAlbedoDensity[ 0 ].data[ 3 ],
+                                params.allLights,
+                                params.lightNearFade,
+                                params.illumBlend,
+                                gu->volumeCameraNear,
+                                gu->volumeCameraFar,
+                                gu->volumeEnableType,
+                                gu->volumeScattering,
+                                gu->smokeCount,
+                                gu->smokeDebug,
+                                gu->smokeAllLights,
+                                gu->smokePuffs[ 0 ],
+                                gu->smokePuffs[ 1 ],
+                                gu->smokePuffs[ 2 ],
+                                gu->smokePuffs[ 3 ],
+                                gu->smokeAlbedoDensity[ 0 ],
+                                gu->smokeAlbedoDensity[ 1 ],
+                                gu->smokeAlbedoDensity[ 2 ],
+                                gu->smokeAlbedoDensity[ 3 ] );
+
+                // The froxel centres are built around gu->cameraPosition, which
+                // comes from the INVERSE VIEW MATRIX -- not from
+                // RgCameraInfo::position. If those two spaces differ, a puff in
+                // engine metres can never be within a radius of any centre, and
+                // the sphere test fails while every other read succeeds. That is
+                // exactly the symptom: probe 3 green, probe 2 blank.
+                const float dx = gu->smokePuffs[ 0 ] - gu->cameraPosition[ 0 ];
+                const float dy = gu->smokePuffs[ 1 ] - gu->cameraPosition[ 1 ];
+                const float dz = gu->smokePuffs[ 2 ] - gu->cameraPosition[ 2 ];
+                // ONE-SHOT. This is the canary for the stale-object trap: if a
+                // .obj keeps an older struct layout, these offsets stop matching
+                // the SPIR-V ones quoted beside them and every field past the old
+                // size silently reads zero. See tools/build-rtgl.cmd.
+                static bool s_layoutLogged = false;
+                if( !s_layoutLogged )
+                {
+                    s_layoutLogged = true;
+                debug::Warning( "rt_smoke F/layout: sizeof(ShGlobalUniform)={} "
+                                "offsetof smokeCount={} smokeDebug={} smokePuffs={} "
+                                "smokeAlbedoDensity={}  (SPIR-V says 1520 / 1536 / 1552 / 2064)",
+                                sizeof( ShGlobalUniform ),
+                                offsetof( ShGlobalUniform, smokeCount ),
+                                offsetof( ShGlobalUniform, smokeDebug ),
+                                offsetof( ShGlobalUniform, smokePuffs ),
+                                offsetof( ShGlobalUniform, smokeAlbedoDensity ) );
+                }
+
+                debug::Warning( "rt_smoke E/space: cameraPosition=({:.2f},{:.2f},{:.2f}) "
+                                "puff0=({:.2f},{:.2f},{:.2f}) "
+                                "|puff-camPos|={:.2f}m  (should match the engine's dist)",
+                                gu->cameraPosition[ 0 ],
+                                gu->cameraPosition[ 1 ],
+                                gu->cameraPosition[ 2 ],
+                                gu->smokePuffs[ 0 ],
+                                gu->smokePuffs[ 1 ],
+                                gu->smokePuffs[ 2 ],
+                                std::sqrt( dx * dx + dy * dy + dz * dz ) );
+            }
+        }
+
+        // Only meaningful inside a puff -- RtVolumetric.rgen picks between these
+        // and the fog's values PER FROXEL, so writing them costs a fog frame
+        // nothing.
+        gu->smokeLightNearFade = std::max( 0.0f, params.lightNearFade );
+        gu->smokeIllumBlend    = std::clamp( params.illumBlend, 0.0f, 1.0f );
+#if ILLUMINATION_VOLUME
+        gu->smokeAllLights = count > 0 ? params.allLights : 0;
+#else
+        gu->smokeAllLights = 0;
+#endif
+        gu->smokeDebug        = params.debugMode;
+        gu->smokeLightFarFade = std::max( 0.0f, params.lightFarFade );
+        gu->smokeMaxLight     = std::max( 0.0f, params.maxLight );
+        gu->smokeSpp          = std::clamp( params.samplesPerCell, 1u, 32u );
+
+        gu->smokeStylize      = std::clamp( params.stylize, 0.0f, 1.0f );
+        gu->smokeStylizeSteps = std::clamp( params.stylizeSteps, 1u, 64u );
+        gu->smokeStylizeGrid  = std::max( 0.0f, params.stylizeGrid );
+        gu->smokeAmbient      = std::max( 0.0f, params.selfAmbient );
+        gu->smokeTintBias     = std::clamp( params.tintBias, 0.0f, 1.0f );
+        gu->smokeAbsorb       = std::max( 0.0f, params.absorb );
+    }
+
+    // Doom64-RT: LIGHT SHAFTS FROM ORDINARY LAMPS. See
+    // RgDrawFrameLightShaftParams -- the froxel pass scatters exactly one light
+    // (the sun), so beams only ever happen outdoors. This turns a short caller-
+    // supplied list of uniqueIDs into shader light indices; RtVolumetric.rgen
+    // adds their scattering on top of the single-light term.
+    //
+    // AFTER the smoke block on purpose, for the same reason smoke is after the
+    // volumetric one: a frame that never links the struct lands on count 0 and
+    // the volume behaves exactly as it did.
+    {
+        const auto& params = pnext::get< RgDrawFrameLightShaftParams >( drawInfo );
+
+        const uint32_t wanted =
+            params.pLightUniqueIds
+                ? std::min( params.count, uint32_t{ VOLUME_SHAFT_LIGHT_MAX } )
+                : 0u;
+
+        // Resolved COMPACTLY, not in place. A fixture the caller listed may have
+        // been culled before its light was uploaded -- the lamp walks run before
+        // the frame's own budget is known -- and leaving a LIGHT_INDEX_NONE hole
+        // in the middle of the array would spend the shader's nearest-first
+        // budget on nothing. The list arrives sorted by distance, so dropping
+        // the misses keeps that order.
+        uint32_t resolved = 0;
+        for( uint32_t i = 0; i < wanted; i++ )
+        {
+            const uint64_t id  = params.pLightUniqueIds[ i ];
+            const uint32_t idx = lightManager->GetLightIndexForShaders(
+                currentFrameState.GetFrameIndex(), &id );
+
+            if( idx != LIGHT_INDEX_NONE )
+            {
+                gu->volumeShaftLights[ resolved++ ] = idx;
+            }
+        }
+
+        for( uint32_t i = resolved; i < uint32_t{ VOLUME_SHAFT_LIGHT_MAX }; i++ )
+        {
+            gu->volumeShaftLights[ i ] = LIGHT_INDEX_NONE;
+        }
+
+        gu->volumeShaftCount       = resolved;
+        gu->volumeShaftMult        = std::max( 0.0f, params.multiplier );
+        gu->volumeShaftNearFade    = std::max( 0.0f, params.nearFade );
+        gu->volumeShaftMinRadiance = std::max( 0.0f, params.minRadiance );
+        // At least one, or a non-empty list would be walked and never traced --
+        // a silent "the cvar does nothing" of exactly the kind this project has
+        // paid for before. Clamped to the list size for the same reason.
+        gu->volumeShaftMaxTraced =
+            std::clamp( params.maxTraced, 1u, uint32_t{ VOLUME_SHAFT_LIGHT_MAX } );
+        // Below -1 means "share the volume's". Resolved HERE rather than in the
+        // shader so the two cannot drift, and so the sentinel never reaches a
+        // phase function that would take k out of range.
+        gu->volumeShaftAsym  = params.asymmetry < -1.0f
+                                   ? gu->volumeAsymmetry
+                                   : std::clamp( params.asymmetry, -1.0f, 1.0f );
+        gu->volumeShaftDebug = std::min( params.debugMode, 3u );
+        // Clamped at 2: that is already "no falloff at all", and past it a lamp
+        // would get BRIGHTER with distance, which is not a look, it is a bug
+        // waiting to be reported as one.
+        gu->volumeShaftFalloff = std::clamp( params.falloffCompensation, 0.0f, 2.0f );
+        gu->volumeShaftRelCull = std::clamp( params.relativeCull, 0.0f, 1.0f );
+    }
+
+    // Doom64-RT: VOLUMETRIC CLOUDS. See RgDrawFrameVolumetricCloudParams and
+    // Shaders/Clouds.h for the packing. A frame that never links the struct
+    // lands on enabled=0, and then nothing here is read by any shader.
+    {
+        const auto& p = pnext::get< RgDrawFrameVolumetricCloudParams >( drawInfo );
+
+        const bool on = p.enabled && p.thickness > 0.0f && p.density > 0.0f;
+
+        gu->cloudParams0[ 0 ] = on ? 1.0f : 0.0f;
+        gu->cloudParams0[ 1 ] = std::max( p.altitude, 1.0f );
+        gu->cloudParams0[ 2 ] = std::max( p.thickness, 1.0f );
+        gu->cloudParams0[ 3 ] = std::clamp( p.coverage, 0.0f, 1.0f );
+
+        gu->cloudParams1[ 0 ] = std::max( p.density, 0.0f );
+        gu->cloudParams1[ 1 ] = 1.0f / std::max( p.featureSize, 1.0f );
+        gu->cloudParams1[ 2 ] = std::clamp( p.detail, 0.0f, 1.0f );
+        gu->cloudParams1[ 3 ] = p.time;
+
+        gu->cloudParams2[ 0 ] = float( std::clamp( p.steps, 4u, 128u ) );
+        gu->cloudParams2[ 1 ] = float( std::clamp( p.lightSteps, 1u, 16u ) );
+        gu->cloudParams2[ 2 ] = std::max( p.horizonFade, 0.01f );
+        gu->cloudParams2[ 3 ] = std::clamp( p.historyBlend, 0.0f, 0.97f );
+
+        gu->cloudParams3[ 0 ] = std::clamp( p.transmitFloor, 0.0f, 1.0f );
+        gu->cloudParams3[ 1 ] = std::clamp( p.asymmetry, -0.95f, 0.95f );
+        gu->cloudParams3[ 2 ] = float( std::min( p.debugMode, 3u ) );
+        gu->cloudParams3[ 3 ] = p.wind.data[ 0 ];
+
+        gu->cloudTint[ 0 ] = std::max( p.tint.data[ 0 ], 0.0f );
+        gu->cloudTint[ 1 ] = std::max( p.tint.data[ 1 ], 0.0f );
+        gu->cloudTint[ 2 ] = std::max( p.tint.data[ 2 ], 0.0f );
+        gu->cloudTint[ 3 ] = p.wind.data[ 1 ];
+
+        // Normalised here, once; a zero vector becomes "straight up" rather
+        // than NaN in every texel.
+        {
+            float d[ 3 ] = { p.lightDir.data[ 0 ], p.lightDir.data[ 1 ], p.lightDir.data[ 2 ] };
+            float len    = std::sqrt( d[ 0 ] * d[ 0 ] + d[ 1 ] * d[ 1 ] + d[ 2 ] * d[ 2 ] );
+            if( len < 1e-6f )
+            {
+                d[ 0 ] = 0.0f;
+                d[ 1 ] = 1.0f;
+                d[ 2 ] = 0.0f;
+                len    = 1.0f;
+            }
+            gu->cloudLightDir[ 0 ] = d[ 0 ] / len;
+            gu->cloudLightDir[ 1 ] = d[ 1 ] / len;
+            gu->cloudLightDir[ 2 ] = d[ 2 ] / len;
+            gu->cloudLightDir[ 3 ] = std::max( p.underStrength, 0.0f );
+        }
+
+        for( int c = 0; c < 3; c++ )
+        {
+            gu->cloudLightColor[ c ] = std::max( p.lightColor.data[ c ], 0.0f );
+            gu->cloudUnderColor[ c ] = std::max( p.underColor.data[ c ], 0.0f );
+            gu->cloudAmbient[ c ]    = std::max( p.ambient.data[ c ], 0.0f );
+        }
+        // The spare .w lanes carry the directional-light occlusion (Light.h):
+        // lightColor.w = transmit of an opaque column, underColor.w = on/off,
+        // ambient.w = how much of the occlusion to apply.
+        gu->cloudLightColor[ 3 ] = std::clamp( p.lightTransmit, 0.0f, 1.0f );
+        gu->cloudUnderColor[ 3 ] = ( on && p.sunOcclusion ) ? 1.0f : 0.0f;
+        gu->cloudAmbient[ 3 ]    = std::clamp( p.lightOcclude, 0.0f, 1.0f );
+        for( int c = 0; c < 3; c++ )
+        {
+            gu->cloudBackColor[ c ] = std::max( p.backColor.data[ c ], 0.0f );
+        }
+        gu->cloudBackColor[ 3 ] = std::max( p.backStrength, 0.0f );
+        gu->cloudFireParams[ 0 ] = std::max( p.fireStrength, 0.0f );
+        gu->cloudFireParams[ 1 ] = 1.0f / std::max( p.fireScale, 1.0f );
+        gu->cloudFireParams[ 2 ] = 1.0f - std::clamp( p.fireCover, 0.0f, 1.0f );
+        gu->cloudFireParams[ 3 ] = std::max( p.fireLit, 0.0f );
+        gu->cloudLayerParams[ 0 ] = p.layers >= 2 ? 2.0f : 1.0f;
+        gu->cloudLayerParams[ 1 ] = std::clamp( p.gapFraction, 0.02f, 0.8f );
+        gu->cloudLayerParams[ 2 ] = std::max( p.sheetExtinction, 0.0f );
+        gu->cloudLayerParams[ 3 ] = 0.0f;
+        gu->cloudFireAnim[ 0 ] = std::clamp( p.firePulse, 0.0f, 1.0f );
+        gu->cloudFireAnim[ 1 ] = std::max( p.firePulseSpeed, 0.0f );
+        gu->cloudFireAnim[ 2 ] = std::clamp( p.fireFlicker, 0.0f, 1.0f );
+        gu->cloudFireAnim[ 3 ] = 1.0f / std::max( p.cascadeWidth, 1.0f );
+        gu->cloudCascade[ 0 ]  = std::max( p.cascadeStrength, 0.0f );
+        gu->cloudCascade[ 1 ]  = 1.0f / std::max( p.cascadeLength, 1.0f );
+        gu->cloudCascade[ 2 ]  = 1.0f - std::clamp( p.cascadeCover, 0.0f, 1.0f );
+        gu->cloudCascade[ 3 ]  = p.cascadeSpeed;
+    }
+
     gu->antiFireflyEnabled = devmode ? devmode->antiFirefly : true;
+
+    {
+        const auto& illum = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+
+        gu->rrDisoccEnable   = !!illum.enableRrDisocclusionMask;
+        gu->rrDisoccRatio    = std::max( illum.rrDisocclusionThreshold, 1.0f );
+        gu->rrDisoccMinDelta = std::max( illum.rrDisocclusionMinDelta, 0.0f );
+        gu->rrDisoccShowMask = !!illum.rrDisocclusionShowMask;
+
+        gu->rrFireflyThreshold = std::max( illum.rrFireflyThreshold, 0.0f );
+        gu->rrFireflyMinLum    = std::max( illum.rrFireflyMinLum, 0.0f );
+        gu->restirBlueNoise    = !!illum.restirBlueNoise;
+        gu->shadowSamples      = std::clamp( illum.shadowSamples, 1u, 8u );
+        // 1 = direct reservoir M, 2 = indirect reservoir M. Not a bool.
+        gu->debugRestirM       = std::min( illum.debugRestirM, 2u );
+        gu->debugVisibility    = std::min( illum.debugVisibility, 2u );
+
+        // Doom64-RT: make debugVisibility 1 self-sufficient, because it was NOT, and that
+        // silently invalidated two investigations.
+        //
+        // RtRaygenDirect.rgen writes the visibility term into the UNFILTERED DIRECT
+        // buffer -- the direct DIFFUSE channel and nothing else. The normal composition
+        // then adds indirect, emission and specular on top and modulates by albedo, so in
+        // any room whose light is mostly emissive GI the debug view comes out looking like
+        // the ordinary image with a few lights dimmed. It cannot show a shadow it did find,
+        // let alone prove one absent.
+        //
+        // That is exactly the room this was being used in: under a Doom 64 lamp pane the
+        // painted glow carries ~84% of the floor's light (rt_ceiling_bulb_emis, measured on
+        // MAP94), all of it shadowless. "rt_debug_visibility says nothing casts a shadow
+        // from the bulb bands" was read off this view on 2026-08-08 and treated as fact for
+        // six days; it was never evidence either way.
+        //
+        // The fix is not a new view -- DEBUG_SHOW_FLAG_UNFILTERED_DIFFUSE already shows that
+        // buffer raw, bypassing the denoiser, and the cvar descriptions already tell you to
+        // pair the two by hand in the Dev window. An instrument whose answer depends on
+        // remembering to tick a box elsewhere is a trap, so mode 1 now turns it on itself.
+        // Mode 2 deliberately does not: it is *meant* to be read against normal shading, to
+        // locate an umbra against the geometry casting it.
+        if( gu->debugVisibility == 1 )
+        {
+            gu->debugShowFlags |= DEBUG_SHOW_FLAG_UNFILTERED_DIFFUSE;
+        }
+        gu->debugShowFlags |= illum.debugShowFlags;
+        gu->restirTemporalJitter = std::clamp( illum.restirTemporalJitter, 0.0f, 8.0f );
+        gu->rrSpecHitDist      = !!illum.rrSpecularHitDistance;
+
+        // Doom64-RT: DLSS-RR pre-exposure reorder. HOST-GATED to frames where
+        // the RR branch will actually run -- the exact condition guarding
+        // nvDlssRr->Apply. This gate is load-bearing: if the flag were set on a
+        // frame that silently fell back to DLSS2/FSR2 (null RR object, RR
+        // rejected), CmPrepareFinal would skip the EV100 multiply and NOTHING
+        // downstream would apply it -- a zero-exposure frame. The call site of
+        // the post pass reads this same uniform, so shader and pass can never
+        // disagree (the volumePostComp pattern).
+        gu->rrPreExposure = ( illum.rrPreExposure && //
+                              renderResolution.IsNvDlssRayReconstructionEnabled() &&
+                              nvDlssRr != nullptr )
+                                ? 1u
+                                : 0u;
+        gu->rrPreExpDebug = !!illum.rrPreExposureDebug;
+
+        // NRD lane: validation overlay switch. (nrdReserved0 became
+        // rrGlowScale, assigned with rrGlowPre above; nrdReserved1/2 became
+        // the demodulation pair below.)
+        gu->nrdValidation = !!illum.nrdValidation;
+        gu->rrDemod       = !!illum.rrDemod;
+        gu->rrDemodFilter = std::min( illum.rrDemodFilter, 2u );
+        gu->svgfFp        = std::min( illum.svgfFp, 2u );
+        gu->svgfFpGrad    = !!illum.svgfFpGrad;
+        gu->svgfIndirMaxHist = std::clamp( illum.svgfIndirMaxHist, 0.0f, 256.0f );
+        gu->svgfIndirAntilag = !!illum.svgfIndirAntilag;
+
+        gu->directSamples         = std::clamp( illum.directSamples, 1u, 8u );
+        gu->indirectSamples       = std::clamp( illum.indirectSamples, 1u, 8u );
+        // 32 -> 64 (2026-08-17): pure loop bound in calcInitialReservoir, no
+        // rays traced, no fixed-size arrays -- and scenes dense with small
+        // emitters (the stripe-bulb rooms) genuinely need more candidates to
+        // sample their light set without per-tile luminance noise.
+        gu->restirInitialSamples  = std::clamp( illum.restirInitialSamples, 1u, 64u );
+        gu->restirSpatialSamples  = std::clamp( illum.restirSpatialSamples, 0u, 16u );
+        gu->restirSpatialRadius   = std::clamp( illum.restirSpatialRadius, 1.0f, 64.0f );
+        gu->restirTemporalMCap    = std::clamp( illum.restirTemporalMCap, 1u, 64u );
+        gu->rrGuideMin            = std::clamp( illum.rrGuideMin, 0.0f, 1.0f );
+        gu->rrGuideMode           = std::clamp( illum.rrGuideMode, 0u, 2u );
+        // The indirect antilag gate reads framebufDISGradientHistory, written
+        // ONLY inside Denoiser::Denoise() (A-SVGF). On RR and NRD frames that
+        // pass never runs, so the gate samples an UNINITIALIZED or stale
+        // buffer -- and any garbage alpha > 0.25 rejects the indirect
+        // temporal tap, silently pinning GI at raw 1 spp with no ReSTIR
+        // accumulation. That was the long-suspected "either a dead no-op or
+        // it rejects GI reuse every frame" (GenerateShaderCommon.py), settled
+        // 2026-08-17 by the user's report of indirect-only noise under RR.
+        // HOST-GATED to frames where A-SVGF actually runs. (If an NRD
+        // bring-up fails and the frame falls back to A-SVGF, the gate is off
+        // for that session -- antilag off means slight GI ghosting risk,
+        // strictly better than the alternative.)
+        {
+            const bool asvgfRunsThisFrame =
+                !( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr ) &&
+                !illum.nrdDenoiser;
+            gu->restirIndirAntilag = !!illum.restirIndirAntilag && asvgfRunsThisFrame;
+        }
+
+        const bool fromGame = !!illum.enableRrTemporalPrefilter;
+        if( devmode && devmode->rrTemporalPrefilterSticky )
+        {
+            gu->rrTemporalPrefilterEnabled = uint32_t( devmode->rrTemporalPrefilter );
+        }
+        else
+        {
+            gu->rrTemporalPrefilterEnabled = uint32_t( fromGame );
+            if( devmode )
+            {
+                // Keep Dev checkbox visually synced with the active game value.
+                devmode->rrTemporalPrefilter = fromGame;
+            }
+        }
+
+        if( devmode && devmode->illumSensSticky )
+        {
+            gu->gradientMultDiffuse =
+                std::clamp( devmode->illumSensDirect, 0.0f, 1.0f );
+            gu->gradientMultIndirect =
+                std::clamp( devmode->illumSensIndirect, 0.0f, 1.0f );
+            gu->gradientMultSpecular =
+                std::clamp( devmode->illumSensSpec, 0.0f, 1.0f );
+        }
+        else if( devmode )
+        {
+            devmode->illumSensDirect   = gu->gradientMultDiffuse;
+            devmode->illumSensIndirect = gu->gradientMultIndirect;
+            devmode->illumSensSpec     = gu->gradientMultSpecular;
+        }
+    }
 
     if( swapchain->IsHDREnabled() )
     {
@@ -585,8 +1246,10 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
 
     const auto& cameraInfo = scene->GetCamera( renderResolution.Aspect() );
 
-    bool mipLodBiasUpdated =
-        worldSamplerManager->TryChangeMipLodBias( frameIndex, renderResolution.GetMipLodBias() );
+    bool mipLodBiasUpdated = worldSamplerManager->TryChangeMipLodBias(
+        frameIndex,
+        renderResolution.GetMipLodBias(
+            pnext::get< RgDrawFrameTexturesParams >( drawInfo ).mipLodBiasOffset ) );
     const RgFloat2D jitter = { uniform->GetData()->jitterX, uniform->GetData()->jitterY };
 
     textureManager->SubmitDescriptors(
@@ -626,11 +1289,19 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
         // draw rasterized sky to albedo before tracing primary rays
         if( uniform->GetData()->skyType == RG_SKY_TYPE_RASTERIZED_GEOMETRY )
         {
-            rasterizer->DrawSkyToCubemap( cmd, frameIndex, *textureManager, *uniform );
+            // Doom64-RT: the volumetric cloud map, marched once, read by both
+            // sky passes below.
+            volumetric->ProcessClouds( cmd, frameIndex, *uniform, *blueNoise );
+
+            rasterizer->DrawSkyToCubemap(
+                cmd, frameIndex, *textureManager, *uniform, *tonemapping, *volumetric );
             rasterizer->DrawSkyToAlbedo(
                 cmd,
                 frameIndex,
                 *textureManager,
+                *uniform,
+                *tonemapping,
+                *volumetric,
                 cameraInfo.view,
                 pnext::get< RgDrawFrameSkyParams >( drawInfo ).skyViewerPosition,
                 cameraInfo.projection,
@@ -724,18 +1395,268 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                                           *rasterizer->GetRenderCubemap(),
                                                           *portalList,
                                                           *volumetric );
-        denoiser->Denoise( cmd, frameIndex, uniform );
+        // Ground truth for "is DLSS-RR actually running?". Every input to this
+        // decision fails silently: a null nvDlssRr (NGX create failed, or the
+        // whole DLSSRR.cpp compiled to its stub), a non-DLSS upscaler, or a Dev
+        // override all just quietly select A-SVGF. Nothing downstream reports
+        // which path ran, so a wrong assumption here is unfalsifiable from the
+        // game side -- which is exactly what happened for several sessions.
+        // Edge-triggered, WARNING severity so it is visible without -rtdebug.
+        {
+            const bool haveRrObject = ( nvDlssRr != nullptr );
+            const bool dlssOn       = renderResolution.IsNvDlssEnabled();
+            const bool rrEnabled    = renderResolution.IsNvDlssRayReconstructionEnabled();
+            const bool rrActive     = rrEnabled && haveRrObject;
+            // Doom64-RT: reordered exposure is part of the path identity -- an
+            // A/B of rt_rr_preexposure must be able to read its arm back here.
+            const bool rrPreExp     = rrActive && uniform->GetData()->rrPreExposure != 0;
+
+            static bool s_have = false;
+            static bool s_prev = false;
+            static bool s_prevPreExp = false;
+            if( !s_have || s_prev != rrActive || s_prevPreExp != rrPreExp )
+            {
+                s_have = true;
+                s_prev = rrActive;
+                s_prevPreExp = rrPreExp;
+                debug::Warning( "Denoiser path: {} (DLSS-RR object={}, DLSS upscaler={}, "
+                                "RR flag={}, preExposure={})",
+                                rrActive ? "DLSS-RR (ComposeNoisy -> nvDlssRr->Apply)"
+                                         : "A-SVGF (Denoise)",
+                                haveRrObject ? "present" : "NULL",
+                                dlssOn ? "on" : "off",
+                                rrEnabled ? "on" : "off",
+                                rrPreExp ? "on (post-RR pass)" : "off (baked in CmPrepareFinal)" );
+            }
+
+            // ReSTIR feeds BOTH denoisers, so report it regardless of which one
+            // runs -- the launcher now defaults to A-SVGF, and gating this on RR
+            // would leave the default path with no way to verify its own uniforms.
+            {
+                static bool     s_rHave = false;
+                static uint32_t s_rPrev[ 4 ] = {};
+                const uint32_t  init = uniform->GetData()->restirInitialSamples;
+                const uint32_t  spat = uniform->GetData()->restirSpatialSamples;
+                // GI depth and the shadow depth it needs are part of the
+                // trigger: an arm that moves only rt_gi_bounces must still
+                // get its one printed proof that the value reached the shader.
+                const uint32_t  gib  = uniform->GetData()->indirectBounces;
+                const uint32_t  shd  = uniform->GetData()->maxBounceShadowsLights;
+                if( !s_rHave || s_rPrev[ 0 ] != init || s_rPrev[ 1 ] != spat ||
+                    s_rPrev[ 2 ] != gib || s_rPrev[ 3 ] != shd )
+                {
+                    s_rHave      = true;
+                    s_rPrev[ 0 ] = init;
+                    s_rPrev[ 1 ] = spat;
+                    s_rPrev[ 2 ] = gib;
+                    s_rPrev[ 3 ] = shd;
+                    debug::Warning( "ReSTIR: initialSamples={} (stock 8), "
+                                    "spatialSamples={} (stock 8), spatialRadius={} "
+                                    "(stock 30), temporalMCap={} (stock 20), "
+                                    "temporalJitter={} (stock 2), shadowSamples={} "
+                                    "(stock 1), sppDirect={}, sppIndirect={}, "
+                                    "giBounces={} (stock 2), giLegacyWeight={} (stock 1), "
+                                    "maxBounceShadows={} (vertex i lit iff i < this)",
+                                    init,
+                                    spat,
+                                    uniform->GetData()->restirSpatialRadius,
+                                    uniform->GetData()->restirTemporalMCap,
+                                    uniform->GetData()->restirTemporalJitter,
+                                    uniform->GetData()->shadowSamples,
+                                    uniform->GetData()->directSamples,
+                                    uniform->GetData()->indirectSamples,
+                                    gib,
+                                    uniform->GetData()->indirectLegacyWeight,
+                                    shd );
+                }
+            }
+
+            // Report which OPTIONAL RR guides are actually bound. rt_rr_disocc 0
+            // used to leave pInDisocclusionMask bound (writing zeros) instead of
+            // passing nullptr, so the "off" arm never tested the configuration it
+            // claimed to. An unreported binding is one nobody can falsify.
+            if( rrActive )
+            {
+                const uint32_t disocc  = uniform->GetData()->rrDisoccEnable;
+                const uint32_t spechit = uniform->GetData()->rrSpecHitDist;
+                const uint32_t guide   = uniform->GetData()->rrGuideMode;
+
+                const auto& illumRr = pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+                const uint32_t exptex =
+                    ( uniform->GetData()->rrPreExposure != 0 && illumRr.rrExposureTexture ) ? 1u
+                                                                                            : 0u;
+                const uint32_t translayer =
+                    ( illumRr.rrTransparencyLayer && !drawInfo.disableRasterization ) ? 1u : 0u;
+
+                static bool     s_gHave = false;
+                static uint32_t s_gPrev[ 5 ] = {};
+                if( !s_gHave || s_gPrev[ 0 ] != disocc || s_gPrev[ 1 ] != spechit ||
+                    s_gPrev[ 2 ] != guide || s_gPrev[ 3 ] != exptex || s_gPrev[ 4 ] != translayer )
+                {
+                    s_gHave    = true;
+                    s_gPrev[ 0 ] = disocc;
+                    s_gPrev[ 1 ] = spechit;
+                    s_gPrev[ 2 ] = guide;
+                    s_gPrev[ 3 ] = exptex;
+                    s_gPrev[ 4 ] = translayer;
+                    debug::Warning( "RR guides: pInDisocclusionMask={}, "
+                                    "pInSpecularHitDistance={}, albedo guide mode={}, "
+                                    "pInExposureTexture={}, pInTransparencyLayer={}",
+                                    disocc ? "BOUND" : "nullptr",
+                                    spechit ? "BOUND" : "nullptr",
+                                    guide,
+                                    exptex ? "BOUND (1x1, CmPrepareFinal)" : "nullptr",
+                                    translayer ? "BOUND (raster redirected)" : "nullptr" );
+
+                    // b031a21 replaced the hardcoded TEMPORAL_RADIUS 2 with this
+                    // uniform, and bisect blames that commit for the RR worm
+                    // regression even though 2.0 should reproduce the constant
+                    // exactly. Report the value actually reaching the shader:
+                    // either the cvar is not 2, or the uniform is not landing
+                    // where the shader reads it. Print the neighbouring members
+                    // too -- if those are also wrong, it is the std140 layout.
+                    debug::Warning( "ReSTIR uniforms: temporalJitter={} (stock 2), "
+                                    "shadowSamples={} (stock 1), debugRestirM={}, "
+                                    "spatialSamples={} (stock 8), spatialRadius={} "
+                                    "(stock 30), temporalMCap={} (stock 20), "
+                                    "initialSamples={} (stock 8), indirAntilagGate={}",
+                                    uniform->GetData()->restirTemporalJitter,
+                                    uniform->GetData()->shadowSamples,
+                                    uniform->GetData()->debugRestirM,
+                                    uniform->GetData()->restirSpatialSamples,
+                                    uniform->GetData()->restirSpatialRadius,
+                                    uniform->GetData()->restirTemporalMCap,
+                                    uniform->GetData()->restirInitialSamples,
+                                    uniform->GetData()->restirIndirAntilag
+                                        ? "on (reads a buffer RR never writes)"
+                                        : "off" );
+                }
+            }
+        }
+
+        // Doom64-RT: the NRD lane, stage 2 of docs/plan-nrd-denoiser.md. With
+        // rt_nrd set (and RR inactive -- precedence RR > NRD > A-SVGF), ReLAX
+        // replaces A-SVGF for the frame: CmNrdPack stages the same raw
+        // unfiltered signals into NRD's input layouts, NRDIntegration records
+        // ReLAX's dispatches, CmNrdCompose remodulates the denoised lighting
+        // into PreFinal with CmNoisyCompose's exact arithmetic. EVERYTHING
+        // downstream is the untouched A-SVGF frame shape: exposure baked in
+        // CmPrepareFinal, glow before the upscaler, DLSS-SR reconstructing --
+        // the shape the user reports as stable. Any failure at any step falls
+        // back to A-SVGF for the frame, loudly.
+        bool nrdRanThisFrame = false;
+        {
+            const uint32_t nrdRequested =
+                pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).nrdDenoiser;
+            const bool rrBlocks =
+                renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr;
+            const bool wantNrd = nrdRequested != 0 && !rrBlocks;
+
+            // Edge-triggered arrival print -- "no NRD line at all" must be
+            // distinguishable from "the request never reached RTGL" without a
+            // debugger (2026-08-17: rt_nrd 1 produced total silence, and this
+            // is how it was bisected).
+            {
+                static bool     s_nHave = false;
+                static uint32_t s_nPrev[ 2 ] = {};
+                if( !s_nHave || s_nPrev[ 0 ] != nrdRequested || s_nPrev[ 1 ] != uint32_t( rrBlocks ) )
+                {
+                    s_nHave      = true;
+                    s_nPrev[ 0 ] = nrdRequested;
+                    s_nPrev[ 1 ] = uint32_t( rrBlocks );
+                    debug::Warning( "NRD request: illum.nrdDenoiser={}, blockedByRR={}",
+                                    nrdRequested,
+                                    rrBlocks ? "yes" : "no" );
+                }
+            }
+
+            if( wantNrd )
+            {
+                if( !nrdDenoiser )
+                {
+                    nrdDenoiser = std::make_shared< NrdDenoiser >( instance,
+                                                                   physDevice->Get(),
+                                                                   device,
+                                                                   vkEnabledInstanceExtensions,
+                                                                   vkEnabledDeviceExtensions,
+                                                                   queues->GetIndexGraphics(),
+                                                                   1 );
+                }
+
+                if( nrdDenoiser->EnsureReady( renderResolution.Width(),
+                                              renderResolution.Height() ) )
+                {
+                    denoiser->PackForNrd( cmd, frameIndex, uniform );
+
+                    const auto& illumNrd =
+                        pnext::get< RgDrawFrameIlluminationParams >( drawInfo );
+                    const auto tuning = NrdDenoiser::Tuning{
+                        .maxAccumFrames   = illumNrd.nrdMaxAccumFrames,
+                        .fastAccumFrames  = illumNrd.nrdFastAccumFrames,
+                        .atrousIterations = illumNrd.nrdAtrousIterations,
+                        .prepassDiffuse   = illumNrd.nrdPrepassDiffuse,
+                        .prepassSpecular  = illumNrd.nrdPrepassSpecular,
+                        .phiLuminance     = illumNrd.nrdPhiLuminance,
+                        .minHitDistWeight = illumNrd.nrdMinHitDistWeight,
+                        .antiFirefly      = !!illumNrd.nrdAntiFirefly,
+                    };
+
+                    nrdRanThisFrame =
+                        nrdDenoiser->Denoise( cmd,
+                                              frameIndex,
+                                              *framebuffers,
+                                              uniform->GetData(),
+                                              timeDelta,
+                                              resetHistory,
+                                              uniform->GetData()->nrdValidation != 0,
+                                              tuning );
+
+                    if( nrdRanThisFrame )
+                    {
+                        denoiser->ComposeAfterNrd( cmd, frameIndex, uniform );
+                    }
+                }
+            }
+        }
+
+        if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
+        {
+            // Do NOT call AccumulateForRR here — feeding A-SVGF temporal into RR
+            // produced a faded duplicate/ghost depth view (2026-08-05). Keep raw
+            // ComposeNoisy → DLSS-RR. Soft analytic-light fades instead.
+            denoiser->ComposeNoisy( cmd, frameIndex, uniform );
+        }
+        else if( !nrdRanThisFrame )
+        {
+            denoiser->Denoise( cmd, frameIndex, uniform );
+        }
         volumetric->ProcessScattering(
             cmd, frameIndex, *uniform, *blueNoise, *framebuffers, volumetricMaxHistoryLen );
         tonemapping->CalculateExposure( cmd, frameIndex, uniform );
     }
 
     imageComposition->PrepareForRaster( cmd, frameIndex, uniform.get() );
-    volumetric->BarrierToReadIllumination( cmd );
+    volumetric->BarrierToReadIllumination( cmd, frameIndex );
+
+    // Doom64-RT: with DLSS-RR active, rasterized content (every translucent
+    // sprite in the game, particles, lens flares) is redirected into the NGX
+    // transparency layer instead of the final image. Baked into FINAL it
+    // becomes part of RR's colour input while every guide (albedo, normal,
+    // depth, MV) describes the opaque surface BEHIND it -- content the network
+    // is explicitly told is not there, i.e. noise to remove. The layer is
+    // NGX-composited after denoise+upscale, which is NVIDIA's sanctioned
+    // route for exactly this content. Gated per-frame on the same condition
+    // the RR branch below uses, so the layer can never be bound on a frame
+    // whose raster did not fill it (disableRasterization included).
+    const bool rrTransLayer = renderResolution.IsNvDlssRayReconstructionEnabled() &&
+                              nvDlssRr != nullptr &&
+                              !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo )
+                                    .rrTransparencyLayer &&
+                              !drawInfo.disableRasterization;
 
     if( !drawInfo.disableRasterization )
     {
-        // draw rasterized geometry into the final image
+        // draw rasterized geometry into the final image (or the RR layer)
         rasterizer->DrawToFinalImage( cmd,
                                       frameIndex,
                                       *textureManager,
@@ -746,7 +1667,8 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                       cameraInfo.projection,
                                       jitter,
                                       renderResolution,
-                                      lightmapScreenCoverage );
+                                      lightmapScreenCoverage,
+                                      rrTransLayer );
     }
 
     imageComposition->Finalize( cmd,
@@ -834,6 +1756,29 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
         // upscale finalized image
         if( renderResolution.IsNvDlssEnabled() )
         {
+            if( renderResolution.IsNvDlssRayReconstructionEnabled() && nvDlssRr )
+            {
+                // Exposure texture only with the pre-exposure reorder: against
+                // an already-exposed input it would declare the scale twice.
+                const bool rrExpTex =
+                    uniform->GetData()->rrPreExposure != 0 &&
+                    !!pnext::get< RgDrawFrameIlluminationParams >( drawInfo ).rrExposureTexture;
+
+                accum = nvDlssRr->Apply( cmd,
+                                         frameIndex,
+                                         *framebuffers,
+                                         renderResolution,
+                                         jitter,
+                                         timeDelta,
+                                         resetHistory,
+                                         uniform->GetData()->rrSpecHitDist != 0,
+                                         uniform->GetData()->rrDisoccEnable != 0,
+                                         rrExpTex,
+                                         rrTransLayer,
+                                         uniform->GetData()->view,
+                                         uniform->GetData()->projection );
+            }
+            else
 #ifdef RG_USE_DX12
             if( nvDlss3dx12 && swapchain->WithDLSS3FrameGeneration() )
             {
@@ -870,7 +1815,11 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
                                         renderResolution,
                                         jitter,
                                         timeDelta,
-                                        resetHistory );
+                                        resetHistory,
+                                        // Doom64-RT: bind the volumetric's
+                                        // silhouette mask only when the feature
+                                        // is on, so 0 is the untouched path.
+                                        uniform->GetData()->volumeUpscaleBias > 0.0f );
             }
             else
             {
@@ -927,6 +1876,58 @@ auto RTGL1::VulkanDevice::Render( VkCommandBuffer& cmd, const RgDrawFrameInfo& d
             {
                 assert( 0 );
             }
+        }
+
+        // Doom64-RT: THE EXPOSURE GOES BACK ON HERE under the DLSS-RR
+        // pre-exposure reorder. CmPrepareFinal skipped the EV100 multiply and
+        // the screen-emissive add so RR could denoise linear pre-exposure
+        // radiance (its guide declares exposure unsupported, S3.7); this pass
+        // reapplies both on RR's output, at output resolution, BEFORE
+        // DrawClassic / BlitForEffects / sharpening / bloom -- everything after
+        // this line still sees a normally-exposed image, as it always has.
+        //
+        // Gated on the UNIFORM, not the cvar chain: it is the exact value
+        // CmPrepareFinal read this frame, so skip-side and apply-side cannot
+        // disagree. gu->rrPreExposure is host-gated to the RR branch above, so
+        // accum is UPSCALED_PONG by construction here.
+        if( uniform->GetData()->rrPreExposure != 0 )
+        {
+            assert( accum == FB_IMAGE_INDEX_UPSCALED_PONG );
+            imageComposition->RrPostExposure( cmd,
+                                              frameIndex,
+                                              *uniform,
+                                              *tonemapping,
+                                              renderResolution.UpscaledWidth(),
+                                              renderResolution.UpscaledHeight() );
+        }
+
+        // Doom64-RT: THE MEDIUM GOES ON HERE, after the upscaler and before
+        // anything else touches the image.
+        //
+        // CmPrepareFinal left the surface alone when volumePostComp is set, so
+        // the upscaler has just reconstructed an ordinary game image instead of
+        // one with a stepped, jittering veil baked into it -- which is what it
+        // was drawing dark lines along. See CmVolumeCompose.comp.
+        //
+        // The position is load-bearing in both directions. AFTER the upscaler,
+        // obviously. But BEFORE DrawClassic below, because classic-shaded pixels
+        // are painted over the top and are meant to skip volumetrics entirely --
+        // exactly what CmPrepareFinal's own classicShading() guard does at
+        // render resolution. And before BlitForEffects / sharpening / bloom, so
+        // those still see a veiled image, as they always have.
+        if( uniform->GetData()->volumePostComp != 0 )
+        {
+            const bool upscaled = ( accum == FB_IMAGE_INDEX_UPSCALED_PING ||
+                                    accum == FB_IMAGE_INDEX_UPSCALED_PONG );
+
+            imageComposition->ComposeVolume(
+                cmd,
+                frameIndex,
+                *uniform,
+                *tonemapping,
+                accum,
+                upscaled ? renderResolution.UpscaledWidth() : renderResolution.Width(),
+                upscaled ? renderResolution.UpscaledHeight() : renderResolution.Height() );
         }
 
         if( lightmapScreenCoverage > 0 && !drawInfo.disableRasterization )
@@ -1824,6 +2825,24 @@ void RTGL1::VulkanDevice::UploadMeshPrimitive( const RgMeshInfo*          pMesh,
         if( !textureMetaManager->Modify( modified, modified_attachedLight, modified_pbr, false ) )
         {
             return;
+        }
+
+        // Dev Materials A/B: drop texture-meta emissives / attached lights on upload.
+        if( devmode && devmode->materialStripEmissives )
+        {
+            modified.emissive = 0.0f;
+            modified_attachedLight.reset();
+        }
+        if( devmode && modified_pbr )
+        {
+            if( devmode->materialStripMetallic )
+            {
+                modified_pbr->metallicDefault = 0.0f;
+            }
+            if( devmode->materialStripRoughness )
+            {
+                modified_pbr->roughnessDefault = 1.0f;
+            }
         }
 
         if( modified_attachedLight )

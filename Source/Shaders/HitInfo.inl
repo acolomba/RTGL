@@ -174,6 +174,35 @@ float sampleHeightMap( const uint textureIndex, const vec2 texCoords )
     return getTextureSampleLod( textureIndex, texCoords, 0 ).r;
 }
 
+// Doom64-RT: noise for the liquid flow. PROCEDURAL, and that is the fix, not a
+// style choice: the first advection sampled the water normal map's X channel,
+// and a normal map's X hugs 0.5 by construction -- the pattern moved and the
+// modulation it carried was a few percent, which is invisible at any speed.
+// (getLavaHeat samples the same channels; "the lava flow does not do much" is
+// almost certainly the same disease.) Value noise on a 256-periodic lattice:
+// periodic so the scrolled coordinate can wrap with NO seam, which also keeps
+// the hash's fract() inputs small enough for float32 over a long session.
+float d64_flowHash( vec2 cell )
+{
+    cell = fract( cell * vec2( 0.1031, 0.1972 ) );
+    cell += dot( cell, cell.yx + 33.33 );
+    return fract( ( cell.x + cell.y ) * cell.x );
+}
+
+float d64_flowNoise( vec2 p )
+{
+    vec2 i = mod( floor( p ), 256.0 );
+    vec2 f = fract( p );
+    vec2 s = f * f * ( 3.0 - 2.0 * f );
+
+    float a = d64_flowHash( i );
+    float b = d64_flowHash( mod( i + vec2( 1, 0 ), 256.0 ) );
+    float c = d64_flowHash( mod( i + vec2( 0, 1 ), 256.0 ) );
+    float d = d64_flowHash( mod( i + vec2( 1, 1 ), 256.0 ) );
+
+    return mix( mix( a, b, s.x ), mix( c, d, s.x ), s.y );
+}
+
 const int ParallaxLinearSteps       = 10;
 const int ParallaxBinarySearchSteps = 4;
 
@@ -257,11 +286,19 @@ vec3 sanitizeNormal( const vec3 triangleNormal, //
 #if defined(HITINFO_INL_PRIM)
 
 ShHitInfo getHitInfoPrimaryRay(
-    const ShPayload pl, 
-    const vec3 rayOrigin, const vec3 viewDir, const vec3 rayDirAX, const vec3 rayDirAY, 
-    out vec2 motion, out float motionDepthLinear, 
+    const ShPayload pl,
+    const vec3 rayOrigin, const vec3 viewDir, const vec3 rayDirAX, const vec3 rayDirAY,
+    out vec2 motion, out float motionDepthLinear,
     out vec2 gradDepth, out float depthNDC, out float depthLinear,
-    out vec3 emission)
+    out vec3 emission,
+    // Doom64-RT: the liquid FLOW DETAIL, 0..1 -- a noise texture advected along
+    // the vein direction baked into the height map's .g/.b. It has to be built
+    // HERE and handed onward: the stylized liquid surface is shaded in the
+    // refl/refr pass, which restores its hit from the G-buffer and has no
+    // ShTriangle, so it can never sample a material texture of its own.
+    // Exactly 0 means "no flow here" (not a liquid, no height map, or a texel
+    // the bake left still).
+    out float liquidFlow)
 
 #elif defined(HITINFO_INL_RFL)
 
@@ -283,6 +320,10 @@ ShHitInfo getHitInfoBounce(
 #endif
 {
     ShHitInfo h;
+
+#if defined( HITINFO_INL_PRIM )
+    liquidFlow = 0.0;
+#endif
 
     int instanceId, instCustomIndex;
     int geomIndex, primIndex;
@@ -438,15 +479,44 @@ ShHitInfo getHitInfoBounce(
 
 
     // HEIGHT / NORMAL MAP (ignored for indirect)
+    // materialStripFlags: bit0=N, bit1=emis, bit2=metallic, bit3=H, bit4=roughness
+
+    // Doom64-RT: a BILLBOARD is one quad with one normal, so its indirect
+    // specular reflection vector is identical for every texel and the whole
+    // sprite takes one flat colour from the room. That failure has no wall
+    // equivalent, so sprites carry their own dials -- and spritePbr 0 is the
+    // master off switch for the entire sprite material pass, dropping the
+    // authored _orm and the derived _n in one go.
+    const bool isSprite  = ( tr.geometryInstanceFlags & GEOM_INST_FLAG_SPRITE ) != 0;
+    // spritePbr is a MIX, not a switch: 1 = the material exactly as authored,
+    // 0 = the plain dielectric a sprite had before any labelling. Everything
+    // between dials the whole sprite pass toward neutral, which does two things
+    // at once -- it lowers how hard sprites react to light, and it COMPRESSES
+    // the spread between classes, because every class converges on the same
+    // neutral as the mix falls. A checkerboard of 0.2 metal beside 0.9 rough
+    // flesh stops being a contrast problem when both are 80% of the way to the
+    // same place.
+    const float spriteMix = clamp( globalUniform.spritePbr, 0.0, 1.0 );
+    const bool  spriteOff = isSprite && spriteMix < 0.001;
+
+    const bool stripNormals    = ( globalUniform.materialStripFlags & 1u ) != 0 || spriteOff;
+    const bool stripEmissives  = ( globalUniform.materialStripFlags & 2u ) != 0;
+    const bool stripMetallic   = ( globalUniform.materialStripFlags & 4u ) != 0;
+    const bool stripHeight     = ( globalUniform.materialStripFlags & 8u ) != 0 || spriteOff;
+    const bool stripRoughness  = ( globalUniform.materialStripFlags & 16u ) != 0;
 
 #if defined( HITINFO_INL_PRIM ) || defined( HITINFO_INL_RFL )
     vec3 tangent, bitangent;
-    if( tr.heightTexture != MATERIAL_NO_TEXTURE || tr.normalTexture != MATERIAL_NO_TEXTURE )
+    const bool needTbn =
+        ( !stripHeight && tr.heightTexture != MATERIAL_NO_TEXTURE ) ||
+        ( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE );
+    if( needTbn )
     {
         makeTangentBitangent( tr.positions, tr.layerTexCoord[ 0 ], tangent, bitangent );
     }
 
-    if( globalUniform.parallaxMaxDepth > 0.0001 && tr.heightTexture != MATERIAL_NO_TEXTURE )
+    if( !stripHeight && globalUniform.parallaxMaxDepth > 0.0001 &&
+        tr.heightTexture != MATERIAL_NO_TEXTURE )
     {
         vec3 viewDirInTextureSpace;
         {
@@ -460,8 +530,69 @@ ShHitInfo getHitInfoBounce(
                                             globalUniform.parallaxMaxDepth );
     }
 
+#if defined( HITINFO_INL_PRIM )
+    // Doom64-RT: the flow map. The height map's .g/.b carry the vein's tangent
+    // DIRECTION in texture space (sampleHeightMap() reads .r and nothing else,
+    // so they are free on a map we already author, and they are registered
+    // with the albedo, parallax shift included -- this runs AFTER the block
+    // above, so the flow follows the same displaced texel the colour does).
+    //
+    // The detail is sampled in a VEIN-ALIGNED frame: u runs along the channel
+    // and SCROLLS, v runs across it at liquidFlowAspect times the frequency.
+    // That turns the noise into elongated streaks sliding lengthwise down the
+    // vein, which is the strongest "liquid running" cue there is. Two earlier
+    // versions failed short of it and are worth remembering:
+    //   1. a brightness band on a baked phase -- nothing in the picture is
+    //      displaced, the eye reads flicker;
+    //   2. round blobs advected from base UV with a ping-pong cross-fade --
+    //      isotropic blobs at vein scale read as shimmer, and the two blended
+    //      copies soften what little motion there was.
+    // No ping-pong here, and none needed: it existed to bound the distortion
+    // of an offset-from-base advection, but scrolling the wrapping noise's OWN
+    // coordinate is well-defined forever and never resets. Where the direction
+    // varies along a run the frame shears the noise slightly -- fine, liquid
+    // shears.
+    //
+    // The direction is a VECTOR, not an angle: bilinear filtering between two
+    // disagreeing texels shrinks it toward zero, so the flow FADES at a
+    // junction or a sign flip instead of tearing. Length gates it.
+    if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_MEDIA_TYPE_WATER ) != 0 &&
+        tr.heightTexture != MATERIAL_NO_TEXTURE )
+    {
+        vec2 dir =
+            getTextureSampleLod( tr.heightTexture, texCoords[ 0 ], 0 ).gb * 2.0 - vec2( 1.0 );
+        const float len = length( dir );
+        // 0.15: above the noise of two blended texels. Cells bake to (0,0).
+        if( len > 0.15 )
+        {
+            dir /= len;
+            const vec2 perp = vec2( -dir.y, dir.x );
 
-    if (tr.normalTexture != MATERIAL_NO_TEXTURE)
+            // liquidFlowScale: detail tiles per liquid tile along the vein.
+            // liquidFlowSpeed: detail tiles scrolled per second.
+            const float u = dot( texCoords[ 0 ], dir ) * globalUniform.liquidFlowScale -
+                            globalUniform.time * globalUniform.liquidFlowSpeed;
+            const float v = dot( texCoords[ 0 ], perp ) * globalUniform.liquidFlowScale *
+                            globalUniform.liquidFlowAspect;
+
+            // Procedural, full-range noise -- see d64_flowNoise for why the
+            // water normal map could not be the source. mod() is seamless
+            // because the lattice itself is 256-periodic.
+            float d = d64_flowNoise( vec2( mod( u, 256.0 ), v ) );
+
+            // shape into clots: plateaus of bright and dark with fast
+            // transitions, so what slides down the vein reads as blobs of
+            // liquid rather than as smooth static
+            d = smoothstep( 0.30, 0.70, d );
+
+            // nudged off zero so that EXACTLY 0 keeps meaning "no flow here"
+            liquidFlow = d * 0.998 + 0.001;
+        }
+    }
+#endif
+
+
+    if( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE )
     {
         vec2 nrm =
     #if defined( HITINFO_INL_PRIM )
@@ -474,7 +605,10 @@ ShHitInfo getHitInfoBounce(
 
         const vec3 newNormal = safeNormalize2( tangent * nrm.x + bitangent * nrm.y + h.normal, //
                                                h.normal );
-        h.normal = safeNormalize2( mix( h.normal, newNormal, globalUniform.normalMapStrength ), //
+        const float nmStren =
+            globalUniform.normalMapStrength *
+            ( isSprite ? globalUniform.spriteNormalStrength * spriteMix : 1.0 );
+        h.normal = safeNormalize2( mix( h.normal, newNormal, nmStren ), //
                                    h.normal );
 
         const vec3 toViewer = safeNormalize2( rayOrigin - h.hitPosition, vec3( 0 ) );
@@ -482,7 +616,7 @@ ShHitInfo getHitInfoBounce(
     }
 
 #if defined( HITINFO_INL_RFL )
-    hasNormalMap = ( tr.normalTexture != MATERIAL_NO_TEXTURE );
+    hasNormalMap = ( !stripNormals && tr.normalTexture != MATERIAL_NO_TEXTURE );
 #endif
 
 #endif // HITINFO_INL_PRIM || HITINFO_INL_RFL
@@ -527,21 +661,91 @@ ShHitInfo getHitInfoBounce(
             getTextureSampleLod( tr.occlusionRougnessMetallicTexture, texCoords[ 0 ], lod ).xyz;
     #endif
 
-        h.roughness = orm[ 1 ];
-        h.metallic  = orm[ 2 ];
+        h.roughness = stripRoughness ? 1.0 : orm[ 1 ];
+        h.metallic  = stripMetallic ? 0.0 : orm[ 2 ];
     }
     else
     {
-        h.roughness = tr.roughnessDefault;
-        h.metallic  = tr.metallicDefault;
+        h.roughness = stripRoughness ? 1.0 : tr.roughnessDefault;
+        h.metallic  = stripMetallic ? 0.0 : tr.metallicDefault;
     }
+    // Dev Materials: soft path between authored roughness and full matte (Strip roughness = hard 1).
+    h.roughness = mix( h.roughness, 1.0, clamp( globalUniform.materialRoughnessTowardMatte, 0.0, 1.0 ) );
     h.roughness = max( h.roughness, max( globalUniform.minRoughness, MIN_GGX_ROUGHNESS ) );
+
+    // Doom64-RT: fail-safes over hand-labelled metalness.
+    //
+    // A metal has no diffuse lobe -- it only shows a blurred image of whatever is
+    // around it. In a dark interior that is nothing, so a surface wrongly called
+    // metal goes black, and the rougher it is the worse it gets: the same small
+    // energy is spread over more of the hemisphere. Raising minRoughness cannot
+    // help, because that is the direction that makes it worse.
+    //
+    //   metallicRoughCut  roughness at which metalness starts fading out, over a
+    //                     metallicRoughBand-wide band. Very rough "metal" is
+    //                     usually oxide, paint or scale -- all dielectrics -- so
+    //                     this is physical as well as a safety net. 0 disables.
+    //   metallicMax       hard ceiling on metalness, so every metal keeps at
+    //                     least (1 - metallicMax) of its diffuse response and can
+    //                     never reach pure black. 1 disables.
+    if( globalUniform.metallicRoughCut > 0.0 )
+    {
+        const float band = max( globalUniform.metallicRoughBand, 0.001 );
+        h.metallic *= 1.0 - smoothstep( globalUniform.metallicRoughCut,
+                                        globalUniform.metallicRoughCut + band,
+                                        h.roughness );
+    }
+    h.metallic = min( h.metallic, globalUniform.metallicMax );
+
+    // WALLS AND FLATS take the same treatment from their own dial. Kept
+    // separate from the sprite one because the two fail differently: a wall has
+    // per-texel normals and never shows the flat-quad wash, so its reason to be
+    // dialled back is noise and taste rather than a rendering artefact.
+    if( !isSprite )
+    {
+        const float worldMix = clamp( globalUniform.worldPbr, 0.0, 1.0 );
+        h.metallic  = mix( 0.0, h.metallic,  worldMix );
+        h.roughness = mix( 1.0, h.roughness, worldMix );
+    }
+
+    // The sprite set, on top of the world clamps rather than instead of them.
+    if( isSprite )
+    {
+        if( spriteOff )
+        {
+            h.metallic  = 0.0;
+            h.roughness = 1.0;
+        }
+        else
+        {
+            float m = min( h.metallic, globalUniform.spriteMetallicMax );
+            // A FLOOR, and the direct lever on the beige wash: a broader lobe
+            // spreads that single room reflection instead of mirroring it.
+            float r = max( h.roughness, globalUniform.spriteRoughMin );
+
+            // NEUTRAL IS metallic 0 / roughness 1 because that is exactly what
+            // a sprite rendered as before any of this existed -- an entry with
+            // no _orm and no roughnessDefault. So spriteMix 0 is not an
+            // approximation of the old look, it IS the old look.
+            h.metallic  = mix( 0.0, m, spriteMix );
+            h.roughness = mix( 1.0, r, spriteMix );
+        }
+    }
 
 
 
     // EMISSIVE
+    //
+    // With an _e map:
+    //   - Primary / reflection: raw _e (on-screen glow via emissionMaxScreenColor).
+    //   - Indirect: _e * emissiveMult, then emissionMapBoost in RtRaygenIndirect.
+    // Without _e: albedo * emissiveMult (all paths), as before.
 
-    if( tr.emissiveTexture != MATERIAL_NO_TEXTURE )
+    if( stripEmissives )
+    {
+        emission = vec3( 0.0 );
+    }
+    else if( tr.emissiveTexture != MATERIAL_NO_TEXTURE )
     {
         emission =
     #if defined( HITINFO_INL_PRIM )
@@ -551,11 +755,71 @@ ShHitInfo getHitInfoBounce(
     #elif defined( HITINFO_INL_INDIR )
             getTextureSampleLod( tr.emissiveTexture, texCoords[ 0 ], lod ).rgb;
     #endif
+    #if defined( HITINFO_INL_INDIR )
+        // Doom64-RT: a SCREEN_SCALED primitive's emissiveMult is what it LOOKS
+        // like; what it feeds the GI is a SEPARATE per-primitive value, because
+        // the two are animated on different clocks. The painted bulbs are held
+        // back to meet the light they cast (it arrives late through the
+        // denoiser history); the light itself must not be held back with them,
+        // or every frame of delay added to the bulbs moves the pool by the same
+        // amount and the gap never closes. A constant GI was tried in between
+        // and it was worse: the "real light turning" WAS this GI, so freezing
+        // it froze the chase. See RgMeshPrimitiveInfo::emissiveGi.
+        if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_EMIS_SCREEN_SCALED ) != 0 )
+        {
+            emission *= tr.emissiveMultGi;
+        }
+        else
+        {
+            emission *= tr.emissiveMult;
+        }
+    #else
+        // Doom64-RT: opt-in, so a fixture that is meant to SWITCH can.
+        //
+        // The rule above -- raw _e on screen, emissiveMult on the indirect path
+        // only -- means a caller can change how much a painted lamp feeds the GI
+        // and cannot change how bright it looks. For a fixture whose whole job is
+        // to turn on and off, that is the one thing it needs. MAP01's pre-exit
+        // pillar sweeps a light around four bulb panels; without this the painted
+        // bulbs stay lit through the entire cycle.
+        //
+        // One bit per primitive rather than a global change of the rule: every
+        // other emissive in the game was balanced against raw _e and must stay
+        // there. See RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED.
+        //
+        // On screen, emissiveMult is applied AS IS. The GI above does not use
+        // it at all for these primitives; it uses the constant. That split is
+        // the whole point: the screen value is animated (a bulb switching) and
+        // the GI must not follow it, or the fixture's bounce light chases its
+        // own bulbs and the two can never be lined up -- every frame of delay
+        // added to the bulbs moved the pool of light back by the same amount.
+        if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_EMIS_SCREEN_SCALED ) != 0 )
+        {
+            emission *= tr.emissiveMult;
+        }
+    #endif
     }
     else
     {
         emission = h.albedo * tr.emissiveMult;
     }
+
+    // Doom64-RT: lava as an AREA light source.
+    //
+    // Applied on the INDIRECT path only, which is the whole point: a lake lights
+    // a room by being a large warm surface, not by a grid of point lights, and
+    // the grid version leaves a visible circle on the wall as the player walks
+    // past each one. Indirect emission is already the mechanism for that
+    // (emissiveMult here, emissionMapBoost in RtRaygenIndirect); it just needs
+    // to be strong enough on this one material.
+#if defined( HITINFO_INL_INDIR )
+    if( ( tr.geometryInstanceFlags & GEOM_INST_FLAG_LAVA ) != 0 )
+    {
+        // Tinted here too, or the room bounces a different colour than the
+        // surface it came off -- the giveaway that the hue is a screen effect.
+        emission *= globalUniform.lavaGiBoost * globalUniform.lavaTint.rgb;
+    }
+#endif
 
 
 

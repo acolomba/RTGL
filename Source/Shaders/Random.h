@@ -30,6 +30,21 @@
 #define RANDOM_SALT_LIGHT_CHOOSE_DIRECT_BASE 72
 #define RANDOM_SALT_LIGHT_CHOOSE_INDIRECT_BASE 96
 #define RANDOM_SALT_RESAMPLE_INDIRECT_BASE 132
+// Extra points on the chosen light for multi-sample shadow visibility.
+// Well clear of RESAMPLE_INDIRECT above so the ranges cannot overlap.
+#define RANDOM_SALT_SHADOW_SAMPLES_BASE 160
+// Per-sample salt bases for the multi-sample-per-pixel loops. Each sample index
+// gets its own stride-sized block so the salt ranges of different samples cannot
+// overlap (selectLight_Direct consumes ~17 salts per invocation).
+// Stride must exceed everything ONE sample consumes, or sample i's draws
+// collide with sample i+1's and the "independent" estimates become correlated
+// -- which would silently defeat the averaging. Budget per sample:
+//   [base +   0, +64 )  selectLight_Direct   (2 temporal + 2 per spatial tap, <=16 taps)
+//   [base +  64, +192)  calcInitialReservoir (2 per RIS candidate, <=32 candidates)
+#define RANDOM_SALT_SPP_STRIDE 256
+#define RANDOM_SALT_SPP_INITIAL_OFFSET 64
+#define RANDOM_SALT_DIRECT_SPP_BASE 1024
+#define RANDOM_SALT_INDIRECT_SPP_BASE 4096
 
 // Sample disk uniformly
 // u1, u2 -- uniform random numbers
@@ -295,6 +310,34 @@ uint getRandomSeed(const ivec2 pix, uint frameIndex)
         hash.y % BLUE_NOISE_TEXTURE_SIZE
     );
     uint texIndex = hash.z % BLUE_NOISE_TEXTURE_COUNT;
+
+    return packRandomSeed(texIndex, offset);
+}
+
+// Seed for rndBlueNoise8() that actually preserves blue noise.
+//
+// getRandomSeed() above hashes the pixel coordinate into the texture offset, so
+// neighbouring pixels read uncorrelated locations of the blue noise texture --
+// which destroys the one property blue noise exists for. Values sampled with it
+// are spatially white, whatever texture they came from.
+//
+// Blue noise only pays off when the texture is TILED over the screen, so that
+// adjacent pixels read adjacent texels and inherit the texture's spatial
+// structure. Pass the REGULAR (non-checkerboard) pixel: checkerboard columns
+// interleave, so tiling in checkerboard space would scramble the neighbourhood
+// exactly like hashing does.
+//
+// The per-frame toroidal shift uses odd strides (coprime with the power-of-two
+// texture size, so they cycle through every offset) and the frame also selects
+// the texture slice, keeping successive frames decorrelated for temporal
+// accumulation.
+uint getBlueNoiseSeed(const ivec2 regularPix, uint frameIndex)
+{
+    uvec2 offset = uvec2(
+        (uint(regularPix.x) + frameIndex * 59u) & (BLUE_NOISE_TEXTURE_SIZE - 1),
+        (uint(regularPix.y) + frameIndex * 37u) & (BLUE_NOISE_TEXTURE_SIZE - 1)
+    );
+    uint texIndex = frameIndex % BLUE_NOISE_TEXTURE_COUNT;
 
     return packRandomSeed(texIndex, offset);
 }

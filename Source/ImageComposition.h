@@ -56,6 +56,30 @@ public:
                    const Tonemapping&                  tonemapping,
                    const RgDrawFrameTonemappingParams& params );
 
+    // Doom64-RT: apply the participating medium AFTER the upscaler, in place on
+    // whichever image the post chain is currently holding. See
+    // CmVolumeCompose.comp -- the outline behind volumetrics is the upscaler
+    // reconstructing surface and medium added together, so the fix is to stop
+    // handing it the sum.
+    void ComposeVolume( VkCommandBuffer       cmd,
+                        uint32_t              frameIndex,
+                        const GlobalUniform&  uniform,
+                        const Tonemapping&    tonemapping,
+                        FramebufferImageIndex target,
+                        uint32_t              width,
+                        uint32_t              height );
+
+    // Doom64-RT: apply auto exposure and the screen emissive AFTER DLSS-RR, in
+    // place on RR's output image. Only dispatched when the frame's rrPreExposure
+    // uniform is set (CmPrepareFinal skipped both under that flag). See
+    // CmRrPostExposure.comp for why RR must denoise pre-exposure radiance.
+    void RrPostExposure( VkCommandBuffer      cmd,
+                         uint32_t             frameIndex,
+                         const GlobalUniform& uniform,
+                         const Tonemapping&   tonemapping,
+                         uint32_t             width,
+                         uint32_t             height );
+
     [[nodiscard]] auto SetupLpmParams( VkCommandBuffer                     cmd,
                                        uint32_t                            frameIndex,
                                        const RgDrawFrameTonemappingParams& params,
@@ -73,7 +97,8 @@ private:
     static VkPipelineLayout CreatePipelineLayout( VkDevice               device,
                                                   VkDescriptorSetLayout* pSetLayouts,
                                                   uint32_t               setLayoutCount,
-                                                  const char*            pDebugName );
+                                                  const char*            pDebugName,
+                                                  uint32_t               pushSize = 0 );
 
     void CreateDescriptors();
 
@@ -97,9 +122,13 @@ private:
 
     VkPipelineLayout composePipelineLayout;
     VkPipelineLayout checkerboardPipelineLayout;
+    VkPipelineLayout volumeComposePipelineLayout;
+    VkPipelineLayout rrPostExposurePipelineLayout;
 
     VkPipeline composePipeline;
     VkPipeline checkerboardPipeline;
+    VkPipeline volumeComposePipeline;
+    VkPipeline rrPostExposurePipeline;
 
     VkDescriptorSetLayout descLayout;
     VkDescriptorPool      descPool;

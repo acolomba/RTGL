@@ -72,11 +72,23 @@ public:
     VkFramebuffer GetClassicFramebuffer( FramebufferImageIndex img ) const;
     VkFramebuffer GetSkyFramebuffer() const;
 
+    // Doom64-RT: the DLSS-RR transparency layer variant of the world pass.
+    // Same geometry, same shaders, same depth (copied ray-traced NDC), but
+    // attachment 0 is FB_IMAGE_INDEX_RR_TRANSPARENCY with loadOp CLEAR (the
+    // layer starts empty every frame) and the pipelines blend attachment-0
+    // alpha as NGX coverage. ScreenEmission and Reactivity attachments are the
+    // very same images as the normal world pass, so rasterized emissive keeps
+    // its glow regardless of which pass ran.
+    VkRenderPass  GetWorldTransparencyRenderPass() const;
+    VkFramebuffer GetWorldTransparencyFramebuffer() const;
+    const std::shared_ptr< RasterizerPipelines >& GetWorldTransparencyPipelines() const;
+
 private:
     VkRenderPass CreateWorldRenderPass( VkFormat finalImageFormat,
                                         VkFormat screenEmisionFormat,
                                         VkFormat reactivityFormat,
-                                        VkFormat depthImageFormat ) const;
+                                        VkFormat depthImageFormat,
+                                        bool     clearColorAttch0 ) const;
     static VkRenderPass CreateClassicRenderPass( VkDevice device,
                                                  VkFormat colorImageFormat,
                                                  VkFormat depthImageFormat );
@@ -99,14 +111,17 @@ private:
     VkDevice device{ VK_NULL_HANDLE };
 
     VkRenderPass worldRenderPass{ VK_NULL_HANDLE };
+    VkRenderPass worldTransparencyRenderPass{ VK_NULL_HANDLE };
     VkRenderPass classicRenderPass{ VK_NULL_HANDLE };
     VkRenderPass skyRenderPass{ VK_NULL_HANDLE };
 
     std::shared_ptr< RasterizerPipelines > worldPipelines{};
+    std::shared_ptr< RasterizerPipelines > worldTransparencyPipelines{};
     std::shared_ptr< RasterizerPipelines > classicPipelines{};
     std::shared_ptr< RasterizerPipelines > skyPipelines{};
 
     VkFramebuffer worldFramebuffer{ VK_NULL_HANDLE };
+    VkFramebuffer worldTransparencyFramebuffer{ VK_NULL_HANDLE };
     VkFramebuffer classicFramebuffer_UpscaledPing{ VK_NULL_HANDLE };
     VkFramebuffer classicFramebuffer_UpscaledPong{ VK_NULL_HANDLE };
     VkFramebuffer classicFramebuffer_Final{ VK_NULL_HANDLE };

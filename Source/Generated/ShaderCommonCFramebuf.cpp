@@ -76,6 +76,22 @@ const VkFormat RTGL1::ShFramebuffers_Formats[] =
     VK_FORMAT_R32G32_UINT, // Reservoirs_Prev
     VK_FORMAT_R32G32_UINT, // ReservoirsInitial
     VK_FORMAT_R32G32B32A32_UINT, // IndirectReservoirsInitial
+    VK_FORMAT_R16_SFLOAT, // RrDisocclusion
+    VK_FORMAT_R16_SFLOAT, // RrLumHistory
+    VK_FORMAT_R16_SFLOAT, // RrLumHistory_Prev
+    VK_FORMAT_R16_SFLOAT, // SpecularHitDistance
+    VK_FORMAT_R32_SFLOAT, // RrExposure
+    VK_FORMAT_R16G16B16A16_SFLOAT, // NrdDiffuse
+    VK_FORMAT_R16G16B16A16_SFLOAT, // NrdSpecular
+    VK_FORMAT_R16G16B16A16_SFLOAT, // NrdDiffuseOut
+    VK_FORMAT_R16G16B16A16_SFLOAT, // NrdSpecularOut
+    VK_FORMAT_R16G16B16A16_SFLOAT, // NrdNormalRoughness
+    VK_FORMAT_R32_SFLOAT, // NrdViewZ
+    VK_FORMAT_R16G16B16A16_SFLOAT, // NrdMotion
+    VK_FORMAT_R8G8B8A8_UNORM, // NrdBaseColorMetalness
+    VK_FORMAT_R8G8B8A8_UNORM, // NrdValidation
+    VK_FORMAT_R16G16B16A16_SFLOAT, // RrDemodFactor
+    VK_FORMAT_R16G16B16A16_SFLOAT, // RrTransparency
     VK_FORMAT_R16G16_SFLOAT, // GradientInputs
     VK_FORMAT_R16G16_SFLOAT, // GradientInputs_Prev
     VK_FORMAT_R8G8B8A8_UNORM, // DISPingGradient
@@ -139,12 +155,12 @@ const RTGL1::FramebufferImageFlags RTGL1::ShFramebuffers_Flags[] =
     0, // IndirPong
     0, // AtrousFilteredVariance
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_IS_ATTACHMENT, // NormalDecal
-    0, // Scattering
-    0, // Scattering_Prev
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // Scattering
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // Scattering_Prev
     0, // ScatteringHistory
     0, // ScatteringHistory_Prev
     0, // ScreenEmisRT
-    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_IS_ATTACHMENT, // ScreenEmission
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_IS_ATTACHMENT | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // ScreenEmission
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_BLOOM | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_UPSCALED_SIZE, // Bloom
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_BLOOM | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_UPSCALED_SIZE, // Bloom_Mip1
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_BLOOM | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER | RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_UPSCALED_SIZE, // Bloom_Mip2
@@ -158,6 +174,22 @@ const RTGL1::FramebufferImageFlags RTGL1::ShFramebuffers_Flags[] =
     0, // Reservoirs_Prev
     0, // ReservoirsInitial
     0, // IndirectReservoirsInitial
+    0, // RrDisocclusion
+    0, // RrLumHistory
+    0, // RrLumHistory_Prev
+    0, // SpecularHitDistance
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_SINGLE_PIXEL_SIZE, // RrExposure
+    0, // NrdDiffuse
+    0, // NrdSpecular
+    0, // NrdDiffuseOut
+    0, // NrdSpecularOut
+    0, // NrdNormalRoughness
+    0, // NrdViewZ
+    0, // NrdMotion
+    0, // NrdBaseColorMetalness
+    0, // NrdValidation
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_BILINEAR_SAMPLER, // RrDemodFactor
+    RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_IS_ATTACHMENT, // RrTransparency
     0, // GradientInputs
     0, // GradientInputs_Prev
     RTGL1::FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_1_3, // DISPingGradient
@@ -246,6 +278,22 @@ const uint32_t RTGL1::ShFramebuffers_Bindings[] =
     75,
     76,
     77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
 };
 
 const uint32_t RTGL1::ShFramebuffers_BindingsSwapped[] = 
@@ -322,32 +370,32 @@ const uint32_t RTGL1::ShFramebuffers_BindingsSwapped[] =
     68,
     70,
     71,
-    73,
     72,
     74,
+    73,
     75,
     76,
     77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    89,
+    88,
+    90,
+    91,
+    92,
+    93,
 };
 
 const uint32_t RTGL1::ShFramebuffers_Sampler_Bindings[] = 
 {
-    78,
-    79,
-    80,
-    81,
-    82,
-    83,
-    84,
-    85,
-    86,
-    87,
-    88,
-    89,
-    90,
-    91,
-    92,
-    93,
     94,
     95,
     96,
@@ -410,26 +458,42 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_Bindings[] =
     153,
     154,
     155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
 };
 
 const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] = 
 {
-    78,
-    79,
-    81,
-    80,
-    83,
-    82,
-    85,
-    84,
-    86,
-    87,
-    88,
-    89,
-    90,
-    91,
-    92,
-    93,
     94,
     95,
     97,
@@ -447,9 +511,9 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     108,
     109,
     110,
-    112,
     111,
     113,
+    112,
     115,
     114,
     117,
@@ -457,41 +521,73 @@ const uint32_t RTGL1::ShFramebuffers_Sampler_BindingsSwapped[] =
     118,
     119,
     120,
-    122,
     121,
+    122,
     123,
     124,
-    126,
     125,
-    127,
+    126,
     128,
+    127,
     129,
-    130,
-    132,
     131,
-    134,
+    130,
     133,
+    132,
+    134,
     135,
     136,
-    137,
     138,
+    137,
     139,
     140,
-    141,
     142,
+    141,
     143,
     144,
     145,
-    147,
     146,
     148,
+    147,
+    150,
     149,
     151,
-    150,
     152,
     153,
     154,
     155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    163,
+    162,
+    164,
+    165,
+    166,
+    168,
+    167,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    183,
+    182,
+    184,
+    185,
+    186,
+    187,
 };
 
 const char *const RTGL1::ShFramebuffers_DebugNames[] = 
@@ -568,6 +664,22 @@ const char *const RTGL1::ShFramebuffers_DebugNames[] =
     "Framebuf Reservoirs_Prev",
     "Framebuf ReservoirsInitial",
     "Framebuf IndirectReservoirsInitial",
+    "Framebuf RrDisocclusion",
+    "Framebuf RrLumHistory",
+    "Framebuf RrLumHistory_Prev",
+    "Framebuf SpecularHitDistance",
+    "Framebuf RrExposure",
+    "Framebuf NrdDiffuse",
+    "Framebuf NrdSpecular",
+    "Framebuf NrdDiffuseOut",
+    "Framebuf NrdSpecularOut",
+    "Framebuf NrdNormalRoughness",
+    "Framebuf NrdViewZ",
+    "Framebuf NrdMotion",
+    "Framebuf NrdBaseColorMetalness",
+    "Framebuf NrdValidation",
+    "Framebuf RrDemodFactor",
+    "Framebuf RrTransparency",
     "Framebuf GradientInputs",
     "Framebuf GradientInputs_Prev",
     "Framebuf DISPingGradient",
@@ -650,6 +762,22 @@ const wchar_t *const RTGL1::ShFramebuffers_DebugNamesW[] =
     L"Framebuf Reservoirs_Prev",
     L"Framebuf ReservoirsInitial",
     L"Framebuf IndirectReservoirsInitial",
+    L"Framebuf RrDisocclusion",
+    L"Framebuf RrLumHistory",
+    L"Framebuf RrLumHistory_Prev",
+    L"Framebuf SpecularHitDistance",
+    L"Framebuf RrExposure",
+    L"Framebuf NrdDiffuse",
+    L"Framebuf NrdSpecular",
+    L"Framebuf NrdDiffuseOut",
+    L"Framebuf NrdSpecularOut",
+    L"Framebuf NrdNormalRoughness",
+    L"Framebuf NrdViewZ",
+    L"Framebuf NrdMotion",
+    L"Framebuf NrdBaseColorMetalness",
+    L"Framebuf NrdValidation",
+    L"Framebuf RrDemodFactor",
+    L"Framebuf RrTransparency",
     L"Framebuf GradientInputs",
     L"Framebuf GradientInputs_Prev",
     L"Framebuf DISPingGradient",

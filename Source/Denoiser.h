@@ -46,6 +46,30 @@ public:
                        uint32_t                                      frameIndex,
                        const std::shared_ptr< const GlobalUniform >& uniform );
 
+    // Skip A-SVGF spatial: compose lighting into PreFinal + RR G-buffer staging.
+    // Optionally preceded by AccumulateForRR (temporal only).
+    void      ComposeNoisy( VkCommandBuffer                               cmd,
+                            uint32_t                                      frameIndex,
+                            const std::shared_ptr< const GlobalUniform >& uniform );
+
+    // A-SVGF gradient + temporal accumulation only (no variance/atrous).
+    // Used ahead of ComposeNoisy when DLSS-RR wants temporally stable input.
+    void      AccumulateForRR( VkCommandBuffer                               cmd,
+                               uint32_t                                      frameIndex,
+                               const std::shared_ptr< const GlobalUniform >& uniform );
+
+    // NRD lane stage 2 (docs/plan-nrd-denoiser.md). PackForNrd stages the
+    // raw unfiltered signals into ReLAX's input layouts (CmNrdPack);
+    // ComposeAfterNrd remodulates the denoised outputs into PreFinal with
+    // CmNoisyCompose's exact arithmetic (CmNrdCompose). NrdDenoiser::Denoise
+    // runs between the two.
+    void      PackForNrd( VkCommandBuffer                               cmd,
+                          uint32_t                                      frameIndex,
+                          const std::shared_ptr< const GlobalUniform >& uniform );
+    void      ComposeAfterNrd( VkCommandBuffer                               cmd,
+                               uint32_t                                      frameIndex,
+                               const std::shared_ptr< const GlobalUniform >& uniform );
+
     void      OnShaderReload( const ShaderManager* shaderManager ) override;
 
 private:
@@ -66,6 +90,9 @@ private:
     VkPipeline                      temporalAccumulation;
     VkPipeline                      varianceEstimation;
     VkPipeline                      atrous[ 4 ];
+    VkPipeline                      noisyCompose;
+    VkPipeline                      nrdPack{ VK_NULL_HANDLE };
+    VkPipeline                      nrdCompose{ VK_NULL_HANDLE };
 };
 
 }

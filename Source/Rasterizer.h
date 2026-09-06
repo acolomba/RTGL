@@ -84,7 +84,9 @@ public:
     void DrawSkyToCubemap( VkCommandBuffer       cmd,
                            uint32_t              frameIndex,
                            const TextureManager& textureManager,
-                           const GlobalUniform&  uniform );
+                           const GlobalUniform&  uniform,
+                           const Tonemapping&    tonemapping,
+                           const Volumetric&     volumetric );
 
     void DrawDecals( VkCommandBuffer               cmd,
                      uint32_t                      frameIndex,
@@ -98,12 +100,19 @@ public:
     void DrawSkyToAlbedo( VkCommandBuffer               cmd,
                           uint32_t                      frameIndex,
                           const TextureManager&         textureManager,
+                          const GlobalUniform&          uniform,
+                          const Tonemapping&            tonemapping,
+                          const Volumetric&             volumetric,
                           const float*                  view,
                           const RgFloat3D&              skyViewerPos,
                           const float*                  proj,
                           const RgFloat2D&              jitter,
                           const RenderResolutionHelper& renderResolution );
 
+    // toRrTransparencyLayer: draw into FB_IMAGE_INDEX_RR_TRANSPARENCY (the
+    // DLSS-RR transparency layer, NGX-composited after denoise) instead of the
+    // final image. Same geometry, same depth test against the ray-traced
+    // depth; only the destination and the attachment-0 alpha semantics differ.
     void DrawToFinalImage( VkCommandBuffer               cmd,
                            uint32_t                      frameIndex,
                            const TextureManager&         textureManager,
@@ -114,7 +123,8 @@ public:
                            const float*                  proj,
                            const RgFloat2D&              jitter,
                            const RenderResolutionHelper& renderResolution,
-                           float                         lightmapScreenCoverage );
+                           float                         lightmapScreenCoverage,
+                           bool                          toRrTransparencyLayer );
 
     void DrawClassic( VkCommandBuffer               cmd,
                       uint32_t                      frameIndex,

@@ -1,0 +1,662 @@
+// Doom64-RT: VOLUMETRIC CLOUDS -- the march.
+//
+// One thread per cloud-map texel. Each texel is a world direction; the thread
+// intersects that direction with a horizontal slab above the sky viewer,
+// marches it, integrates Beer-Lambert extinction and single scattering from
+// (a) a directional light above the slab (the moon) and (b) an optional light
+// from BELOW (a burning ground, for the fire skies), and stores premultiplied
+// radiance + transmittance. The sky fragment shaders composite that over the
+// dome; the GI cubemap gets it by the same shader, so the level is lit by the
+// clouds with nothing to keep in sync.
+//
+// The density field is the one tools/gen_clouds.py bakes for the shell deck,
+// evaluated in the shader instead of sliced: FBM value noise, a coverage
+// threshold, a base-heavy vertical profile and a high-frequency erosion.
+//
+// Temporal history is a plain blend with the previous map AT THE SAME TEXEL.
+// Same texel = same world direction, so this is exact for a static sky and a
+// small, uniform lag for a drifting one. There is deliberately no reprojection
+// and no validation against depth or normals: that machinery is what let
+// sprites punch holes in the froxel fog's history, and a direction map has
+// nothing for a sprite to invalidate.
+
+#version 460
+
+#define DESC_SET_VOLUMETRIC 0
+#define DESC_SET_GLOBAL_UNIFORM 1
+#define DESC_SET_RANDOM 2
+#include "ShaderCommonGLSLFunc.h"
+#include "Clouds.h"
+
+layout( local_size_x = COMPUTE_CLOUDMAP_GROUP_SIZE_X,
+        local_size_y = COMPUTE_CLOUDMAP_GROUP_SIZE_Y,
+        local_size_z = 1 ) in;
+
+// --- noise ------------------------------------------------------------------
+
+float cloudHash( vec3 p )
+{
+    p = fract( p * 0.3183099 + vec3( 0.1, 0.2, 0.3 ) );
+    p *= 17.0;
+    return fract( p.x * p.y * p.z * ( p.x + p.y + p.z ) );
+}
+
+float cloudValueNoise( vec3 x )
+{
+    vec3 i = floor( x );
+    vec3 f = fract( x );
+    f      = f * f * ( 3.0 - 2.0 * f );
+
+    return mix( mix( mix( cloudHash( i + vec3( 0, 0, 0 ) ), cloudHash( i + vec3( 1, 0, 0 ) ), f.x ),
+                     mix( cloudHash( i + vec3( 0, 1, 0 ) ), cloudHash( i + vec3( 1, 1, 0 ) ), f.x ),
+                     f.y ),
+                mix( mix( cloudHash( i + vec3( 0, 0, 1 ) ), cloudHash( i + vec3( 1, 0, 1 ) ), f.x ),
+                     mix( cloudHash( i + vec3( 0, 1, 1 ) ), cloudHash( i + vec3( 1, 1, 1 ) ), f.x ),
+                     f.y ),
+                f.z );
+}
+
+float cloudFbm( vec3 p, int octaves )
+{
+    float a = 0.5;
+    float s = 0.0;
+    float n = 0.0;
+    for( int i = 0; i < octaves; i++ )
+    {
+        s += a * cloudValueNoise( p );
+        n += a;
+        p = p * 2.03 + vec3( 13.1, 7.7, 3.3 );
+        a *= 0.5;
+    }
+    return s / n;
+}
+
+// --- the field --------------------------------------------------------------
+
+struct CloudSlab
+{
+    vec3  up, t1, t2;
+    float bottom, thickness;
+    float coverage, density, invFeature, detail;
+    vec2  windOffset; // metres, along t1/t2
+    int   layers;     // 1 = one slab, 2 = two decks with a fire sheet between
+    float gapFrac;    // fraction of the thickness between the decks
+    float time;       // playsim seconds, for the fire's pulse
+    float pulseAmp, pulseSpeed, flickerAmp;
+};
+
+// THE FIRE PULSES. Two layers of time-varying noise over the map plane: a
+// slow breathing per burning patch (patches a few hundred metres across, a
+// cycle every few seconds) and a fast flicker on top. Multiplies the fire
+// field, so both the emission and the light it casts on the decks move.
+// Never negative: a patch can dim to nothing, not burn black.
+float firePulse( CloudSlab s, vec2 xz )
+{
+    if( s.pulseAmp <= 0.0 && s.flickerAmp <= 0.0 )
+    {
+        return 1.0;
+    }
+    float t    = s.time * s.pulseSpeed;
+    float slow = cloudValueNoise( vec3( xz * 0.0025, t * 0.35 ) + vec3( 5.0, 9.0, 0.0 ) );
+    float fast = cloudValueNoise( vec3( xz * 0.008, t * 3.0 ) + vec3( 17.0, 3.0, 11.0 ) );
+    float m    = 1.0 + s.pulseAmp * ( slow * 2.0 - 1.0 ) + s.flickerAmp * ( fast * 2.0 - 1.0 );
+    return max( m, 0.0 );
+}
+
+// 0..1 density at a world point; `octaves` is the quality knob the light march
+// uses to be cheaper than the view march.
+// TWO DECKS (s.layers == 2): the slab is [lower deck | gap | upper deck] by
+// height fraction; the fire sheet lives in the gap. Returns the deck a height
+// fraction h is in (0 lower, 1 upper, -1 gap/outside) and h remapped to 0..1
+// inside that deck.
+int cloudDeckOf( CloudSlab s, float h, out float hl )
+{
+    hl = h;
+    if( s.layers < 2 )
+    {
+        return ( h > 0.0 && h < 1.0 ) ? 0 : -1;
+    }
+    float a1 = 0.5 - 0.5 * s.gapFrac; // top of the lower deck
+    float b0 = 0.5 + 0.5 * s.gapFrac; // bottom of the upper deck
+    if( h > 0.0 && h < a1 )
+    {
+        hl = h / a1;
+        return 0;
+    }
+    if( h > b0 && h < 1.0 )
+    {
+        hl = ( h - b0 ) / ( 1.0 - b0 );
+        return 1;
+    }
+    return -1;
+}
+
+float cloudDensityAt( CloudSlab s, vec3 p, int octaves )
+{
+    float h = ( dot( p, s.up ) - s.bottom ) / s.thickness;
+    float hl;
+    int   deck = cloudDeckOf( s, h, hl );
+    if( deck < 0 )
+    {
+        return 0.0;
+    }
+
+    // Base-heavy profile: flat undersides, tops that thin out. The same shape
+    // gen_clouds.py settled on after its two failed attempts. The UPPER deck
+    // is seen from underneath, so its profile is flipped: a flat, dark
+    // underside facing the fire and tops that nobody sees.
+    float profile = smoothstep( 0.0, 0.12, hl ) * ( 1.0 - smoothstep( 0.55, 1.0, hl ) );
+
+    vec2 xz = vec2( dot( p, s.t1 ), dot( p, s.t2 ) ) + s.windOffset;
+    // The upper deck drifts a little faster and samples a different part of
+    // the field, so the two decks never line up.
+    if( deck == 1 )
+    {
+        xz += s.windOffset * 0.35 + vec2( 1700.0, 900.0 );
+    }
+    vec3 q  = vec3( xz.x, dot( p, s.up ), xz.y ) * s.invFeature;
+
+    float base  = cloudFbm( q, octaves );
+    float shape = clamp( ( base - ( 1.0 - s.coverage ) ) / max( s.coverage, 1e-3 ), 0.0, 1.0 );
+    shape *= profile;
+    if( shape <= 0.0 )
+    {
+        return 0.0;
+    }
+
+    // Erosion: high-frequency noise eats the edges of thin cloud and leaves
+    // the dense cores alone, which is what turns blobs into cloud.
+    if( s.detail > 0.0 && octaves >= 3 )
+    {
+        float e = cloudFbm( q * 5.7 + vec3( 31.0, 17.0, 5.0 ), 2 );
+        float erode = s.detail * 0.45 * ( 1.0 - shape );
+        shape = clamp( ( shape - erode ) / max( 1.0 - erode, 1e-3 ), 0.0, 1.0 );
+    }
+
+    return shape;
+}
+
+// FIRE POCKETS. A second, sparse field over the same slab, offset so it does
+// not correlate with the cloud. 0..1, 1 = the heart of a pocket. Pockets are
+// biased toward the LOWER half of the slab (the fire is under the deck) and
+// toward thin cloud: a pocket inside a dense core is hidden anyway, and one in
+// a gap is what the reference shows -- fire seen BETWEEN the clouds.
+float firePocketAt( CloudSlab s, vec3 p, float cloudShape, float invFeature, float threshold )
+{
+    float h = ( dot( p, s.up ) - s.bottom ) / s.thickness;
+    if( h <= -0.1 || h >= 1.0 )
+    {
+        return 0.0;
+    }
+    vec2 xz = vec2( dot( p, s.t1 ), dot( p, s.t2 ) ) + s.windOffset * 0.6;
+    vec3 q  = vec3( xz.x, dot( p, s.up ) * 0.5, xz.y ) * invFeature + vec3( 71.0, 23.0, 47.0 );
+    float f = cloudFbm( q, 3 );
+    float pocket = clamp( ( f - threshold ) / max( 1.0 - threshold, 1e-3 ), 0.0, 1.0 );
+    pocket *= pocket;
+    // Lower in the slab burns harder, and dense cloud smothers it.
+    pocket *= ( 1.0 - 0.6 * clamp( h, 0.0, 1.0 ) ) * ( 1.0 - 0.7 * cloudShape );
+    return pocket * firePulse( s, xz );
+}
+
+// THE FIRE SHEET (layers == 2): the burning layer between the decks. A 2D
+// field over the map plane -- fire seen from above is a surface, a sea of it
+// -- with a threshold for cover. 0..1. `blur` > 0 samples it coarser, for the
+// irradiance it casts on the decks rather than its own look.
+float fireSheetField( CloudSlab s, vec2 xz, float invFeature, float threshold, float blur )
+{
+    xz += s.windOffset * 0.4;
+    vec3  q = vec3( xz.x, 0.0, xz.y ) * invFeature * ( 1.0 - 0.6 * blur ) + vec3( 71.0, 23.0, 47.0 );
+    float f = cloudFbm( q, blur > 0.0 ? 2 : 4 );
+    float t = threshold - 0.15 * blur;
+    float v = clamp( ( f - t ) / max( 1.0 - t, 1e-3 ), 0.0, 1.0 );
+    return v * v * firePulse( s, xz );
+}
+
+// The sheet's vertical shape inside the gap: a thin burning layer, brightest
+// in the middle of the gap. 0 outside it.
+float fireSheetProfile( CloudSlab s, float h )
+{
+    if( s.layers < 2 )
+    {
+        return 0.0;
+    }
+    float a1 = 0.5 - 0.5 * s.gapFrac;
+    float b0 = 0.5 + 0.5 * s.gapFrac;
+    if( h <= a1 || h >= b0 )
+    {
+        return 0.0;
+    }
+    float g = ( h - a1 ) / ( b0 - a1 );
+    return 1.0 - abs( 2.0 * g - 1.0 );
+}
+
+// Optical depth from p along dir until the height fraction `planeH` of the
+// slab (or out of the slab), through cloud only. Used to shade a deck from
+// the sheet: the lower deck is lit from ABOVE (toward a1), the upper from
+// BELOW (toward b0).
+float cloudOpticalDepthToPlane( CloudSlab s, vec3 p, vec3 dir, float planeH, int steps, float sigma )
+{
+    float upd = dot( dir, s.up );
+    if( abs( upd ) < 1e-3 )
+    {
+        return 0.0;
+    }
+    float h     = ( dot( p, s.up ) - s.bottom ) / s.thickness;
+    float dist  = ( planeH - h ) * s.thickness / upd;
+    dist        = clamp( dist, 0.0, s.thickness * 2.0 );
+    float dt    = dist / float( steps );
+    float tau   = 0.0;
+    for( int i = 0; i < steps; i++ )
+    {
+        vec3 q = p + dir * ( ( float( i ) + 0.5 ) * dt );
+        tau += cloudDensityAt( s, q, 2 ) * sigma * dt;
+    }
+    return tau;
+}
+
+// FLAME CASCADES: fire raining from the cloud base. Thin vertical columns
+// (noise in the map plane only, so a column is the same all the way down),
+// their brightness scrolled DOWN the column by time (noise along the
+// vertical, offset by time*speed), seeded under the burning parts of the
+// sheet, fading out with distance below the base. 0..1.
+float flameCascadeAt( CloudSlab s, vec3 p, float invWidth, float threshold, float invLen, float speed )
+{
+    float below = s.bottom - dot( p, s.up ); // metres under the base
+    if( below <= 0.0 )
+    {
+        return 0.0;
+    }
+    float depth = below * invLen;
+    if( depth >= 1.0 )
+    {
+        return 0.0;
+    }
+    float y  = dot( p, s.up );
+    vec2 xz  = vec2( dot( p, s.t1 ), dot( p, s.t2 ) ) + s.windOffset * 0.4;
+
+    // NOT A SHAFT. A straight column of uniform width modulated slowly reads
+    // as a light beam (reported 2026-08-23). Three things make it fire
+    // pouring down instead:
+    //  * the streak BENDS -- its map-plane position wanders with height, so
+    //    it is a falling ribbon, not a ruled line;
+    //  * it is broken into DRIPS -- a hard-contrast pattern scrolling down
+    //    the column, each drip a bright head and a dimmer tail;
+    //  * it has a bright ROOT at the base and tapers below.
+    float wob = 1.6 / max( invWidth, 1e-4 ); // wobble amplitude: ~1.6 widths
+    vec2 bend = vec2( cloudValueNoise( vec3( xz * invWidth * 0.15, y * 0.004 + 2.0 ) ),
+                      cloudValueNoise( vec3( xz * invWidth * 0.15 + 5.0, y * 0.004 + 7.0 ) ) ) * 2.0 - 1.0;
+    vec2 xzb = xz + bend * wob * depth;
+
+    // The columns: a map-plane field thresholded to thin lines, sharpened.
+    float c = cloudValueNoise( vec3( xzb * invWidth, 3.0 ) );
+    c       = clamp( ( c - threshold ) / max( 1.0 - threshold, 1e-3 ), 0.0, 1.0 );
+    c       = c * c * c;
+    if( c <= 0.001 )
+    {
+        return 0.0;
+    }
+
+    // The drips: two scrolling patterns along the column at different
+    // speeds, sharpened into heads. `along` grows with height, so + time
+    // moves the pattern DOWN.
+    float a1 = ( y + s.time * speed ) * invWidth * 0.35;
+    float a2 = ( y + s.time * speed * 0.6 ) * invWidth * 0.12;
+    float d1 = cloudValueNoise( vec3( xzb * invWidth * 0.4 + 11.0, a1 ) );
+    float d2 = cloudValueNoise( vec3( xzb * invWidth * 0.2 + 23.0, a2 ) );
+    // A drip has a sharp bright head and a tail that trails it (fract ramp).
+    float head = pow( d1, 4.0 ) * 3.0 + pow( d2, 3.0 ) * 1.5;
+    float fall = 0.08 + head;
+
+    // Seeded by the burning sheet above (its coarse copy), so cascades hang
+    // under fire and not under dark cloud.
+    float seed = fireSheetField( s, xz, globalUniform.cloudFireParams.y, globalUniform.cloudFireParams.z, 1.0 );
+
+    // Root and taper.
+    float fade = ( 1.0 - depth ) * ( 1.0 - depth ) + 0.8 * pow( 1.0 - depth, 8.0 );
+    return c * fall * seed * fade;
+}
+
+float cloudHG( float cosTheta, float g )
+{
+    float g2 = g * g;
+    return ( 1.0 - g2 ) / ( 4.0 * M_PI * pow( max( 1.0 + g2 - 2.0 * g * cosTheta, 1e-4 ), 1.5 ) );
+}
+
+// Optical depth from p toward `dir`, out of the slab.
+float cloudOpticalDepthToward( CloudSlab s, vec3 p, vec3 dir, int steps, float sigma )
+{
+    float upd = dot( dir, s.up );
+    // Distance along dir to leave the slab (top if going up, bottom if down).
+    float h    = dot( p, s.up );
+    float dist = upd > 1e-3   ? ( s.bottom + s.thickness - h ) / upd
+                 : upd < -1e-3 ? ( s.bottom - h ) / upd
+                               : s.thickness; // sideways: one thickness is plenty
+    dist = clamp( dist, 0.0, s.thickness * 2.0 );
+
+    float dt  = dist / float( steps );
+    float tau = 0.0;
+    for( int i = 0; i < steps; i++ )
+    {
+        vec3 q = p + dir * ( ( float( i ) + 0.5 ) * dt );
+        tau += cloudDensityAt( s, q, 2 ) * sigma * dt;
+    }
+    return tau;
+}
+
+void main()
+{
+    ivec2 pix = ivec2( gl_GlobalInvocationID.xy );
+    if( pix.x >= CLOUDMAP_WIDTH || pix.y >= CLOUDMAP_HEIGHT )
+    {
+        return;
+    }
+
+    vec2 uv  = ( vec2( pix ) + 0.5 ) / vec2( CLOUDMAP_WIDTH, CLOUDMAP_HEIGHT );
+    vec3 dir = cloudUvToDir( uv );
+
+    vec4 result = vec4( 0, 0, 0, 1 );
+
+    if( cloudsEnabled() )
+    {
+        CloudSlab s;
+        cloudBasis( s.up, s.t1, s.t2 );
+        s.bottom     = globalUniform.cloudParams0.y;
+        s.thickness  = max( globalUniform.cloudParams0.z, 1.0 );
+        s.coverage   = clamp( globalUniform.cloudParams0.w, 0.0, 1.0 );
+        s.density    = max( globalUniform.cloudParams1.x, 0.0 );
+        s.invFeature = globalUniform.cloudParams1.y;
+        s.detail     = clamp( globalUniform.cloudParams1.z, 0.0, 1.0 );
+        float time   = globalUniform.cloudParams1.w;
+        s.windOffset = vec2( globalUniform.cloudParams3.w, globalUniform.cloudTint.w ) * time;
+        s.layers     = int( globalUniform.cloudLayerParams.x + 0.5 );
+        s.gapFrac    = clamp( globalUniform.cloudLayerParams.y, 0.02, 0.8 );
+        float sheetExt = max( globalUniform.cloudLayerParams.z, 0.0 );
+        s.time       = time;
+        s.pulseAmp   = globalUniform.cloudFireAnim.x;
+        s.pulseSpeed = globalUniform.cloudFireAnim.y;
+        s.flickerAmp = globalUniform.cloudFireAnim.z;
+
+        int   steps       = int( clamp( globalUniform.cloudParams2.x, 4.0, 128.0 ) );
+        int   lightSteps  = int( clamp( globalUniform.cloudParams2.y, 1.0, 16.0 ) );
+        float horizonFade = max( globalUniform.cloudParams2.z, 0.01 );
+        float tFloor      = clamp( globalUniform.cloudParams3.x, 0.0, 1.0 );
+        float asym        = clamp( globalUniform.cloudParams3.y, -0.95, 0.95 );
+        uint  debugMode   = uint( globalUniform.cloudParams3.z + 0.5 );
+
+        vec3  fireColor     = globalUniform.cloudBackColor.rgb;
+        float fireStrength  = globalUniform.cloudFireParams.x;
+        float fireInvScale  = globalUniform.cloudFireParams.y;
+        float fireThresh    = globalUniform.cloudFireParams.z;
+        float fireLit       = globalUniform.cloudFireParams.w;
+        bool  fire          = fireStrength > 0.0;
+
+        float cascStrength = globalUniform.cloudCascade.x;
+        float cascInvLen   = globalUniform.cloudCascade.y;
+        float cascThresh   = globalUniform.cloudCascade.z;
+        float cascSpeed    = globalUniform.cloudCascade.w;
+        float cascInvWidth = globalUniform.cloudFireAnim.w;
+        bool  cascade      = fire && cascStrength > 0.0;
+        float cascLen      = cascade ? 1.0 / max( cascInvLen, 1e-5 ) : 0.0;
+
+        vec3  albedo        = globalUniform.cloudTint.rgb;
+        vec3  lightDir      = globalUniform.cloudLightDir.xyz;
+        float underStrength = globalUniform.cloudLightDir.w;
+        vec3  lightColor    = globalUniform.cloudLightColor.rgb;
+        vec3  underColor    = globalUniform.cloudUnderColor.rgb * underStrength;
+        vec3  ambient       = globalUniform.cloudAmbient.rgb;
+
+        float upd = dot( dir, s.up );
+        float altDeg = degrees( asin( clamp( upd, -1.0, 1.0 ) ) );
+        float fade   = smoothstep( 0.0, horizonFade, altDeg );
+
+        if( upd > 1e-3 && fade > 0.0 )
+        {
+            float t0 = s.bottom / upd;
+            float t1 = ( s.bottom + s.thickness ) / upd;
+            // Near the horizon the chord through the slab gets very long;
+            // cap it so the step size stays sane and the far edge fades
+            // rather than aliases.
+            t1 = min( t1, t0 + s.thickness * 12.0 );
+
+            // The step count follows the chord: straight up the slab is one
+            // thickness deep, near the horizon it is up to twelve, and a
+            // fixed count there is one sample per feature -- which is the
+            // "distant clouds are noisy" of 2026-08-23. Capped at 4x.
+            float chordRel = ( t1 - t0 ) / s.thickness;
+            steps = int( clamp( float( steps ) * chordRel, float( steps ), float( steps ) * 4.0 ) );
+            steps = min( steps, 160 );
+
+            float dt = ( t1 - t0 ) / float( steps );
+            // Per-frame jitter on the start offset; the history blend below
+            // turns it into supersampling along the ray.
+            float jitter =
+                fract( cloudHash( vec3( vec2( pix ), float( globalUniform.frameId & 63u ) ) ) );
+
+            bool  lightUp  = dot( lightDir, s.up ) > 0.02;
+            float phaseL   = cloudHG( dot( dir, lightDir ), asym );
+            // The ground light comes from straight below and is diffuse; the
+            // viewer looks UP at it, so its phase is the back-scatter side.
+            float phaseU   = cloudHG( dot( dir, -s.up ), asym * 0.5 );
+            float sigma    = s.density;
+
+            vec3  L = vec3( 0.0 );
+            float T = 1.0;
+
+            // THE CASCADES, in their own march through the band under the
+            // base. Pure emission of a smooth field: no extinction, so no
+            // jitter is needed and none is used -- folding them into the
+            // cloud march sampled a 40 m streak every ~40 m with a jittered
+            // start, which was pure noise. Dense and fixed instead. The cloud
+            // in front of the band is behind the viewer here (the band is
+            // under the base), so T is still 1.
+            // Near the horizon the band is crossed at a grazing angle -- a
+            // 400 m band is a 4 km chord at 6 degrees -- so the step count
+            // follows the chord, and the streaks fade out with DISTANCE: a
+            // 40 m column 3 km away is under a map texel and can only alias
+            // (screen/greenFireSky.png). Fire that far is also behind the
+            // level's walls on every map this runs on.
+            float cascAltFade = smoothstep( 8.0, 26.0, altDeg );
+            if( cascade && cascAltFade > 0.0 )
+            {
+                float c0    = max( s.bottom - cascLen, 1.0 ) / upd;
+                float chord = t0 - c0;
+                int   cascSteps = int( clamp( 24.0 * chord * cascInvLen, 24.0, 96.0 ) );
+                float cdt   = chord / float( cascSteps );
+                for( int i = 0; i < cascSteps; i++ )
+                {
+                    float t  = c0 + ( float( i ) + 0.5 ) * cdt;
+                    float df = 1.0 - smoothstep( 800.0, 2000.0, t );
+                    if( df <= 0.0 )
+                    {
+                        continue;
+                    }
+                    vec3  p  = dir * t;
+                    float cz = flameCascadeAt( s, p, cascInvWidth, cascThresh, cascInvLen, cascSpeed );
+                    L += fireColor * ( cascStrength * cz * cdt * cascInvLen * df * cascAltFade );
+                }
+            }
+
+            for( int i = 0; i < steps; i++ )
+            {
+                float t = t0 + ( float( i ) + jitter ) * dt;
+                vec3  p = dir * t;
+
+                // Fewer octaves with distance: the finest octave is ~1/8 of
+                // the feature size, and past a few km that is under a map
+                // texel -- detail there is aliasing, not cloud.
+                int   oct = t < 1500.0 ? 4 : ( t < 4000.0 ? 3 : 2 );
+                float d   = cloudDensityAt( s, p, oct );
+
+                // Fire pockets glow along the ray whether or not there is
+                // cloud at this sample -- that is the fire seen in the gaps.
+                // Volumetric, so a long look through a pocket is brighter
+                // than a glance, and it is attenuated by the cloud in front.
+                float pocket = 0.0;
+                if( fire )
+                {
+                    if( s.layers >= 2 )
+                    {
+                        // The sheet: emissive, and a haze of its own, so a
+                        // long look through fire is both brighter and
+                        // murkier than a glance across it.
+                        float hh = ( dot( p, s.up ) - s.bottom ) / s.thickness;
+                        float prof = fireSheetProfile( s, hh );
+                        if( prof > 0.0 )
+                        {
+                            vec2  xz = vec2( dot( p, s.t1 ), dot( p, s.t2 ) );
+                            float f  = fireSheetField( s, xz, fireInvScale, fireThresh, 0.0 ) * prof;
+                            if( f > 0.001 )
+                            {
+                                float ext   = f * sheetExt * sigma;
+                                float Tstep = exp( -ext * dt );
+                                // Emission integrated over the step, attenuated by its own haze.
+                                L += T * fireColor * ( fireStrength * f * dt / s.thickness ) *
+                                     ( ext > 1e-5 ? ( 1.0 - Tstep ) / ( ext * dt ) : 1.0 );
+                                T *= Tstep;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        pocket = firePocketAt( s, p, d, fireInvScale, fireThresh );
+                        if( pocket > 0.001 )
+                        {
+                            L += T * fireColor * ( fireStrength * pocket * dt / s.thickness );
+                        }
+                    }
+                }
+
+                if( d <= 0.002 )
+                {
+                    continue;
+                }
+
+                if( debugMode == 2 )
+                {
+                    float ext = d * sigma * dt;
+                    L += vec3( T * ( 1.0 - exp( -ext ) ) );
+                    T *= exp( -ext );
+                    if( T < 0.01 ) break;
+                    continue;
+                }
+
+                // Ambient graded with height: a top sees the whole sky, an
+                // underside sees the ground. Under-lit (fire) skies invert
+                // that below via the under term, so it stays mild here.
+                float hf  = clamp( ( dot( p, s.up ) - s.bottom ) / s.thickness, 0.0, 1.0 );
+                vec3  S   = ambient * ( 0.4 + 0.6 * hf );
+
+                if( lightUp && dot( lightColor, lightColor ) > 0.0 )
+                {
+                    float tau = cloudOpticalDepthToward( s, p, lightDir, lightSteps, sigma );
+                    // Multiple scattering, the Wrenninge/Frostbite octave sum:
+                    // each octave sees a thinner cloud and a wider phase, which
+                    // is what keeps a thick deck from going black underneath.
+                    // The 1-0.5exp(-4tau) "powder" term keeps the lit faces
+                    // from saturating flat.
+                    float lt = 0.0;
+                    float ph = phaseL;
+                    float a = 1.0, b = 1.0, g = asym;
+                    for( int o = 0; o < 3; o++ )
+                    {
+                        lt += a * exp( -tau * b ) * ph;
+                        a *= 0.5;
+                        b *= 0.4;
+                        g *= 0.6;
+                        ph = cloudHG( dot( dir, lightDir ), g );
+                    }
+                    lt *= ( 1.0 - 0.5 * exp( -tau * 4.0 ) ) * 2.0;
+                    S += lightColor * lt;
+                }
+
+                // A pocket lights the cloud around it. The "around" is the
+                // pocket field sampled at a coarser scale -- a blurred copy
+                // of the fire -- so cloud NEAR a pocket is lit, not only
+                // cloud inside one, and the edges of a dark mass facing a
+                // pocket catch its colour.
+                if( fire && fireLit > 0.0 )
+                {
+                    if( s.layers >= 2 )
+                    {
+                        // THE SHEET LIGHTS BOTH DECKS. Irradiance from the
+                        // (blurred) sheet directly below/above this sample,
+                        // through the deck's own cloud toward the gap: the
+                        // lower deck's tops and the upper deck's underside
+                        // glow, and the far side of each deck stays dark.
+                        float hh = ( dot( p, s.up ) - s.bottom ) / s.thickness;
+                        float hl;
+                        int   deck = cloudDeckOf( s, hh, hl );
+                        vec2  xz   = vec2( dot( p, s.t1 ), dot( p, s.t2 ) );
+                        float irr  = fireSheetField( s, xz, fireInvScale, fireThresh, 1.0 );
+                        if( irr > 0.001 && deck >= 0 )
+                        {
+                            float a1 = 0.5 - 0.5 * s.gapFrac;
+                            float b0 = 0.5 + 0.5 * s.gapFrac;
+                            int   us = max( lightSteps / 2, 1 );
+                            float tau = ( deck == 0 )
+                                ? cloudOpticalDepthToPlane( s, p,  s.up, a1, us, sigma )
+                                : cloudOpticalDepthToPlane( s, p, -s.up, b0, us, sigma );
+                            float lt = exp( -tau ) + 0.5 * exp( -tau * 0.4 ) + 0.25 * exp( -tau * 0.16 );
+                            // The upper deck faces the viewer with the lit
+                            // side; the lower deck's lit side faces away, so
+                            // it is dimmer from below (what leaks through).
+                            float facing = ( deck == 1 ) ? 1.0 : 0.35;
+                            S += fireColor * ( fireStrength * fireLit * 0.2 * irr * lt * facing );
+                        }
+                    }
+                    else
+                    {
+                        float near = firePocketAt( s, p, 0.0, fireInvScale * 0.45, fireThresh * 0.85 );
+                        S += fireColor * ( fireStrength * fireLit * 0.15 * max( near, pocket ) );
+                    }
+                }
+
+                if( underStrength > 0.0 )
+                {
+                    int   us  = max( lightSteps / 2, 1 );
+                    float tau = cloudOpticalDepthToward( s, p, -s.up, us, sigma );
+                    // Same octave sum as the moon's, so fire light also bleeds
+                    // into the body instead of stopping at the underside.
+                    float ut = exp( -tau ) + 0.5 * exp( -tau * 0.4 ) + 0.25 * exp( -tau * 0.16 );
+                    S += underColor * ut * phaseU;
+                }
+
+                // Energy-conserving integration over the step (Frostbite).
+                float ext  = d * sigma;
+                float Tstep = exp( -ext * dt );
+                vec3  Sint  = ( S * albedo * ext - S * albedo * ext * Tstep ) / max( ext, 1e-5 );
+                L += T * Sint;
+                T *= Tstep;
+
+                if( T < 0.005 )
+                {
+                    break;
+                }
+            }
+
+            // The transmit floor: what a fully opaque column still passes.
+            T = tFloor + ( 1.0 - tFloor ) * T;
+
+            // Horizon fade, on both halves.
+            L *= fade;
+            T  = mix( 1.0, T, fade );
+
+            result = vec4( max( L, vec3( 0.0 ) ), clamp( T, 0.0, 1.0 ) );
+        }
+
+        // Temporal blend, same texel = same direction. historyBlend is 0 on
+        // the frame the clouds were switched on, so the previous (stale) map
+        // never leaks in.
+        float blend = clamp( globalUniform.cloudParams2.w, 0.0, 0.97 );
+        if( blend > 0.0 )
+        {
+            vec4 prev = texelFetch( g_cloudMap_Sampler_Prev, pix, 0 );
+            if( !any( isnan( prev ) ) && !any( isinf( prev ) ) )
+            {
+                result = mix( result, prev, blend );
+            }
+        }
+    }
+
+    imageStore( g_cloudMap, pix, result );
+}

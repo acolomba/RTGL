@@ -48,61 +48,99 @@ struct Devmode
     bool     reloadShaders{ false };
     uint32_t debugShowFlags{ 0 };
 
+    // ImGui FontGlobalScale (base TTF stays 15px). Persisted.
+    float fontGlobalScale{ 1.f };
+
+    // Materials A/B (live; no Override). Persisted. Split for RR diagnosis.
+    bool materialStripNormals{ false };
+    bool materialStripMetallic{ false };
+    bool materialStripRoughness{ false };
+    bool materialStripHeight{ false };
+    bool materialStripEmissives{ false };
+    // Live mix: authored roughness → fully matte (1). Visible A/B after ORM clamp;
+    // minRoughness floor alone is a no-op when maps already sit ~0.82+.
+    float roughnessTowardMatte{ 0.f };
+
+    // Dirty tracking for debounce-save of rt/devmode_settings.json
+    bool   settingsDirty{ false };
+    double settingsDirtyAt{ 0.0 };
+
     bool antiFirefly{ true };
+    // DLSS-RR: A-SVGF temporal before ComposeNoisy. Default OFF — ghosted duplicate view.
+    bool rrTemporalPrefilter{ false };
+    // Once true, Dev checkbox wins over game cvar until "Use game cvar" is pressed.
+    bool rrTemporalPrefilterSticky{ false };
+
+    // Live RR/denoise knobs (always available; sticky wins over game draw params).
+    bool  illumSensSticky{ false };
+    float illumSensDirect{ 1.f };
+    float illumSensIndirect{ 0.75f };
+    float illumSensSpec{ 1.f };
+
+    // Sticky DLSS Ray Reconstruction toggle (Present path); when sticky, overrides start-frame.
+    bool rayReconstruction{ false };
+    bool rayReconstructionSticky{ false };
+
     bool fluidStopVisualize{ false };
 
     struct
     {
-        bool enable;
+        // IMPORTANT: must be value-initialized. Without defaults, `enable` /
+        // `pixelizedEnable` / `upscaleTechnique` are indeterminate after
+        // make_unique<Devmode>(), so Override randomly activates with Nearest/
+        // Linear + pixelized → noisy PT + blocky HUD (intermittent).
+        bool enable{ false };
 
-        int   maxBounceShadows;
-        bool  enableSecondBounceForIndirect;
-        float directDiffuseSensitivityToChange;
-        float indirectDiffuseSensitivityToChange;
-        float specularSensitivityToChange;
+        int   maxBounceShadows{ 0 };
+        int   indirectBounces{ 2 };
+        bool  indirectLegacyBounceWeight{ true };
+        float directDiffuseSensitivityToChange{ 1.f };
+        float indirectDiffuseSensitivityToChange{ 1.f };
+        float specularSensitivityToChange{ 1.f };
 
-        bool  disableEyeAdaptation;
-        float ev100Min;
-        float ev100Max;
-        float saturation[ 3 ];
-        float crosstalk[ 3 ];
+        bool  disableEyeAdaptation{ false };
+        float ev100Min{ 0.f };
+        float ev100Max{ 0.f };
+        float saturation[ 3 ]{ 1.f, 1.f, 1.f };
+        float crosstalk[ 3 ]{ 0.f, 0.f, 0.f };
 
-        bool                     vsync;
-        RgFrameGenerationMode    frameGeneration;
-        bool                     preferDxgiPresent;
-        bool                     hdr;
-        RgRenderUpscaleTechnique upscaleTechnique;
-        RgRenderSharpenTechnique sharpenTechnique;
-        RgRenderResolutionMode   resolutionMode;
-        float                    customRenderSizeScale;
-        bool                     pixelizedEnable;
-        int                      pixelizedHeight;
+        bool                     vsync{ false };
+        RgFrameGenerationMode    frameGeneration{ RG_FRAME_GENERATION_MODE_OFF };
+        bool                     preferDxgiPresent{ true };
+        bool                     hdr{ false };
+        RgRenderUpscaleTechnique upscaleTechnique{ RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS };
+        RgRenderSharpenTechnique sharpenTechnique{ RG_RENDER_SHARPEN_TECHNIQUE_NONE };
+        RgRenderResolutionMode   resolutionMode{ RG_RENDER_RESOLUTION_MODE_BALANCED };
+        float                    customRenderSizeScale{ 1.f };
+        bool                     pixelizedEnable{ false };
+        int                      pixelizedHeight{ 480 };
+        bool                     rayReconstruction{ false };
 
-        float normalMapStrength;
-        float heightMapDepth;
-        float emissionMapBoost;
-        float emissionMaxScreenColor;
+        float normalMapStrength{ 1.f };
+        float heightMapDepth{ 1.f };
+        float emissionMapBoost{ 1.f };
+        float emissionMaxScreenColor{ 1.f };
 
-        float lightmapScreenCoverage;
-        bool  fluidEnabled;
-        bool  fluidReset;
-        RgFloat3D fluidGravity;
+        float lightmapScreenCoverage{ 0.f };
+        bool  fluidEnabled{ false };
+        bool  fluidReset{ false };
+        RgFloat3D fluidGravity{ 0.f, 0.f, -14.f };
 
-        bool allowMapAutoExport;
+        bool allowMapAutoExport{ false };
 
-    } drawInfoOvrd;
+    } drawInfoOvrd{};
 
     struct
     {
-        bool                       fovEnable;
-        float                      fovDeg;
-        bool                       customEnable;
-        RgFloat3D                  customPos;
-        RgFloat2D                  customAngles;
-        RgFloat2D                  intr_lastAngles;
-        std::optional< RgFloat2D > intr_lastMouse;
-        float                      intr_time;
-    } cameraOvrd;
+        bool                       fovEnable{ false };
+        float                      fovDeg{ 90.f };
+        bool                       customEnable{ false };
+        RgFloat3D                  customPos{ 0.f, 0.f, 0.f };
+        RgFloat2D                  customAngles{ 0.f, 0.f };
+        RgFloat2D                  intr_lastAngles{ 0.f, 0.f };
+        std::optional< RgFloat2D > intr_lastMouse{};
+        float                      intr_time{ 0.f };
+    } cameraOvrd{};
 
     bool ignoreExternalGeometry{ false };
     bool allowExportOfExistingReplacements{ false };

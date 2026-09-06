@@ -24,6 +24,7 @@
 #include <cmath>
 
 #include "DLSS2.h"
+#include "DLSSRR.h"
 #include "DLSS3_DX12.h"
 #include "FSR2.h"
 #include "FSR3_DX12.h"
@@ -55,7 +56,8 @@ public:
                 const FSR2*                               fsr2,
                 const FSR3_DX12*                          fsr3dx12,
                 const DLSS2*                              dlss2,
-                const DLSS3_DX12*                         dlss3dx12 )
+                const DLSS3_DX12*                         dlss3dx12,
+                const DLSSRR*                             dlssRr = nullptr )
     {
         // HACKHACK: render into something when the window is minimized
         if( windowWidth == 0 || windowHeight == 0 )
@@ -70,9 +72,42 @@ public:
         upscaledWidth  = windowWidth;
         upscaledHeight = windowHeight;
 
-        upscaleTechnique = params.upscaleTechnique;
-        sharpenTechnique = params.sharpenTechnique;
-        resolutionMode   = params.resolutionMode;
+        upscaleTechnique   = params.upscaleTechnique;
+        sharpenTechnique   = params.sharpenTechnique;
+        dlssPreset         = params.dlssPreset;
+        dlssRrPreset       = params.dlssRrPreset;
+        resolutionMode     = params.resolutionMode;
+        rayReconstruction  = params.rayReconstruction && dlssRr != nullptr;
+
+        // Report what the caller actually asked for, next to which backends
+        // exist. This separates "the game sent the wrong params" from "RTGL
+        // downgraded them", which is otherwise indistinguishable from outside:
+        // every rejection path here silently falls back to another upscaler and
+        // drops rayReconstruction. Finding that gzdoom was sending
+        // upscaleTechnique=AMD_FSR2 alongside rayReconstruction=1 (a stale
+        // rt_upscale_fsr2 in its ini) took an entire investigation without it.
+        // Edge-triggered: a couple of lines per session.
+        {
+            static bool s_have = false;
+            static int  s_prev = -1;
+            const int   st     = int( params.upscaleTechnique ) |
+                             ( int( params.rayReconstruction != 0 ) << 8 ) |
+                             ( int( dlss2 != nullptr ) << 9 ) | ( int( dlssRr != nullptr ) << 10 ) |
+                             ( int( dlss3dx12 != nullptr ) << 11 );
+            if( !s_have || s_prev != st )
+            {
+                s_have = true;
+                s_prev = st;
+                debug::Warning( "Setup(): params.upscaleTechnique={} params.rayReconstruction={} "
+                                "| dlss2={} dlss3dx12={} dlssRr={} fsr2={}",
+                                int( params.upscaleTechnique ),
+                                int( params.rayReconstruction ),
+                                dlss2 ? "yes" : "NULL",
+                                dlss3dx12 ? "yes" : "NULL",
+                                dlssRr ? "yes" : "NULL",
+                                fsr2 ? "yes" : "NULL" );
+            }
+        }
 
         // check for correct values
         {
@@ -87,12 +122,17 @@ public:
                     }
                     break;
                 case RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS:
-                    if( !dlss2 && !dlss3dx12 )
+                    if( !dlss2 && !dlss3dx12 && !dlssRr )
                     {
                         upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NEAREST;
                     }
                     break;
                 default: upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NEAREST; break;
+            }
+            if( rayReconstruction &&
+                ( upscaleTechnique != RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS || !dlssRr ) )
+            {
+                rayReconstruction = false;
             }
             switch( sharpenTechnique )
             {
@@ -144,7 +184,7 @@ public:
         }
         else if( upscaleTechnique == RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS )
         {
-            assert( dlss2 || dlss3dx12 );
+            assert( dlss2 || dlss3dx12 || dlssRr );
             if( resolutionMode == RG_RENDER_RESOLUTION_MODE_CUSTOM )
             {
                 renderWidth  = params.customRenderSize.width;
@@ -152,7 +192,12 @@ public:
             }
             else
             {
-                if( dlss3dx12 )
+                if( rayReconstruction && dlssRr )
+                {
+                    std::tie( renderWidth, renderHeight ) =
+                        dlssRr->GetOptimalSettings( windowWidth, windowHeight, resolutionMode );
+                }
+                else if( dlss3dx12 )
                 {
                     std::tie( renderWidth, renderHeight ) =
                         dlss3dx12->GetOptimalSettings( windowWidth, windowHeight, resolutionMode );
@@ -220,6 +265,10 @@ public:
     {
         return upscaleTechnique == RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
     }
+    bool IsNvDlssRayReconstructionEnabled() const
+    {
+        return IsNvDlssEnabled() && rayReconstruction;
+    }
     bool IsUpscaleEnabled() const { return IsAmdFsr2Enabled() || IsNvDlssEnabled(); }
 
     float GetAmdFsrSharpness() const { return 1.0f; } // 0.0 - max, 1.0 - min
@@ -246,6 +295,16 @@ public:
 
     RgRenderResolutionMode GetResolutionMode() const { return resolutionMode; }
 
+    // Doom64-RT: the NVSDK_NGX_DLSS_Hint_Render_Preset to create the DLSS
+    // feature with. Kept here rather than in ResolutionState because that struct
+    // also drives framebuffer allocation, and a preset change must not be
+    // mistaken for a resize.
+    uint32_t GetDlssPreset() const { return dlssPreset; }
+
+    // Doom64-RT: the Ray Reconstruction twin. Same reasoning -- a preset change
+    // must not be mistaken for a resize, so it is not in ResolutionState.
+    uint32_t GetDlssRrPreset() const { return dlssRrPreset; }
+
     ResolutionState GetResolutionState() const
     {
         assert( Width() % 2 == 0 );
@@ -262,6 +321,14 @@ private:
     RgRenderUpscaleTechnique upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_LINEAR;
     RgRenderSharpenTechnique sharpenTechnique = RG_RENDER_SHARPEN_TECHNIQUE_NONE;
     RgRenderResolutionMode   resolutionMode   = RG_RENDER_RESOLUTION_MODE_CUSTOM;
+    bool                     rayReconstruction = false;
+    // 5 = NVSDK_NGX_DLSS_Hint_Render_Preset_E, which is what RTGL1 hard-coded
+    // before this was configurable.
+    uint32_t                 dlssPreset        = 5;
+    // 5 = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E, what DLSSRR.cpp
+    // hard-coded before this was configurable (D was A/B'd 2026-08-07 and was
+    // clearly worse). NOTE unlike SR, only 0 / 4 / 5 mean anything for RR.
+    uint32_t                 dlssRrPreset      = 5;
 };
 
 }

@@ -26,6 +26,8 @@
 #include "RasterizedDataCollector.h"
 #include "RasterizerPipelines.h"
 #include "TextureManager.h"
+#include "Tonemapping.h"
+#include "Volumetric.h"
 
 namespace RTGL1
 {
@@ -38,6 +40,8 @@ public:
                    const ShaderManager&        shaderManager,
                    const TextureManager&       textureManager,
                    const GlobalUniform&        uniform,
+                   const Tonemapping&          tonemapping,
+                   const Volumetric&           volumetric,
                    const SamplerManager&       samplerManager,
                    CommandBufferManager&       cmdManager,
                    const RgInstanceCreateInfo& instanceInfo );
@@ -53,7 +57,9 @@ public:
                                 uint32_t                       frameIndex,
                                 const RasterizedDataCollector& skyDataCollector,
                                 const TextureManager&          textureManager,
-                                const GlobalUniform&           uniform );
+                                const GlobalUniform&           uniform,
+                                const Tonemapping&             tonemapping,
+                                const Volumetric&              volumetric );
 
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet       GetDescSet() const;
@@ -71,7 +77,9 @@ private:
 
 private:
     void                     CreatePipelineLayout( VkDescriptorSetLayout texturesSetLayout,
-                                                   VkDescriptorSetLayout uniformSetLayout );
+                                                   VkDescriptorSetLayout uniformSetLayout,
+                                                   VkDescriptorSetLayout tonemappingSetLayout,
+                                                   VkDescriptorSetLayout volumetricSetLayout );
     void                     CreateRenderPass();
     void                     InitPipelines( const ShaderManager& shaderManager,
                                             uint32_t             sideSize,

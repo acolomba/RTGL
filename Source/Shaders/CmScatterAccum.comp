@@ -38,7 +38,17 @@ layout( push_constant ) uniform ScatterAccumPush_BT
 }
 push;
 
-vec4 fializeScattering( ivec2 regularPix )
+// Doom64-RT: `toFar` integrates the medium along this pixel's ray ALL THE WAY
+// OUT instead of stopping at the depth buffer. Used under the first-person
+// weapon, where the depth buffer holds the gun at ~0.3 m: stopping there
+// returns no inscatter, and storing that into the temporal buffer is what used
+// to punch a weapon-shaped hole in the fog that outlived the animation. The
+// prefix-summed volume clamps at its last slice, so a far point along the same
+// view ray reads "the whole column" -- the WORLD's fog, which is what the
+// history must carry so the pixel is correct on the frame the sprite uncovers
+// it. (The depth gate no longer culls cells behind the weapon -- see
+// volume_depthGate -- or this integral would be of culled, empty cells.)
+vec4 fializeScattering( ivec2 regularPix, bool toFar )
 {
     if( globalUniform.volumeEnableType == VOLUME_ENABLE_VOLUMETRIC )
     {
@@ -56,6 +66,13 @@ vec4 fializeScattering( ivec2 regularPix )
             position      = worldpos.xyz / worldpos.w;
         }
 
+        if( toFar )
+        {
+            const vec3 dir = safeNormalize2( position - globalUniform.cameraPosition.xyz,
+                                             vec3( 0, 0, 1 ) );
+            position = globalUniform.cameraPosition.xyz + dir * MAX_RAY_LENGTH;
+        }
+
 #ifdef DEBUG_VOLUME_ILLUMINATION
         vec3 sp = volume_toSamplePosition_T(
             position.xyz, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
@@ -64,17 +81,64 @@ vec4 fializeScattering( ivec2 regularPix )
 #endif
 
         uint seed = getRandomSeed( regularPix, globalUniform.frameId );
-        vec3 rnd  = rnd8_4( seed, 0 ).xyz;
 
-        float      oop;
-        const vec3 offset = sampleHemisphere( rnd.x, rnd.y, oop );
+        // Doom64-RT: WITH IN-GRID ACCUMULATION ON, AVERAGE THE DITHER IN SPACE
+        // INSTEAD OF IN TIME. The screen-space history used to average the
+        // sample jitter over rt_volume_history frames; with that history off
+        // (rt_volume_taccum), a single jittered sample per frame would flicker.
+        // Four samples of a field that is already temporally smooth cost four
+        // trilinear taps and put the averaging back, with no history to reject.
+        const int nsamples = globalUniform.volumeGridHistory > 0.5 ? 4 : 1;
 
-        return volume_sampleDithered( position, rnd.z, -offset, 2.0f );
+        vec4 sum = vec4( 0 );
+        for( int i = 0; i < nsamples; i++ )
+        {
+            vec3 rnd = rnd8_4( seed, uint( i ) ).xyz;
+
+            float      oop;
+            const vec3 offset = sampleHemisphere( rnd.x, rnd.y, oop );
+
+        // Dither radius in FROXELS. Stock 2.0 hides the grid in a
+        // low-contrast medium; against dense smoke it reaches across geometry
+        // silhouettes into columns that belong to a different surface.
+        //
+        // THAT IS NOT WHAT DRAWS THE DARK OUTLINES around things seen through
+        // smoke, though this comment used to say so. Measured on MAP93
+        // (docs/rt-volumetric-edge-outlines.md): zeroing this together with the
+        // spatial blur and the depth bias removes 0.2 of a 1.0 artefact. The
+        // outline is one pixel wide and is drawn by the TEMPORAL UPSCALER,
+        // which runs after the composite in CmPrepareFinal -- it disappears
+        // with DLSS and FSR both off and is worst under DLAA.
+        //
+        // SO THE RADIUS STAYS AT 5. This volume is lit at one sample per cell
+        // with one shadow ray and has no spatial denoiser of its own, so this
+        // jitter is most of what keeps the smoke from boiling. Lowering it to
+        // chase the outlines trades a 0.2 improvement for visibly noisy smoke.
+        //
+        // TWO radii, because `-offset` is one-sided in depth and symmetric
+        // across the screen. sampleHemisphere returns z = sqrt(1-u1) > 0, so the
+        // negated depth term only ever pulls the sample TOWARD the camera --
+        // which is what keeps it from reading past the surface, and which also
+        // makes it a bias against a prefix-summed volume rather than a dither.
+        // volumeDitherZ is that axis on its own leash; see volume_sampleDithered.
+            sum += volume_sampleDithered( position,
+                                          rnd.z,
+                                          -offset,
+                                          globalUniform.volumeDither,
+                                          globalUniform.volumeDitherZ );
+        }
+        return sum / float( nsamples );
     }
     else if( globalUniform.volumeEnableType == VOLUME_ENABLE_SIMPLE )
     {
         float virtualdepth =
             texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( regularPix ), 0 ).r;
+        // Doom64-RT: under the weapon, the analytic fog integrates to the far
+        // plane too -- same contract as the froxel path above.
+        if( toFar )
+        {
+            virtualdepth = globalUniform.volumeCameraFar;
+        }
         bool isSky = virtualdepth > MAX_RAY_LENGTH;
 
         float density = globalUniform.volumeScattering * 0.00005;
@@ -82,7 +146,13 @@ vec4 fializeScattering( ivec2 regularPix )
         if( !isSky )
         {
             float f = exp( -virtualdepth * density );
-            return vec4( globalUniform.volumeAmbient.rgb * ( 1.0f - f ), f );
+            // Doom64-RT: same medium tint the froxel path applies, so
+            // rt_volume_type 2 is the SAME fog colour with the lighting taken
+            // out of it -- which is what makes it a usable A/B against the lit
+            // one (tools/ab-fog.cmd flat) rather than a different effect.
+            return vec4( globalUniform.volumeAmbient.rgb * globalUniform.volumeMediaColor.rgb *
+                             ( 1.0f - f ),
+                         f );
         }
         else
         {
@@ -103,9 +173,40 @@ void main()
         return;
     }
 
+    // Doom64-RT: WITH IN-GRID ACCUMULATION ON, THERE IS NO SCREEN-SPACE
+    // HISTORY. The froxel grid itself is temporally accumulated in world space
+    // (CmVolumetricProcess, rt_volume_taccum), so the ray integral is simply
+    // recomputed every frame from a smooth field: no reprojection, no
+    // validation, no restart -- the entire mechanism behind the weapon trail,
+    // the casing trail and the thunder smears
+    // (docs/rt-volumetric-weapon-trails.md) does not run. The fresh sample is
+    // taken at the SURFACE depth for every pixel, weapon included: ~0.3 m of
+    // medium to the gun is correctly next to nothing, and there is no history
+    // left for the sprite to corrupt.
+    if( globalUniform.volumeGridHistory > 0.5 )
+    {
+        const ivec2 regular = getRegularPixFromCheckerboardPix( pix );
+
+        imageStore( framebufScattering, regular, fializeScattering( regular, false ) );
+        imageStore( framebufScatteringHistory, regular, vec4( 1.0 ) );
+        return;
+    }
+
     const float motionZ = texelFetch( framebufMotion_Sampler, pix, 0 ).z;
     const float depth   = texelFetch( framebufDepthWorld_Sampler, pix, 0 ).r;
     const vec3  normal  = texelFetchNormal( pix );
+
+    // Doom64-RT: IS THIS PIXEL THE FIRST-PERSON WEAPON?
+    //
+    // RaygenPrimary packs h.instCustomIndex into framebufSurfacePosition.w, and
+    // the weapon is submitted with RG_MESH_FIRST_PERSON (rt_draw.cpp), so the
+    // flag is readable here per pixel. Fetched at `pix` -- the checkerboard
+    // pixel -- because that is where RaygenPrimary stores it, the same as depth
+    // and normal above.
+    const bool isFirstPerson =
+        globalUniform.volumeFp > 0.0 &&
+        ( floatBitsToUint( texelFetch( framebufSurfacePosition_Sampler, pix, 0 ).a ) &
+          INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON ) != 0;
 
     ivec2 pixPrev;
     vec2  subPix;
@@ -124,6 +225,39 @@ void main()
     float historyLen = 0;
     float weightSum  = 0;
 
+    // Doom64-RT: THE MEDIUM'S OWN REPROJECTION RULES.
+    //
+    // The tap loop below validates carried history. The stock rules were a
+    // surface denoiser's -- strict depth AND normal agreement -- and they are
+    // the wrong physics for a participating medium: the scattering at a pixel
+    // is an integral along the ray, which cares how FAR the ray goes and not
+    // at all what surface ends it or which way that surface faces. Under
+    // rt_volume_reproj 1 a tap is accepted when the previous path length is
+    // within 25% of the current one -- fog-to-a-monster at 20 m and
+    // fog-to-the-wall at 24 m are the same veil to within a few percent, and
+    // rejecting that history at every billboard silhouette under camera motion
+    // is what turned every sprite into a smear during MAP12's thunder. The
+    // weapon at 0.3 m against a wall at 4 m fails 25% by an order of
+    // magnitude, so the one rejection that IS correct still happens -- and is
+    // then handled by the first-person machinery below instead of by decay.
+    //
+    // UNDER THE WEAPON, do not reproject at all: the motion vectors there are
+    // the WEAPON'S own (HitInfo.inl reprojects the hit triangle), and carrying
+    // the medium along them drags the fog around with the gun -- measured, and
+    // it is exactly the "smoke sticks to the weapon" complaint. The medium is
+    // attached to the world, and the world behind the sprite has not moved:
+    // read the previous frame at the SAME screen pixel, integrate this frame's
+    // far-sample into it (fresh is taken TO FAR under the sprite, see
+    // fializeScattering), and mark the store with a sign bit so the frame that
+    // uncovers this pixel knows the value is the world's fog and accepts it.
+    if( isFirstPerson )
+    {
+        const ivec2 self = getRegularPixFromCheckerboardPix( pix );
+        accum      = texelFetch( framebufScattering_Prev_Sampler, self, 0 );
+        historyLen = abs( texelFetch( framebufScatteringHistory_Prev_Sampler, self, 0 ).r );
+        weightSum  = historyLen > 0.0 ? 1.0 : 0.0;
+    }
+    else
     // 2x2 tap bilinear interpolation
     for( int yy = 0; yy <= 1; yy++ )
     {
@@ -132,22 +266,98 @@ void main()
             ivec2 xy = pixPrev + ivec2( xx, yy );
 
             float depthPrev  = texelFetch( framebufDepthWorld_Prev_Sampler, xy, 0 ).r;
-            vec3  normalPrev = texelFetchNormal_Prev( xy );
 
-            if( testPixInRenderArea( xy, getCheckerboardedRenderArea( pix ) ) &&
-                testReprojectedDepth( depth, depthPrev, motionZ ) &&
-                testReprojectedNormal( normal, normalPrev ) )
+            // History stored under the weapon is NEGATED (r16f, one signed
+            // channel, and a real length is always >= 1, so the sign is free).
+            // A negative tap is the world's fog carried under the sprite --
+            // accepted on the frame the sprite uncovers it, which is the whole
+            // point of carrying it. Its magnitude is a real history length.
+            const float rawHistory = texelFetch( framebufScatteringHistory_Prev_Sampler,
+                                                 getRegularPixFromCheckerboardPix( xy ),
+                                                 0 )
+                                         .r;
+            const bool prevWasFirstPerson = rawHistory < 0.0;
+
+            bool ok;
+            if( prevWasFirstPerson )
+            {
+                ok = true;
+            }
+            else if( globalUniform.volumeReproj != 0 )
+            {
+                // Media rules: relative path length, no normal test.
+                ok = abs( depth - depthPrev + motionZ ) / max( abs( depth ), 0.001 ) < 0.25;
+            }
+            else
+            {
+                // The old surface rules, kept as the A/B control.
+                ok = testReprojectedDepth( depth, depthPrev, motionZ ) &&
+                     testReprojectedNormal( normal, texelFetchNormal_Prev( xy ) );
+            }
+
+            if( ok && testPixInRenderArea( xy, getCheckerboardedRenderArea( pix ) ) )
             {
                 const float weight = bilinearWeights[ yy ][ xx ];
 
                 accum += weight * texelFetch( framebufScattering_Prev_Sampler,
                                               getRegularPixFromCheckerboardPix( xy ),
                                               0 );
-                historyLen += weight * texelFetch( framebufScatteringHistory_Prev_Sampler,
+                historyLen += weight * abs( rawHistory );
+                weightSum += weight;
+            }
+        }
+    }
+
+    // Doom64-RT: HISTORY DILATION -- when everything above was rejected, look a
+    // little further before starting from nothing. The medium is resolved on a
+    // 160x88 grid, so a neighbour's history is a far better estimate of this
+    // pixel's fog than one fresh sample of a volume lit at one shadow ray per
+    // cell -- and against a TRANSIENT light (a muzzle flash, thunder) the
+    // difference is not noise but most of the signal: the neighbours still
+    // hold the flash and a restarted pixel does not, which is what made every
+    // rejection band flicker against its surroundings. Taps are validated by
+    // the same media rules; this borrows history that belongs to this ray, it
+    // does not accept a real disocclusion.
+    bool dilated = false;
+    if( weightSum <= 0.0001 && !isFirstPerson )
+    {
+        const int r = 2;
+        for( int dy = -1; dy <= 1; dy++ )
+        {
+            for( int dx = -1; dx <= 1; dx++ )
+            {
+                if( dx == 0 && dy == 0 )
+                {
+                    continue;
+                }
+                const ivec2 xy = pixPrev + ivec2( dx * r, dy * r );
+
+                const float depthPrev =
+                    texelFetch( framebufDepthWorld_Prev_Sampler, xy, 0 ).r;
+
+                bool ok;
+                if( globalUniform.volumeReproj != 0 )
+                {
+                    ok = abs( depth - depthPrev + motionZ ) / max( abs( depth ), 0.001 ) < 0.25;
+                }
+                else
+                {
+                    ok = testReprojectedDepth( depth, depthPrev, motionZ ) &&
+                         testReprojectedNormal( normal, texelFetchNormal_Prev( xy ) );
+                }
+
+                if( ok && testPixInRenderArea( xy, getCheckerboardedRenderArea( pix ) ) )
+                {
+                    accum += texelFetch( framebufScattering_Prev_Sampler,
+                                         getRegularPixFromCheckerboardPix( xy ),
+                                         0 );
+                    historyLen += abs( texelFetch( framebufScatteringHistory_Prev_Sampler,
                                                    getRegularPixFromCheckerboardPix( xy ),
                                                    0 )
-                                           .r;
-                weightSum += weight;
+                                           .r );
+                    weightSum += 1.0;
+                    dilated = true;
+                }
             }
         }
     }
@@ -155,10 +365,40 @@ void main()
     historyLen = weightSum > 0.0001 ? historyLen / weightSum : 0;
     accum      = weightSum > 0.0001 ? accum / weightSum : vec4( 0 );
 
+    // A borrowed history is an ESTIMATE from a neighbour, not this pixel's own
+    // record: capped so it blends toward this pixel's real samples over the
+    // next few frames instead of sticking -- without this a dilated pixel
+    // inherits historyLen 8 and corrects a value it never measured over 8
+    // frames, trading a hole for a smear.
+    if( dilated )
+    {
+        historyLen = min( historyLen, 3.0 );
+    }
+
+    // ONE accumulation path for every pixel. No freeze: under the weapon the
+    // fresh sample is the far integral -- the same field the carried history
+    // holds -- so integrating it is what keeps the world's fog ALIVE under the
+    // sprite (lights change, the flash decays) rather than photographed.
     historyLen = clamp( historyLen + 1, 1, max( 1.0, push.maxHistoryLength ) );
-    accum      = mix( accum, fializeScattering( getRegularPixFromCheckerboardPix( pix ) ), 1.0 / historyLen );
+    accum      = mix( accum,
+                      fializeScattering( getRegularPixFromCheckerboardPix( pix ), isFirstPerson ),
+                      1.0 / historyLen );
+
+    // Doom64-RT: rt_volume_fp 2 -- paint the first-person region. A per-pixel
+    // flag that reaches the shader and one that does not produce the same
+    // screenshot otherwise (S7.1 of docs/rt-volumetric-edge-outlines.md is the
+    // record of what that costs). NOTE the paint lands in the accumulated
+    // buffer, so it SMEARS along the history like any other value in it --
+    // that is the accumulator being visualised, not the mask being wrong.
+    if( globalUniform.volumeFp > 1.5 && isFirstPerson )
+    {
+        accum = vec4( 0.0, 4.0, 4.0, accum.a );
+    }
 
     imageStore( framebufScattering, getRegularPixFromCheckerboardPix( pix ), accum );
-    imageStore(
-        framebufScatteringHistory, getRegularPixFromCheckerboardPix( pix ), vec4( historyLen ) );
+    // Sign carries "this pixel was first-person", read back by the tap loop
+    // next frame. abs() on the way in, negate on the way out.
+    imageStore( framebufScatteringHistory,
+                getRegularPixFromCheckerboardPix( pix ),
+                vec4( isFirstPerson ? -historyLen : historyLen ) );
 }

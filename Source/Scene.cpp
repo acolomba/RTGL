@@ -785,6 +785,20 @@ bool RTGL1::Scene::InsertPrimitiveInfo( const PrimitiveUniqueID&   uniqueID,
         }
     }
 
+    // Doom64-RT: LEFT UNCONDITIONAL ON PURPOSE. It was rate-limited here for one
+    // revision and that was wrong.
+    //
+    // These lines appear in bulk only under rt_cpu_cullmode 2 (whole map, no
+    // culling), which is a DIAGNOSTIC mode and not the default -- a handful of
+    // sidedefs then get their per-id primitive counter re-run and collide. The
+    // spam is therefore a signal that something is set that should not be, and
+    // silencing it hid exactly that for a session: a hand-set 2 had persisted in
+    // the ini and was mistaken for the shipping configuration.
+    //
+    // A uniqueObjectID is a POINTER to the source object (gzdoom-rt's
+    // FRtState::push_uniqueid), so a repeated ID is always the same object twice
+    // and never two different objects colliding -- the first copy is already in
+    // the acceleration structure and dropping the second loses no geometry.
     debug::Warning( "Mesh primitive ({}) with ID ({}->{}): "
                     "Trying to upload but a primitive with the same ID already exists",
                     Utils::SafeCstr( mesh.pMeshName ),

@@ -1244,7 +1244,14 @@ RTGL1::GltfImporter::GltfImporter( const std::filesystem::path& _gltfPath,
     r = cgltf_parse_file( &options, gltfPath.c_str(), &parsedData );
     if( r == cgltf_result_file_not_found )
     {
-        debug::Warning( "Can't find a file, no static scene will be present: {}", gltfPath );
+        // Info, not Warning: a static scene is OPTIONAL, and the ..._patch.gltf
+        // even more so. gzdoom-rt routes Warning through Printf (deliberately --
+        // see RT_Print), so this drew a line across the notify overlay on every
+        // single level load of any mod that ships no baked scenes, which is all
+        // of Doom 64: Retribution. A file that is absent by design is not a
+        // warning. Genuine faults -- a scene that exists but fails to parse,
+        // load or validate -- stay at Warning below.
+        debug::Info( "Can't find a file, no static scene will be present: {}", gltfPath );
         return;
     }
     else if( r != cgltf_result_success )

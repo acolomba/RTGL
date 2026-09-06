@@ -27,7 +27,11 @@
 #include "IShaderDependency.h"
 #include "MemoryAllocator.h"
 
-#define ILLUMINATION_VOLUME_ 0
+// Doom64-RT: matches ILLUMINATION_VOLUME in Generated/GenerateShaderCommon.py (the
+// static_assert in Volumetric.cpp enforces they stay in sync). Turned on so rasterized
+// translucent sprites (spectres, nightmare imps) can sample real room irradiance instead
+// of always rendering at full brightness -- see RsWorld.inl's illumVolumeEnable branch.
+#define ILLUMINATION_VOLUME_ 1
 
 namespace RTGL1
 {
@@ -57,7 +61,16 @@ public:
                             const BlueNoise&     rnd,
                             const Framebuffers&  framebuffers,
                             float                maxHistoryLength );
-    void BarrierToReadIllumination( VkCommandBuffer cmd );
+    void BarrierToReadIllumination( VkCommandBuffer cmd, uint32_t frameIndex );
+
+    // Doom64-RT: march the volumetric cloud slab into this frame's cloud map
+    // (CmCloudMap.comp) and leave it readable by fragment shaders. Call before
+    // the sky is rasterised. When the clouds are disabled in the uniform the
+    // map is still cleared to "no cloud" once, so a stale map cannot show.
+    void ProcessClouds( VkCommandBuffer      cmd,
+                        uint32_t             frameIndex,
+                        const GlobalUniform& uniform,
+                        const BlueNoise&     rnd );
 
     void OnShaderReload( const ShaderManager* shaderManager ) override;
 
@@ -86,10 +99,26 @@ private:
 
     VolumeDef scattering[ MAX_FRAMES_IN_FLIGHT ]{};
 #if ILLUMINATION_VOLUME_
-    VolumeDef illumination{};
+    // DOUBLE BUFFERED, like scattering above, and for a reason that bit hard:
+    // RtVolumetric.rgen both writes this volume and reads last frame's value out
+    // of it. With a single image those are the same memory, so the read is only
+    // safe at the SAME cell index -- which is why the temporal blend was
+    // unreprojected, and therefore invalid the moment the camera moved, since
+    // the grid is camera-attached. Two images let the shader read the previous
+    // frame properly and reproject into it.
+    VolumeDef illumination[ MAX_FRAMES_IN_FLIGHT ]{};
 #endif
+    // Doom64-RT: the cloud map, a 2D lat-long image of world directions.
+    // Double-buffered for the same reason as the two above: the march blends
+    // in last frame's map at the same texel.
+    VolumeDef cloudMap[ MAX_FRAMES_IN_FLIGHT ]{};
+    // Frames the cloud map has been cleared for while disabled; the clear is
+    // repeated for each in-flight image and then skipped.
+    uint32_t cloudMapClearedMask{ 0 };
 
     VkSampler volumeSampler{ VK_NULL_HANDLE };
+    // Wraps in u (azimuth), clamps in v (altitude).
+    VkSampler cloudSampler{ VK_NULL_HANDLE };
 
     VkDescriptorPool      descPool{ VK_NULL_HANDLE };
     VkDescriptorSetLayout descLayout{ VK_NULL_HANDLE };
@@ -100,5 +129,8 @@ private:
 
     VkPipelineLayout accumPipelineLayout{ VK_NULL_HANDLE };
     VkPipeline       accumPipeline{ VK_NULL_HANDLE };
+
+    // Shares processPipelineLayout (volumetric set, uniform, blue noise).
+    VkPipeline cloudPipeline{ VK_NULL_HANDLE };
 };
 }

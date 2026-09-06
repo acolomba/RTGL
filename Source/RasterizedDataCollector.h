@@ -101,6 +101,10 @@ public:
 
         float                       emissive = 0.0f;
 
+        // Doom64-RT: CLOUD_MODE_* (Clouds.h) for sky draws, from
+        // RG_MESH_PRIMITIVE_SKY_CLOUDS / SKY_BEHIND_CLOUDS. 0 otherwise.
+        uint32_t                    skyCloudMode = 0;
+
         // Raster-specific
         std::optional< Float16D >   viewProj        = std::nullopt;
         std::optional< VkViewport > viewport        = std::nullopt;

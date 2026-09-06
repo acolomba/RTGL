@@ -68,6 +68,40 @@ vec3 demodulateSpecular(const vec3 contrib, const vec3 surfSpecularColor)
     return contrib / max(vec3(0.01), surfSpecularColor);
 }
 
+// GGX preintegrated environment BRDF ("EnvBRDFApprox2", Ray Tracing Gems ch. 32).
+// Used as the DLSS-RR specular-albedo guide: "average specular reflectivity
+// given a view direction" (RR Integration Guide 3.4.2). alpha = linearRoughness^2.
+// Coefficient matrices are the HLSL row-major literals transposed for GLSL
+// column-major constructors; mul(v, M) * u in HLSL == dot(v, M * u) here.
+vec3 envBRDFApprox2(const vec3 f0, float alpha, float NoV)
+{
+    NoV = abs(NoV);
+
+    const mat2 M1 = mat2(0.99044,  1.29678,
+                        -1.28514, -0.755907);
+    const mat3 M2 = mat3(1.0,      20.3225,  121.563,
+                         2.92338, -27.0302,  626.13,
+                        59.4188,  222.592,   316.627);
+    const mat2 M3 = mat2(0.0365463, 9.0632,
+                         3.32707,  -9.04756);
+    const mat3 M4 = mat3(1.0,       9.04401,   5.56589,
+                         3.59685, -16.3174,   19.7886,
+                        -1.36772,   9.22949, -20.2123);
+
+    const vec2 v2 = vec2(1.0, NoV);
+    const vec3 v3 = vec3(1.0, NoV, NoV * NoV * NoV);
+    const vec2 u2 = vec2(1.0, alpha);
+    const vec3 u3 = vec3(1.0, alpha, alpha * alpha * alpha);
+
+    float scale = dot(v2, M1 * u2) / dot(v3, M2 * u3);
+    float bias  = dot(v2, M3 * u2) / dot(v3, M4 * u3);
+
+    // official hack so that F0 = 0 gives 0
+    bias *= clamp(f0.g * 50.0, 0.0, 1.0);
+
+    return f0 * max(scale, 0.0) + vec3(max(bias, 0.0));
+}
+
 // nl -- cos between surface normal and light direction
 // specularColor -- reflectance color at zero angle
 vec3 getFresnelSchlick(float nl, const vec3 specularColor)

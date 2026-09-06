@@ -22,6 +22,12 @@
 #define LIGHT_H_
 
 #include "Utils.h"
+// Doom64-RT: the volumetric cloud map, for occluding the directional light.
+// cloudSunAttenuation only exists where DESC_SET_VOLUMETRIC is bound; every
+// raygen defines it (set 11 of the one ray-tracing layout).
+#ifdef DESC_SET_GLOBAL_UNIFORM
+#include "Clouds.h"
+#endif
 
 struct DirectionalLight
 {
@@ -245,6 +251,17 @@ LightSample emptyLightSample()
     return r;
 }
 
+// Doom64-RT: why is this pixel lit by the sun? Set by the sky-reach probe in
+// calcSelectedLight (RaygenCommon.h) and read back below when sunLeakDebug == 2,
+// so the colour on screen encodes the REASON instead of the moon's own colour.
+//   1 = the ray reached SKY  -> a real shaft through a real opening
+//   2 = the ray left the MAP -> a leak
+// Same shader invocation, same pixel, so a plain global carries it.
+// The colour itself is applied in traceDirectIllumination (RaygenCommon.h),
+// which is the one place every light path goes through -- surface, indirect and
+// volumetric. Doing it here instead only ever reached surface shading.
+int g_sunLeakClass = 0;
+
 LightSample sampleDirectionalLight(const DirectionalLight l, const vec3 surfPosition, const vec2 pointRnd)
 {
     vec3 lightNormal;
@@ -260,7 +277,13 @@ LightSample sampleDirectionalLight(const DirectionalLight l, const vec3 surfPosi
     r.position = surfPosition - lightNormal * MAX_RAY_LENGTH;
     r.color = l.color;
     r.dw = 1.0;
-    
+
+#ifdef DESC_SET_VOLUMETRIC
+    // Doom64-RT: the volumetric clouds between this point and the light.
+    // Per ray, so a shaft has gaps where the cloud has gaps.
+    r.color *= cloudSunAttenuation( surfPosition, -lightNormal );
+#endif
+
     return r;
 }
 

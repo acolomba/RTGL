@@ -9,3 +9,10 @@
 .vscode/
 
 Build/
+
+# Local CMake build (do not commit)
+BuildCMake/
+
+# Backup / scratch
+*.bak
+

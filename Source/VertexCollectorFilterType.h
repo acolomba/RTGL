@@ -51,7 +51,11 @@ enum class VertexCollectorFilterTypeFlagBits : uint32_t
     PV_WORLD_2                    = 0b00000100 << VERTEX_COLLECTOR_FILTER_TYPE_BIT_OFFSET_PV,
     PV_FIRST_PERSON               = 0b00001000 << VERTEX_COLLECTOR_FILTER_TYPE_BIT_OFFSET_PV,
     PV_FIRST_PERSON_VIEWER        = 0b00010000 << VERTEX_COLLECTOR_FILTER_TYPE_BIT_OFFSET_PV,
-    MASK_PRIMARY_VISIBILITY_GROUP = PV_WORLD_0 | PV_WORLD_1 | PV_WORLD_2 | PV_FIRST_PERSON | PV_FIRST_PERSON_VIEWER,
+    // Doom64-RT: shadow-only geometry (RG_MESH_PRIMITIVE_SHADOW_ONLY). Its own
+    // primary-visibility class because the instance mask is chosen from this
+    // group, and a mask is a property of the BLAS the primitive lands in.
+    PV_SHADOW_ONLY                = 0b00100000 << VERTEX_COLLECTOR_FILTER_TYPE_BIT_OFFSET_PV,
+    MASK_PRIMARY_VISIBILITY_GROUP = PV_WORLD_0 | PV_WORLD_1 | PV_WORLD_2 | PV_FIRST_PERSON | PV_FIRST_PERSON_VIEWER | PV_SHADOW_ONLY,
 };
 // clang-format on
 using VertexCollectorFilterTypeFlags = uint32_t;
@@ -75,6 +79,7 @@ constexpr VertexCollectorFilterTypeFlagBits VertexCollectorFilterGroup_PrimaryVi
     VertexCollectorFilterTypeFlagBits::PV_WORLD_2,
     VertexCollectorFilterTypeFlagBits::PV_FIRST_PERSON,
     VertexCollectorFilterTypeFlagBits::PV_FIRST_PERSON_VIEWER,
+    VertexCollectorFilterTypeFlagBits::PV_SHADOW_ONLY,
 };
 
 

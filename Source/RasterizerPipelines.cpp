@@ -34,7 +34,8 @@ RTGL1::RasterizerPipelines::RasterizerPipelines( VkDevice             _device,
                                                  bool                 _notOnlyColorAttachment,
                                                  bool                 _applyVertexColorGamma,
                                                  const VkViewport*    _pViewport,
-                                                 const VkRect2D*      _pScissors )
+                                                 const VkRect2D*      _pScissors,
+                                                 bool                 _coverageAlphaAttch0 )
     : device{ _device }
     , shaderNameVert{ _shaderNameVert }
     , shaderNameFrag{ _shaderNameFrag }
@@ -47,6 +48,7 @@ RTGL1::RasterizerPipelines::RasterizerPipelines( VkDevice             _device,
     , nonDynamicScissors{ _pScissors ? std::optional( *_pScissors ) : std::nullopt }
     , applyVertexColorGamma{ _applyVertexColorGamma }
     , onlyColorAttachment{ !_notOnlyColorAttachment }
+    , coverageAlphaAttch0{ _coverageAlphaAttch0 }
 {
     VkPipelineCacheCreateInfo info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
 
@@ -283,6 +285,26 @@ VkPipeline RTGL1::RasterizerPipelines::CreatePipeline( PipelineStateFlags pipeli
                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         },
     };
+
+    // Doom64-RT: when attachment 0 is the DLSS-RR transparency layer, its
+    // alpha channel is NOT a colour -- NGX reads it as the layer's occlusion
+    // of the denoised background. The stock factors reuse the COLOUR blend for
+    // alpha, which is wrong in both blended cases:
+    //   'over'    : a*a + (1-a)*dst  -- coverage decays quadratically, sprites
+    //               read more transparent than authored;
+    //   additive  : accumulates src alpha with weight 1 -- a fireball that
+    //               only ADDS light would still DARKEN the background behind
+    //               it (a dark halo around every additive sprite).
+    // Correct per-case: 'over' accumulates true coverage; additive occludes
+    // nothing. Non-blended draws keep the direct alpha write (opaque raster
+    // outputs a=1, which is correct full coverage).
+    if( coverageAlphaAttch0 && ( additive || translucent ) )
+    {
+        colorBlendAttchs[ 0 ].srcAlphaBlendFactor =
+            additive ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
+        colorBlendAttchs[ 0 ].dstAlphaBlendFactor =
+            additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    }
 
     VkPipelineColorBlendStateCreateInfo colorBlendState = {
         .sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,

@@ -127,6 +127,91 @@ struct PrimitiveExtraInfo
     int noShadow        = 0;
 };
 
+// Persisted RTGL Dev window state (rt/devmode_settings.json). POD mirror of Devmode.
+struct DevmodeSettings
+{
+    constexpr static int Version{ 1 };
+    constexpr static int RequiredVersion{ 1 };
+
+    int version = Version;
+
+    float fontGlobalScale = 1.f;
+
+    bool debugWindowOnTop = false;
+    bool antiFirefly      = true;
+
+    bool  rrTemporalPrefilter       = false;
+    bool  rrTemporalPrefilterSticky = false;
+    bool  illumSensSticky          = false;
+    float illumSensDirect          = 1.f;
+    float illumSensIndirect        = 0.75f;
+    float illumSensSpec            = 1.f;
+    bool  rayReconstruction        = false;
+    bool  rayReconstructionSticky  = false;
+
+    bool materialStripNormals    = false;
+    bool materialStripMetallic   = false;
+    bool materialStripRoughness  = false;
+    bool materialStripHeight     = false;
+    bool materialStripEmissives  = false;
+    float roughnessTowardMatte   = 0.f;
+    // Legacy combined toggles (migrate on load).
+    bool materialStripPbrMaps    = false;
+    bool materialStripOrm        = false;
+
+    // drawInfoOvrd
+    bool  ovrd_enable                          = false;
+    int   ovrd_maxBounceShadows                = 0;
+    int   ovrd_indirectBounces                 = 2;
+    bool  ovrd_indirectLegacyBounceWeight      = true;
+    float ovrd_directDiffuseSensitivityToChange   = 1.f;
+    float ovrd_indirectDiffuseSensitivityToChange = 1.f;
+    float ovrd_specularSensitivityToChange        = 1.f;
+    bool  ovrd_disableEyeAdaptation            = false;
+    float ovrd_ev100Min                        = 0.f;
+    float ovrd_ev100Max                        = 0.f;
+    std::array< float, 3 > ovrd_saturation     = { { 1.f, 1.f, 1.f } };
+    std::array< float, 3 > ovrd_crosstalk      = { { 0.f, 0.f, 0.f } };
+    bool  ovrd_vsync                           = false;
+    int   ovrd_frameGeneration                 = 0; // RgFrameGenerationMode
+    bool  ovrd_preferDxgiPresent               = true;
+    bool  ovrd_hdr                             = false;
+    int   ovrd_upscaleTechnique                = 3; // NVIDIA_DLSS typical
+    int   ovrd_sharpenTechnique                = 0;
+    int   ovrd_resolutionMode                  = 2; // BALANCED
+    float ovrd_customRenderSizeScale           = 1.f;
+    bool  ovrd_pixelizedEnable                 = false;
+    int   ovrd_pixelizedHeight                 = 480;
+    bool  ovrd_rayReconstruction               = false;
+    float ovrd_normalMapStrength               = 1.f;
+    float ovrd_heightMapDepth                  = 1.f;
+    float ovrd_emissionMapBoost                = 1.f;
+    float ovrd_emissionMaxScreenColor          = 1.f;
+    float ovrd_lightmapScreenCoverage          = 0.f;
+    bool  ovrd_fluidEnabled                    = false;
+    std::array< float, 3 > ovrd_fluidGravity   = { { 0.f, 0.f, -14.f } };
+    bool  ovrd_allowMapAutoExport              = false;
+
+    // cameraOvrd (non-transient)
+    bool  cam_fovEnable     = false;
+    float cam_fovDeg        = 90.f;
+    bool  cam_customEnable  = false;
+    std::array< float, 3 > cam_customPos    = { { 0.f, 0.f, 0.f } };
+    std::array< float, 2 > cam_customAngles = { { 0.f, 0.f } };
+
+    bool ignoreExternalGeometry           = false;
+    bool allowExportOfExistingReplacements = false;
+    bool materialsTableEnable             = false;
+    int  primitivesTableMode              = 0;
+    bool breakOnTexturePrimitive          = false;
+    bool breakOnTextureImage              = false;
+    std::string breakOnTexture            = {};
+    uint32_t logFlags =
+        RG_MESSAGE_SEVERITY_VERBOSE | RG_MESSAGE_SEVERITY_INFO | RG_MESSAGE_SEVERITY_WARNING |
+        RG_MESSAGE_SEVERITY_ERROR;
+    bool logAutoScroll = true;
+};
+
 
 
 struct CameraExtraInfo
@@ -159,6 +244,12 @@ namespace json_parser
         auto ReadLibraryConfig( const std::filesystem::path& path )
             -> std::optional< LibraryConfig >;
 
+        auto ReadDevmodeSettings( const std::filesystem::path& path )
+            -> std::optional< DevmodeSettings >;
+
+        bool WriteDevmodeSettings( const std::filesystem::path& path,
+                                   const DevmodeSettings&       settings );
+
         auto ReadLightExtraInfo( const std::string_view& data )
             -> std::optional< RgLightAdditionalEXT >;
 
@@ -172,6 +263,7 @@ namespace json_parser
     template<> inline auto ReadFileAs< TextureMetaArray >( const std::filesystem::path& path ) { return detail::ReadTextureMetaArray( path ); }
     template<> inline auto ReadFileAs< SceneMetaArray   >( const std::filesystem::path& path ) { return detail::ReadSceneMetaArray( path ); }
     template<> inline auto ReadFileAs< LibraryConfig    >( const std::filesystem::path& path ) { return detail::ReadLibraryConfig( path ); }
+    template<> inline auto ReadFileAs< DevmodeSettings  >( const std::filesystem::path& path ) { return detail::ReadDevmodeSettings( path ); }
 
     template< typename T > auto ReadStringAs( const std::string_view& str ) = delete;
     template<> inline auto ReadStringAs< RgLightAdditionalEXT >( const std::string_view& data ) { return detail::ReadLightExtraInfo( data ); }
@@ -181,6 +273,11 @@ namespace json_parser
 
     std::string MakeJsonString( const RgLightAdditionalEXT& info );
     std::string MakeJsonString( const PrimitiveExtraInfo& info );
+
+    inline bool WriteFileAs( const std::filesystem::path& path, const DevmodeSettings& settings )
+    {
+        return detail::WriteDevmodeSettings( path, settings );
+    }
 }
 
 }

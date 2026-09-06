@@ -30,9 +30,12 @@
 #define DESC_SET_VERTEX_DATA 3
 #define DESC_SET_TEXTURES 4
 #define DESC_SET_RANDOM 5
+// Doom64-RT: the volumetric set (cloud map), for cloudSunAttenuation in Light.h.
+#define DESC_SET_VOLUMETRIC 11
 #define DESC_SET_LIGHT_SOURCES 6
 #define LIGHT_SAMPLE_METHOD (LIGHT_SAMPLE_METHOD_DIRECT)
 #include "RaygenCommon.h"
+
 
 void main()
 {
@@ -59,7 +62,56 @@ void main()
         distToLight,
         diffuse, specular);
 
-    // demodulate for denoising
+    // Debug: show the reservoir's accumulated sample count instead of radiance.
+    // ReSTIR at 1 spp only looks clean because temporal reuse grows M over many
+    // frames; the estimator's variance falls with M. If M collapses when the
+    // camera moves (history rejected by testSurfaceForReuse after
+    // reprojection), the raw signal genuinely gets noisier in motion -- which no
+    // denoiser tuning can fix, because it is upstream of every denoiser.
+    // Green ramp = M/32: black is M=1 (worst case, one sample), bright green is
+    // a well-accumulated reservoir. Watch it while standing still, then move.
+    // 1 = this, the direct reservoir. 2 = the indirect one (RtRaygenIndirect.inl).
+    if (globalUniform.debugRestirM == 1)
+    {
+        float mNorm = clamp(float(r.M) / 32.0, 0.0, 1.0);
+        imageStoreUnfilteredDirect(pix, vec3(mNorm * 0.15, mNorm, mNorm * 0.15));
+        imageStoreUnfilteredSpecular(pix, vec3(0.0));
+        imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, distToLight));
+        imageStore(framebufGradientInputs, pix, vec4(0.0));
+        imageStoreReservoir(r, pix);
+        return;
+    }
+
+    // Debug: show what the shadow ray actually returned.
+    //
+    // The final image cannot distinguish "the occluder never blocked the ray"
+    // from "the shadow is cast but drowned in fill light or smeared away by the
+    // denoiser" -- both look like no shadow. Visibility is the only thing a
+    // shadow ray produces, so showing it directly answers that question and
+    // nothing else.
+    //
+    // 1 = greyscale, black where shadowed. Reads as a pure shadow map.
+    // 2 = normal shading with shadowed pixels tinted red, so an umbra can be
+    //     located against the geometry that casts it.
+    if (globalUniform.debugVisibility != 0)
+    {
+        const float vis = clamp(g_debugVisibility, 0.0, 1.0);
+
+        if (globalUniform.debugVisibility == 1)
+        {
+            imageStoreUnfilteredDirect(pix, vec3(vis));
+        }
+        else
+        {
+            imageStoreUnfilteredDirect(pix, diffuse * mix(vec3(1.0, 0.15, 0.15), vec3(1.0), vis));
+        }
+        imageStoreUnfilteredSpecular(pix, vec3(0.0));
+        imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, distToLight));
+        imageStore(framebufGradientInputs, pix, vec4(0.0));
+        imageStoreReservoir(r, pix);
+        return;
+    }
+
     imageStoreUnfilteredDirect(pix, diffuse);
     imageStoreUnfilteredSpecular(pix, demodulateSpecular(specular, surf.specularColor));
     imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, distToLight));

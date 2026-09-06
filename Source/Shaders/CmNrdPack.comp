@@ -1,0 +1,144 @@
+// Copyright (c) 2026 Doom64-RT contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#version 460
+
+// NRD lane, stage 2 (docs/plan-nrd-denoiser.md): stage the ReLAX inputs.
+//
+// Runs where Denoiser::Denoise() (A-SVGF) or ComposeNoisy (RR) would: reads
+// the SAME raw unfiltered ReSTIR signals and resolves them from checkerboard
+// into regular pixel space, in the layouts NRD's shaders were compiled to
+// expect (deps/NRD, NRD_NORMAL_ENCODING=2, NRD_ROUGHNESS_ENCODING=1 -- see
+// tools/nrd/NRDConfig.hlsli in the parent repo).
+//
+// DEMODULATION: none needed. NRD's front-end demodulation exists to make the
+// noisy inputs material-free; our unfiltered buffers ARE material-free by
+// construction (CmNoisyCompose multiplies ro_d/ro_s in at COMPOSE time). The
+// factors never reach NRD either way -- demod/remod is app-side -- so the
+// exact same modulation CmNoisyCompose applies to raw lighting is applied by
+// CmNrdCompose to DENOISED lighting, and the round trip is ours end to end.
+
+#define DESC_SET_FRAMEBUFFERS 0
+#define DESC_SET_GLOBAL_UNIFORM 1
+#include "ShaderCommonGLSLFunc.h"
+#include "BRDF.h"
+
+layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPOSE_GROUP_SIZE_Y, local_size_z = 1) in;
+
+// _NRD_EncodeNormalRoughness101010, ported from deps/NRD/Shaders/NRD.hlsli
+// (octahedral-style normal in xy, roughness+z-sign folded into z; produces
+// [0,1] values -- FLOAT16 storage keeps them intact). Roughness encoding 1 is
+// LINEAR, so no sqrt/square here. Material ID is 0 for the whole scene.
+vec4 nrdPackNormalRoughness( vec3 n, float roughness )
+{
+    n /= abs( n.x ) + abs( n.y ) + abs( n.z );
+
+    vec3 r;
+    r.y = n.y * 0.5 + 0.5;
+    r.x = n.x * 0.5 + r.y;
+    r.y -= n.x * 0.5;
+
+    roughness = max( roughness, 1.5 / 512.0 ); // must not be 0: it carries n.z's sign
+    float s   = n.z < 0.0 ? -roughness : roughness;
+    r.z       = s * 0.5 + 0.5;
+
+    return vec4( r, 0.0 );
+}
+
+void main()
+{
+    const ivec2 pix = ivec2( gl_GlobalInvocationID.x, gl_GlobalInvocationID.y );
+    if( pix.x >= int( globalUniform.renderWidth ) || pix.y >= int( globalUniform.renderHeight ) )
+    {
+        return;
+    }
+    const ivec2 checkerboardPix = getCheckerboardPix( pix );
+
+    // Motion: our 2.5D contract verbatim (RaygenPrimary: xy = UV delta
+    // cur->prev, z = distance delta), resolved to regular space. NrdDenoiser
+    // declares motionVectorScale = {1,1,1}.
+    const vec4 motion = texelFetch( framebufMotion_Sampler, checkerboardPix, 0 );
+    imageStore( framebufNrdMotion, pix, vec4( motion.xyz, 0.0 ) );
+
+    if( isSkyPix( checkerboardPix ) )
+    {
+        // Out of NRD's denoisingRange: the pixel is skipped, CmNrdCompose
+        // paints the sky from albedo directly.
+        imageStore( framebufNrdViewZ, pix, vec4( 1e6, 0, 0, 0 ) );
+        imageStore( framebufNrdDiffuse, pix, vec4( 0.0 ) );
+        imageStore( framebufNrdSpecular, pix, vec4( 0.0 ) );
+        imageStore( framebufNrdNormalRoughness, pix, nrdPackNormalRoughness( vec3( 0, 0, 1 ), 1.0 ) );
+        imageStore( framebufNrdBaseColorMetalness, pix, vec4( 0.5, 0.5, 0.5, 0.0 ) );
+        return;
+    }
+
+    // TRUE view-space Z, not the radial distance DepthWorld holds -- ReLAX
+    // bases plane-distance disocclusion tests and its unprojection on viewZ,
+    // and the radial error grows toward the screen edges.
+    const vec3  worldPos = texelFetch( framebufSurfacePosition_Sampler, checkerboardPix, 0 ).xyz;
+    const float viewZ    = ( globalUniform.view * vec4( worldPos, 1.0 ) ).z;
+    imageStore( framebufNrdViewZ, pix, vec4( viewZ, 0, 0, 0 ) );
+
+    const vec3 diffuse  = texelFetchUnfilteredDirect( checkerboardPix );
+    const vec3 indirect = texelFetchUnfilteredIndir( checkerboardPix );
+    const vec3 specRaw  = texelFetchUnfilteredSpecular( checkerboardPix );
+
+    const vec2  mrFb     = texelFetch( framebufMetallicRoughness_Sampler, checkerboardPix, 0 ).xy;
+    const float metallic = mrFb.x;
+    const float roughness = mrFb.y;
+    const vec3  normal   = texelFetchNormal( checkerboardPix );
+    const vec3  albedo   = texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb;
+
+    // Same display-space choice CmNoisyCompose makes: very rough specular is
+    // replaced by the indirect signal BEFORE denoising, so ReLAX filters the
+    // signal that will actually be composed.
+    const vec3 specular = mix( specRaw,
+                               indirect,
+                               smoothstep( FAKE_ROUGH_SPECULAR_THRESHOLD,
+                                           FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH,
+                                           roughness ) );
+
+    // Specular hit distance: same source and the same MAX_RAY_LENGTH
+    // "no light found" sentinel guard as CmNoisyCompose -- 10 km handed to a
+    // denoiser as a hit distance wrecks reprojection exactly in dark pixels.
+    float specHitDist = texelFetch( framebufViewDirection_Sampler, checkerboardPix, 0 ).w;
+    if( !( specHitDist > 0.0 ) || specHitDist >= MAX_RAY_LENGTH * 0.5 )
+    {
+        specHitDist = 0.0;
+    }
+
+    // RELAX_FrontEnd_PackRadianceAndHitDist with sanitize: radiance.rgb +
+    // hitDist.w, clamped non-negative. Diffuse hit distance is 0 in this
+    // first pass -- ReLAX leans on the SPECULAR one for virtual-motion
+    // tracking; a dedicated diffuse (indirect first-bounce) distance is the
+    // documented follow-up if diffuse lag shows.
+    imageStore( framebufNrdDiffuse,
+                pix,
+                vec4( clamp( diffuse + indirect, vec3( 0.0 ), vec3( 65000.0 ) ), 0.0 ) );
+    imageStore( framebufNrdSpecular,
+                pix,
+                vec4( clamp( specular, vec3( 0.0 ), vec3( 65000.0 ) ), specHitDist ) );
+
+    imageStore( framebufNrdNormalRoughness, pix, nrdPackNormalRoughness( normal, roughness ) );
+
+    // ReLAX only (isBaseColorMetalnessAvailable): used to patch specular
+    // motion during stabilization.
+    imageStore( framebufNrdBaseColorMetalness, pix, vec4( albedo, metallic ) );
+}

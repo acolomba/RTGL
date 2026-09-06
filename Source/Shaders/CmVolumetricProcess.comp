@@ -33,8 +33,6 @@ layout( local_size_x = COMPUTE_VOLUMETRIC_GROUP_SIZE_X,
         local_size_y = COMPUTE_VOLUMETRIC_GROUP_SIZE_Y,
         local_size_z = 1 ) in;
 
-const float g_temporalWeight = 0.0;
-
 // rgb - in−scattered light accumulated so far
 // a   - accumulated scattering coefficient
 vec4 accumulateScattering( const vec4 front, const vec4 back )
@@ -48,16 +46,73 @@ void store( const ivec3 cell, const vec4 colorAndDensity )
 {
     vec4 final = vec4( colorAndDensity.rgb, exp( -colorAndDensity.a ) );
 
-    if( g_temporalWeight > 0.0 )
+    // Doom64-RT: IN-GRID TEMPORAL ACCUMULATION (rt_volume_taccum).
+    //
+    // Upstream shipped this exact mechanism and left it hard-disabled --
+    // `const float g_temporalWeight = 0.0;` with volume_sample_Prev and the
+    // prev-frame bindings fully wired and never called. The screen-space
+    // accumulation in CmScatterAccum is what replaced it, and that is the
+    // wrong place for a medium: screen history has to be validated against
+    // SURFACE depth, so every sprite silhouette, every ejected casing and
+    // every geometry edge under camera motion rejects it and restarts from one
+    // noisy sample -- the whole family of trails and stamps in
+    // docs/rt-volumetric-weapon-trails.md.
+    //
+    // Accumulating HERE, per froxel cell against the cell's own world
+    // position reprojected into the previous frame's grid, involves no
+    // surfaces at all: there is nothing to reject and nothing to restart, for
+    // any sprite or edge, ever. The ray integral downstream is then recomputed
+    // fresh every frame from a temporally smooth field, which is why the
+    // screen-space accumulator switches itself off when this is on
+    // (CmScatterAccum).
+    //
+    // The blended quantity is the camera-to-cell integral, which is exact
+    // under camera rotation (same origin, same world point) and approximate
+    // under translation -- the error is the fog inside the ~0.2 m the camera
+    // moved in one frame, against paths of many metres, and the EMA corrects
+    // it continuously. Cells whose reprojection falls outside the previous
+    // frustum take the fresh value: that is the grid's honest disocclusion,
+    // and it happens at screen edges, not at silhouettes.
+    //
+    // Reading the PREV image while writing the CURRENT one is safe -- they are
+    // different images (ping-ponged by frame index) -- unlike the in-place
+    // spatial blur described below, which is not.
+    if( globalUniform.volumeGridHistory > 0.5 )
     {
-        vec4 prev = volume_sample_Prev( cell );
-        final     = mix( final, prev, g_temporalWeight );
+        const vec3 curworld = volume_getCenter( cell );
+        const vec3 spPrev   = volume_toSamplePosition_T( curworld,
+                                                         globalUniform.volumeViewProj_Prev,
+                                                         globalUniform.cameraPositionPrev.xyz );
+        if( all( greaterThanEqual( spPrev, vec3( 0.0 ) ) ) &&
+            all( lessThanEqual( spPrev, vec3( 1.0 ) ) ) )
+        {
+            const vec4  prev   = textureLod( g_volumetric_Sampler_Prev, spPrev, 0.0 );
+            const float weight = 1.0 - 1.0 / max( globalUniform.volumeGridHistory, 1.0 );
+
+            final = mix( final, prev, weight );
+        }
     }
 
     // rgb - in−scattered light accumulated so far
     // a   - scene light transmittance
     imageStore( g_volumetric, cell, final );
 }
+
+// Doom64-RT: A SPATIAL BLUR CANNOT BE DONE IN THIS PASS. It was tried and it
+// destroys the volume.
+//
+// store() below writes imageStore( g_volumetric, ... ) -- the SAME image this
+// pass reads with texelFetch. That is safe as written because each thread owns
+// one (x,y) column and only ever reads the column it is writing. A 3x3 filter
+// reads NEIGHBOURING columns, and those are being marched concurrently by other
+// threads, so half the taps come back as the finished prefix-sum-and-
+// transmittance value instead of raw scattering. The result is not "a bit
+// wrong": the volume collapses and the smoke disappears.
+//
+// Doing it properly needs the filter in its own pass with its own image, or a
+// second buffer to read from -- neither is a two-line change, so
+// rt_volume_blur is inert until then. The uniform and the cvar are kept because
+// the layout is verified and the plumbing is the tedious part.
 
 void main()
 {

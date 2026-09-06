@@ -30,6 +30,7 @@
 #include "Utils.h"
 
 #include <ranges>
+#include <set>
 
 static_assert( sizeof( RTGL1::ShGeometryInstance ) % 16 == 0,
                "Std430 structs must be aligned by 16 bytes" );
@@ -148,6 +149,58 @@ uint32_t RTGL1::GeomInfoManager::GetPrimitiveFlags( const RgMeshInfo*          m
         f |= GEOM_INST_FLAG_MEDIA_TYPE_WATER;
         f |= GEOM_INST_FLAG_REFLECT;
         f |= GEOM_INST_FLAG_REFRACT;
+
+        // Doom64-RT: which of the four liquids this is. Carried as two bits
+        // rather than a per-primitive colour because the geometry instance has
+        // no spare colour channel, and four palettes is all Doom 64 needs.
+        // Neither bit set == index 0 == water, so an upstream caller that only
+        // sets RG_MESH_PRIMITIVE_WATER lands on the old behaviour.
+        f |= ( info.flags & RG_MESH_PRIMITIVE_LIQUID_BIT0 ) ? GEOM_INST_FLAG_LIQUID_BIT0 : 0;
+        f |= ( info.flags & RG_MESH_PRIMITIVE_LIQUID_BIT1 ) ? GEOM_INST_FLAG_LIQUID_BIT1 : 0;
+
+        // Doom64-RT probe. VERBOSE, and never ERROR.
+        //
+        // NEVER ERROR: rt_main's RT_Print turns any RTGL error into a modal
+        // Win32 MessageBox whose default action is exit(-1), so an
+        // ERROR-severity probe kills the game the moment the first water
+        // primitive is uploaded.
+        //
+        // VERBOSE rather than WARNING because a probe is not a warning and this
+        // one is not quiet: it prints once per distinct texture name, which on
+        // a Retribution map is ~128 lines -- a third of the whole session log
+        // before the player has moved. rt_main only passes
+        // RG_MESSAGE_SEVERITY_VERBOSE when the game is launched with -rtdebug,
+        // so this is now silent in play and one flag away when it is wanted.
+        // WARNING and ERROR are deliberately always allowed there -- "a
+        // renderer must never swallow its own errors" -- which is exactly why a
+        // diagnostic must not borrow that severity.
+        {
+            static std::set< std::string > s_seenWater;
+            auto nm = std::string{ info.pTextureName ? info.pTextureName : "?" };
+            if( s_seenWater.insert( nm ).second )
+            {
+                debug::Verbose( "RTwaterProbe: \"{}\" primFlags=0x{:X} geomFlags=0x{:X} dynVtx={}",
+                              nm,
+                              uint32_t( info.flags ),
+                              f,
+                              int( isDynamicVertexData ) );
+            }
+        }
+    }
+
+    if( info.flags & RG_MESH_PRIMITIVE_NO_WATER_CAUSTICS )
+    {
+        f |= GEOM_INST_FLAG_NO_WATER_CAUSTICS;
+    }
+
+    if( info.flags & RG_MESH_PRIMITIVE_LAVA )
+    {
+        f |= GEOM_INST_FLAG_LAVA;
+    }
+
+    if( info.flags & RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED )
+    {
+        f |= GEOM_INST_FLAG_EMIS_SCREEN_SCALED;
     }
 
     if( info.flags & RG_MESH_PRIMITIVE_ACID )
@@ -163,6 +216,11 @@ uint32_t RTGL1::GeomInfoManager::GetPrimitiveFlags( const RgMeshInfo*          m
         f |= GEOM_INST_FLAG_MEDIA_TYPE_GLASS;
         f |= GEOM_INST_FLAG_REFLECT;
         f |= GEOM_INST_FLAG_REFRACT;
+    }
+
+    if( info.flags & RG_MESH_PRIMITIVE_SPRITE )
+    {
+        f |= GEOM_INST_FLAG_SPRITE;
     }
 
     if( info.flags & RG_MESH_PRIMITIVE_GLASS_IF_SMOOTH )

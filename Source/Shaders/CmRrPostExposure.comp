@@ -1,0 +1,307 @@
+// Copyright (c) 2026 Doom64-RT contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#version 460
+
+// Doom64-RT: EXPOSURE AND SCREEN EMISSIVE, APPLIED AFTER DLSS-RR.
+//
+// WHY THIS PASS EXISTS. DLSS Ray Reconstruction wants linear PRE-exposure
+// radiance: its integration guide (S3.7) declares exposure, auto-exposure and
+// sharpening unsupported, and tells you to ignore the SR guide's exposure
+// sections outright. Before this pass, CmPrepareFinal multiplied EV100 auto
+// exposure into FINAL -- the exact image RR consumes -- while DLSSRR.cpp told
+// NGX `InPreExposure = 1.0`. So whenever adaptation moved (and Doom's dark
+// interiors move it constantly, EV100 2.0..7.7 is a ~52x swing), RR's temporal
+// history held frames captured at a DIFFERENT exposure than the current one,
+// with no way to know. A-SVGF never had this problem: it accumulates in linear
+// radiance BEFORE exposure. That asymmetry is the one structural difference
+// RAYRECONSTRUCTION.md blamed -- and the fix its plan deferred.
+//
+// So: with rrPreExposure set, CmPrepareFinal skips its EV100 multiply and its
+// screen-emissive add, RR reconstructs genuinely pre-exposure radiance (its
+// InPreExposure = 1.0 becomes truthful), and both operations happen here, on
+// the UPSCALED output, in the same order they had at render resolution.
+//
+// THE ALGEBRA IS PRESERVED the same way CmVolumeCompose.comp:44-49 proves its
+// own reorder. Under RR the medium was already composited at render res
+// (volumePostComp is forced 0, so CmPrepareFinal ran `hdr = hdr*T + S`), so:
+//
+//     before:  out = RR( (surf*T + S)*exp + emis*emisMax*T )
+//     after:   RRin = surf*T + S                          (CmPrepareFinal)
+//              out  = RR(RRin)*exp + emis*emisMax*T       (here)
+//
+// -- identical per pixel up to RR itself, which is the point: the only thing
+// that changed is WHAT RR denoises.
+//
+// A side benefit: the emissive glow is now added at output resolution from the
+// render-res buffer (bilinear), so RR no longer "denoises" the unguided glow --
+// rr-noise-fix-proposals.md item 6 flagged exactly that as a churn source.
+
+#define DESC_SET_FRAMEBUFFERS 0
+#define DESC_SET_GLOBAL_UNIFORM 1
+#define DESC_SET_TONEMAPPING 2
+#include "ShaderCommonGLSLFunc.h"
+#include "Exposure.h"
+
+layout( local_size_x = 16, local_size_y = 16, local_size_z = 1 ) in;
+
+layout( push_constant ) uniform RrPostExposurePush_BT
+{
+    uint width;
+    uint height;
+    uint pad0;
+    uint pad1;
+}
+push;
+
+void main()
+{
+    const ivec2 pix = ivec2( gl_GlobalInvocationID.xy );
+
+    if( pix.x >= int( push.width ) || pix.y >= int( push.height ) )
+    {
+        return;
+    }
+
+    // Belt and braces: the C++ call site is gated on the same uniform, so this
+    // never fires -- but a pass that applies exposure must not be able to
+    // disagree with the pass that skipped it. Single source of truth.
+    if( globalUniform.rrPreExposure == 0 )
+    {
+        return;
+    }
+
+    // Debug views replace the image wholesale in CmPrepareFinal (processDebug
+    // runs AFTER the gated blocks and overwrites hdr with raw buffer contents).
+    // Exposing those here would only rescale a diagnostic; keep them
+    // bit-identical to what the non-reordered path shows.
+    if( globalUniform.debugShowFlags != 0 )
+    {
+        return;
+    }
+
+    // Same for the volumetric bias-mask view, which CmPrepareFinal writes at the
+    // very END of main() -- outside the blocks this reorder gates, and NOT part
+    // of debugShowFlags, so the check above does not cover it. Without this the
+    // mask would be the one thing in the frame this pass scales by exposure.
+    if( globalUniform.volumeUpscaleBiasDebug != 0 )
+    {
+        return;
+    }
+
+    // IN PLACE on RR's fixed output image (DLSSRR.cpp OUTPUT_IMAGE). Every
+    // invocation reads and writes exactly its own pixel -- no hazard, no
+    // ping-pong needed, same argument as CmVolumeCompose.comp:113-117.
+    vec3 c = imageLoad( framebufUpscaledPong, pix ).rgb;
+
+    // Auto exposure -- the exact multiply CmPrepareFinal skipped. Same
+    // tonemapping buffer, same frame, same value: CalculateExposure ran before
+    // CmPrepareFinal and reads PRE_FINAL, which this reorder never touches.
+    //
+    // NOT guarded by classicShading: at render res the guard exempted
+    // classic-shaded pixels, but DrawClassic repaints that region on top of
+    // this pass's output (VulkanDevice.cpp, ordering comment at the
+    // volumePostComp block), so exposing it here is overwritten anyway.
+    c *= ev100ToLuminousExposure( getCurrentEV100() );
+
+    // ALBEDO RE-MODULATION (rrDemod): multiply back the factor CmNoisyCompose
+    // divided out of RR's input. The crisp texel content rides in this
+    // buffer instead of through the network -- reapplied at OUTPUT res with
+    // the chosen filter, it stays sharp at any upscale ratio. Runs BEFORE
+    // the glow add below: the glow is an overlay, not albedo content (the
+    // pre-RR glow paths pre-divided by M so this multiply cancels there).
+    if( globalUniform.rrDemod != 0 )
+    {
+        const vec2 renderSize = vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+        // the same dejittered mapping the glow sample below uses
+        const vec2 uvM = ( vec2( pix ) + 0.5 ) / vec2( push.width, push.height ) -
+                         vec2( globalUniform.jitterX, globalUniform.jitterY ) / renderSize;
+
+        vec3 M;
+        if( globalUniform.rrDemodFilter == 2 )
+        {
+            // nearest: the full chunky pixel-art reapply
+            const ivec2 nn = clamp( ivec2( floor( uvM * renderSize ) ),
+                                    ivec2( 0 ),
+                                    ivec2( renderSize ) - 1 );
+            M = texelFetch( framebufRrDemodFactor_Sampler, nn, 0 ).rgb;
+        }
+        else if( globalUniform.rrDemodFilter == 1 )
+        {
+            // 9-tap optimized Catmull-Rom -- sharp edges without blockiness
+            const vec2 samplePos = uvM * renderSize;
+            const vec2 texPos1   = floor( samplePos - 0.5 ) + 0.5;
+            const vec2 f         = samplePos - texPos1;
+
+            const vec2 w0  = f * ( -0.5 + f * ( 1.0 - 0.5 * f ) );
+            const vec2 w1  = 1.0 + f * f * ( -2.5 + 1.5 * f );
+            const vec2 w2  = f * ( 0.5 + f * ( 2.0 - 1.5 * f ) );
+            const vec2 w3  = f * f * ( -0.5 + 0.5 * f );
+            const vec2 w12 = w1 + w2;
+
+            const vec2 p0  = ( texPos1 - 1.0 ) / renderSize;
+            const vec2 p3  = ( texPos1 + 2.0 ) / renderSize;
+            const vec2 p12 = ( texPos1 + w2 / w12 ) / renderSize;
+
+            vec3 acc = vec3( 0.0 );
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p0.x,  p0.y  ), 0.0 ).rgb * w0.x  * w0.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p12.x, p0.y  ), 0.0 ).rgb * w12.x * w0.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p3.x,  p0.y  ), 0.0 ).rgb * w3.x  * w0.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p0.x,  p12.y ), 0.0 ).rgb * w0.x  * w12.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p12.x, p12.y ), 0.0 ).rgb * w12.x * w12.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p3.x,  p12.y ), 0.0 ).rgb * w3.x  * w12.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p0.x,  p3.y  ), 0.0 ).rgb * w0.x  * w3.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p12.x, p3.y  ), 0.0 ).rgb * w12.x * w3.y;
+            acc += textureLod( framebufRrDemodFactor_Sampler, vec2( p3.x,  p3.y  ), 0.0 ).rgb * w3.x  * w3.y;
+            M = max( acc, vec3( 0.0 ) );
+        }
+        else
+        {
+            M = textureLod( framebufRrDemodFactor_Sampler, uvM, 0.0 ).rgb;
+        }
+
+        c *= M;
+    }
+
+    // Screen emissive at output resolution. Both source buffers are REGULAR
+    // pixel space at render res; sampled by normalised coordinate so this works
+    // at any upscale ratio.
+    //
+    // JITTER-CORRECTED, and this is load-bearing: the render-res buffers were
+    // written through a jittered projection, so their content shifts by a
+    // sub-pixel offset every frame. Pre-reorder that shift was consumed by RR
+    // itself (it dejitters its whole input); here the image is already
+    // reconstructed and stable, so adding the raw buffer back put a constant
+    // per-frame wobble over everything emissive -- reported from play as
+    // "visible constant jitter on the image". Same correction, same sign, as
+    // CmVolumeCompose.comp.
+    const vec2 uv = ( vec2( pix ) + 0.5 ) / vec2( push.width, push.height ) -
+                    vec2( globalUniform.jitterX, globalUniform.jitterY ) /
+                        vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+
+    // With rrGlowPre, the glow was already added into RR's input by
+    // CmPrepareFinal (in pre-exposure units) and has just been multiplied by
+    // the exposure above -- adding it here again would double it. That mode
+    // gives perfectly calm emissive edges, but its 1/exposure term makes the
+    // glow in RR's INPUT swell and shrink while auto-exposure ADAPTS
+    // (flashlight toggles, room transitions) -- RR reads that as the scene
+    // changing, reported from play as noise/instability around exactly those
+    // moments. So the default is the post-RR add below, upgraded from one
+    // bilinear tap to a 9-tap Catmull-Rom: the shimmer was the tap's
+    // phase-varying reconstruction error on sharp emissive edges, and a
+    // bicubic kernel cuts that error hard while staying exposure-neutral.
+    vec3 screenEmis = vec3( 0.0 );
+    if( globalUniform.rrGlowPre == 0 )
+    {
+        // Optimized 9-tap Catmull-Rom (bilinear-tap folding), sampling the
+        // render-res buffer at the jitter-corrected uv computed above.
+        const vec2 texSize   = vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+        const vec2 samplePos = uv * texSize;
+        const vec2 texPos1   = floor( samplePos - 0.5 ) + 0.5;
+        const vec2 f         = samplePos - texPos1;
+
+        const vec2 w0  = f * ( -0.5 + f * ( 1.0 - 0.5 * f ) );
+        const vec2 w1  = 1.0 + f * f * ( -2.5 + 1.5 * f );
+        const vec2 w2  = f * ( 0.5 + f * ( 2.0 - 1.5 * f ) );
+        const vec2 w3  = f * f * ( -0.5 + 0.5 * f );
+        const vec2 w12 = w1 + w2;
+
+        const vec2 p0  = ( texPos1 - 1.0 ) / texSize;
+        const vec2 p3  = ( texPos1 + 2.0 ) / texSize;
+        const vec2 p12 = ( texPos1 + w2 / w12 ) / texSize;
+
+        vec3 acc = vec3( 0.0 );
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p0.x,  p0.y  ), 0.0 ).rgb * w0.x  * w0.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p12.x, p0.y  ), 0.0 ).rgb * w12.x * w0.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p3.x,  p0.y  ), 0.0 ).rgb * w3.x  * w0.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p0.x,  p12.y ), 0.0 ).rgb * w0.x  * w12.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p12.x, p12.y ), 0.0 ).rgb * w12.x * w12.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p3.x,  p12.y ), 0.0 ).rgb * w3.x  * w12.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p0.x,  p3.y  ), 0.0 ).rgb * w0.x  * w3.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p12.x, p3.y  ), 0.0 ).rgb * w12.x * w3.y;
+        acc += textureLod( framebufScreenEmission_Sampler, vec2( p3.x,  p3.y  ), 0.0 ).rgb * w3.x  * w3.y;
+
+        // Catmull-Rom's negative lobes can undershoot on bright edges -- and
+        // this is additive glow, so a negative value would DARKEN the frame.
+        screenEmis = max( acc, vec3( 0.0 ) );
+    }
+
+    // Attenuated by the medium, as in CmPrepareFinal -- an emissive panel must
+    // not shine through smoke at full strength. volumePostComp is always 0 on
+    // the RR path (postCompOk forces it), so unlike CmPrepareFinal there is no
+    // "the post pass owns the attenuation" case; the guard is kept anyway so
+    // the two shaders can never disagree about who applies T.
+    //
+    // ONE KNOWN DIVERGENCE, deliberate: CmPrepareFinal attenuates by the
+    // possibly-FEATHERED transmittance (its volumeEdgeSoft 3x3 silhouette
+    // average), this samples raw Scattering.a. It applies only to the emissive
+    // attenuation term, only at silhouettes, and bilinear sampling already
+    // averages across the same texels -- reproducing the feather here would
+    // mean re-running a 3x3 at reconstructed render pixels for a fraction of a
+    // fraction. Revisit only if emissive edges seen through fog read wrong.
+    if( globalUniform.volumeOccludeEmis != 0 && globalUniform.volumePostComp == 0 )
+    {
+        vec4 v = textureLod( framebufScattering_Sampler, uv, 0.0 );
+
+        // NO FOG ON THE GUN -- the same override CmPrepareFinal and
+        // CmVolumeCompose both apply: the scattering buffer under a
+        // first-person pixel holds the WORLD's fog on purpose.
+        if( globalUniform.volumeFp > 0.5 )
+        {
+            const ivec2 rpix = ivec2( uv * vec2( globalUniform.renderWidth,
+                                                 globalUniform.renderHeight ) );
+            const uint  ci   = floatBitsToUint(
+                texelFetch( framebufSurfacePosition_Sampler,
+                            getCheckerboardPix( clamp( rpix,
+                                                       ivec2( 0 ),
+                                                       ivec2( int( globalUniform.renderWidth ) - 1,
+                                                              int( globalUniform.renderHeight ) - 1 ) ) ),
+                            0 )
+                    .a );
+            if( ( ci & INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON ) != 0 )
+            {
+                v = vec4( 0, 0, 0, 1 );
+            }
+        }
+
+        screenEmis *= v.a;
+    }
+
+    c += screenEmis * globalUniform.emissionMaxScreenColor;
+
+    // DLSS-RR disocclusion mask A/B view, relocated from CmPrepareFinal: there
+    // it would now land pre-exposure and be scaled into invisibility.
+    if( globalUniform.rrDisoccShowMask != 0 )
+    {
+        if( textureLod( framebufRrDisocclusion_Sampler, uv, 0.0 ).r > 0.0 )
+        {
+            c = mix( c, vec3( 4.0, 0.0, 0.0 ), 0.5 );
+        }
+    }
+
+    // THE ABSURD ARM. A subtle A/B cannot distinguish "no visible difference"
+    // from "the pass never ran" -- this can. Magenta means live.
+    if( globalUniform.rrPreExpDebug != 0 )
+    {
+        c = mix( c, vec3( 4.0, 0.0, 4.0 ), 0.5 );
+    }
+
+    imageStore( framebufUpscaledPong, pix, vec4( c, 0 ) );
+}

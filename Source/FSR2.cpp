@@ -405,7 +405,15 @@ RTGL1::FramebufferImageIndex RTGL1::FSR2::Apply( VkCommandBuffer               c
         .motionVectors              = ToFSRResource( FI::FB_IMAGE_INDEX_MOTION_DLSS, frameIndex, m_context, framebuffers, renderResolution.GetResolutionState() ),
         .exposure                   = {},
         .reactive                   = ToFSRResource( FI::FB_IMAGE_INDEX_REACTIVITY, frameIndex, m_context, framebuffers, renderResolution.GetResolutionState() ),
-        .transparencyAndComposition = {},
+        // Doom64-RT: the volumetric's silhouette mask, which CmPrepareFinal
+        // writes into REACTIVITY. FSR2 documents this input as "special objects
+        // composited into the scene" and that is exactly the medium: the
+        // composite happens at render resolution and this pass runs after it,
+        // so a silhouette arrives with two different media states already added
+        // into either side of it. The same image is already handed to
+        // `reactive` above; both mean "trust the current frame here", and it
+        // reads as all-zero unless rt_volume_ubias is on.
+        .transparencyAndComposition = ToFSRResource( FI::FB_IMAGE_INDEX_REACTIVITY, frameIndex, m_context, framebuffers, renderResolution.GetResolutionState() ),
         .output                     = ToFSRResource( OUTPUT_IMAGE_INDEX, frameIndex, m_context, framebuffers, renderResolution.GetResolutionState() ),
         .jitterOffset               = { -jitterOffset.data[ 0 ], -jitterOffset.data[ 1 ] },
         .motionVectorScale          = { float( renderResolution.GetResolutionState().renderWidth ), float( renderResolution.GetResolutionState().renderHeight ) },

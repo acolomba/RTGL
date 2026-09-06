@@ -33,6 +33,7 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 
 #include "CmdLabel.h"
 #include "RgException.h"
@@ -267,6 +268,9 @@ RTGL1::DebugWindows::DebugWindows( VkInstance                               _ins
         }
     }
 
+    // Disable default CWD imgui.ini until SetIniFilename points at rt/
+    io.IniFilename = nullptr;
+
     ImGui_ImplGlfw_InitForVulkan( customWindow, true );
 
     uint32_t swapchainImageCount = QueryImageCount( _physDevice, customSurface );
@@ -322,6 +326,18 @@ void RTGL1::DebugWindows::Init( const std::shared_ptr< DebugWindows >& self )
 {
     // kludge: need a shared_ptr of the current instance
     customSwapchain->Subscribe( self );
+}
+
+void RTGL1::DebugWindows::SetIniFilename( const std::filesystem::path& path )
+{
+    iniFilenameStorage = path.string();
+    ImGuiIO& io        = ImGui::GetIO();
+    io.IniFilename     = iniFilenameStorage.c_str();
+    // Load immediately if the file already exists (NewFrame would also load).
+    if( std::filesystem::exists( path ) )
+    {
+        ImGui::LoadIniSettingsFromDisk( iniFilenameStorage.c_str() );
+    }
 }
 
 bool RTGL1::DebugWindows::PrepareForFrame( uint32_t frameIndex, bool vsync )

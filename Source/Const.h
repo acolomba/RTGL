@@ -33,7 +33,22 @@ constexpr uint32_t TEXTURE_FILE_PATH_MAX_LENGTH      = 512;
 constexpr uint32_t TEXTURE_FILE_NAME_MAX_LENGTH      = 256;
 constexpr uint32_t TEXTURE_FILE_EXTENSION_MAX_LENGTH = 16;
 
-constexpr uint32_t TEXTURE_COUNT_MAX           = 4096;
+// Doom64-RT: raised from 4096. This is the DESIRED ceiling -- the value actually
+// used is clamped to what the GPU reports, see InitTextureCountMax() in
+// TextureManager.cpp.
+//
+// 4096 was not enough once gzdoom-rt started precaching a level's actors: one
+// material claims up to TEXTURES_PER_MATERIAL_COUNT (5) entries, so ~2100
+// materials exhausted the array, 487 textures were dropped, and because the
+// overflow is a Warning rather than an error the game carried on and drew its
+// HUD as untextured blocks.
+//
+// It is a SESSION budget, not a per-level one: nothing is ever freed while a
+// level changes, so a long session could reach the old ceiling with no
+// precaching at all. Nothing needed regenerating for this -- the shaders declare
+// `uniform sampler2D globalTextures[]` unbounded and index it with nonuniformEXT,
+// and every index in ShaderCommonC.h is a full uint32_t with no bit packing.
+constexpr uint32_t TEXTURE_COUNT_MAX           = 16384;
 constexpr uint32_t EMPTY_TEXTURE_INDEX         = 0;
 constexpr uint32_t MATERIALS_MAX_LAYER_COUNT   = 4;
 constexpr uint32_t TEXTURES_PER_MATERIAL_COUNT = 5;

@@ -47,6 +47,8 @@
 #include "Bloom.h"
 #include "Sharpening.h"
 #include "DLSS2.h"
+#include "DLSSRR.h"
+#include "NrdDenoiser.h"
 #include "DLSS3_DX12.h"
 #include "RenderResolutionHelper.h"
 #include "EffectWipe.h"
@@ -72,6 +74,7 @@ namespace RTGL1
 {
 
 struct Devmode;
+struct DevmodeSettings;
 
 
 class VulkanDevice
@@ -138,6 +141,8 @@ private:
 private:
     bool Dev_IsDevmodeInitialized() const;
     void Dev_Draw() const;
+    void Dev_LoadSettings( const DevmodeSettings& settings );
+    void Dev_SaveSettings( bool force ) const;
     void Dev_Override( RgStartFrameInfo&                   info,
                        RgStartFrameRenderResolutionParams& resolution,
                        RgStartFrameFluidParams&            fluid ) const;
@@ -168,6 +173,12 @@ private:
     VkFence outOfFrameFences[ MAX_FRAMES_IN_FLIGHT ] = {};
 
     bool m_supportsRayQueryAndPositionFetch{ false };
+
+    // Doom64-RT: the exact extension lists the instance/device were created
+    // with, retained for NRD -- NRI wraps the existing VkDevice and gates its
+    // capability usage on what it is told was enabled (NrdDenoiser).
+    std::vector< std::string > vkEnabledInstanceExtensions;
+    std::vector< std::string > vkEnabledDeviceExtensions;
 
     std::shared_ptr< PhysicalDevice > physDevice;
     std::shared_ptr< Queues >         queues;
@@ -200,6 +211,8 @@ private:
     std::shared_ptr< FSR2 >                      amdFsr2;
     std::shared_ptr< FSR3_DX12 >                 amdFsr3dx12;
     std::shared_ptr< DLSS2 >                     nvDlss2;
+    std::shared_ptr< DLSSRR >                    nvDlssRr;
+    std::shared_ptr< NrdDenoiser >               nrdDenoiser;
     std::shared_ptr< DLSS3_DX12 >                nvDlss3dx12;
     std::shared_ptr< Sharpening >                sharpening;
     std::shared_ptr< EffectWipe >                effectWipe;
