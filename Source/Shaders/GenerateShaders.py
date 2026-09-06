@@ -23,11 +23,15 @@ import sys
 import os
 import subprocess
 import pathlib
+import shutil
 
 
 TARGET_FOLDER_PATH           = "../../Build/shaders/"
 # TODO: improve extensibility
 GLSLC_EXE                    = "../../Source/VulkanSDK/1.3.280.0/Bin/glslc.exe"
+# The vendored SDK only carries a Windows glslc; elsewhere use the system one.
+if os.name != "nt":
+    GLSLC_EXE = shutil.which("glslc") or GLSLC_EXE
 
 
 CACHE_FOLDER_PATH           = "Build/"
