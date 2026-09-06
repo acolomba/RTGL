@@ -45,6 +45,10 @@ void RTGL1::VulkanDevice::Dev_Override( RgDrawFrameIlluminationParams&,
 
 void RTGL1::VulkanDevice::Dev_TryBreak( const char*, bool ) {}
 
+void RTGL1::VulkanDevice::Dev_LoadSettings( const DevmodeSettings& ) {}
+
+void RTGL1::VulkanDevice::Dev_SaveSettings( bool ) const {}
+
 void RTGL1::VulkanDevice::DrawEndUserWarnings() {}
 
 #else
